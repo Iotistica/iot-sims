@@ -117,44 +117,181 @@ class Database:
         log.info("Database ready at %s", self.path)
 
     def seed_default(self) -> None:
-        """Populate with condo building if DB is empty."""
+        """Populate with a 4-storey commercial office tower if DB is empty.
+
+        Device layout
+        -------------
+        1000  BMS-Gateway        Honeywell WEBs-N4          (supervisory)
+        1001  Chiller-Plant      Trane Tracer SC+            (basement – 2 chillers + CT)
+        1002  HW-Plant           Honeywell Excel 500         (basement – 2 boilers)
+        1003  AHU-1              Johnson Controls FEC26B     (floors 1-2)
+        1004  AHU-2              Johnson Controls FEC26B     (floors 3-4)
+        1101  VAV-L1-01          Siemens RXB29.1             (floor 1 zone A – north)
+        1102  VAV-L1-02          Siemens RXB29.1             (floor 1 zone B – south)
+        1201  VAV-L2-01          Siemens RXB29.1             (floor 2 zone A – conference)
+        1202  VAV-L2-02          Siemens RXB29.1             (floor 2 zone B – open plan)
+        1301  VAV-L3-01          Siemens RXB29.1             (floor 3 zone A – exec suites)
+        1302  VAV-L3-02          Siemens RXB29.1             (floor 3 zone B – server room)
+        1401  VAV-L4-01          Siemens RXB29.1             (floor 4 zone A – open plan)
+        1402  VAV-L4-02          Siemens RXB29.1             (floor 4 zone B – board room)
+        """
+        HONEYWELL = "Honeywell International"
+        JCI       = "Johnson Controls"
+        SIEMENS   = "Siemens Building Technologies"
+        TRANE     = "Trane Technologies"
+
         with self._conn() as conn:
             if conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] > 0:
                 return
+
             conn.executemany(
-                "INSERT OR IGNORE INTO devices (device_instance, name, description) VALUES (?,?,?)",
+                "INSERT OR IGNORE INTO devices "
+                "(device_instance, name, description, vendor_name, model_name) "
+                "VALUES (?,?,?,?,?)",
                 [
-                    (1001, "Central-Plant", "Central chiller plant"),
-                    (1002, "AHU-1-Controller", "Air handling unit 1 controller"),
-                    (1003, "AHU-2-Controller", "Air handling unit 2 controller"),
+                    (1000, "BMS-Gateway",  "Building management system gateway – supervisory controller",  HONEYWELL, "WEBs-N4"),
+                    (1001, "Chiller-Plant","Basement chiller plant – 2 × centrifugal chillers + cooling tower", TRANE, "Tracer SC+"),
+                    (1002, "HW-Plant",     "Basement hot-water plant – 2 × condensing boilers",           HONEYWELL, "Excel 500"),
+                    (1003, "AHU-1",        "Air handling unit 1 – serves floors 1 & 2",                   JCI,       "FEC26B"),
+                    (1004, "AHU-2",        "Air handling unit 2 – serves floors 3 & 4",                   JCI,       "FEC26B"),
+                    (1101, "VAV-L1-01",    "Floor 1 VAV – Zone A north offices",                           SIEMENS,   "RXB29.1"),
+                    (1102, "VAV-L1-02",    "Floor 1 VAV – Zone B south offices",                           SIEMENS,   "RXB29.1"),
+                    (1201, "VAV-L2-01",    "Floor 2 VAV – Zone A conference rooms",                        SIEMENS,   "RXB29.1"),
+                    (1202, "VAV-L2-02",    "Floor 2 VAV – Zone B open-plan",                               SIEMENS,   "RXB29.1"),
+                    (1301, "VAV-L3-01",    "Floor 3 VAV – Zone A executive suites",                        SIEMENS,   "RXB29.1"),
+                    (1302, "VAV-L3-02",    "Floor 3 VAV – Zone B server room",                             SIEMENS,   "RXB29.1"),
+                    (1401, "VAV-L4-01",    "Floor 4 VAV – Zone A open-plan",                               SIEMENS,   "RXB29.1"),
+                    (1402, "VAV-L4-02",    "Floor 4 VAV – Zone B board room",                              SIEMENS,   "RXB29.1"),
                 ],
             )
-            p = conn.execute("SELECT id FROM devices WHERE device_instance=1001").fetchone()[0]
-            a1 = conn.execute("SELECT id FROM devices WHERE device_instance=1002").fetchone()[0]
-            a2 = conn.execute("SELECT id FROM devices WHERE device_instance=1003").fetchone()[0]
-            objects = [
-                (p, "binary-input", 1, "Chiller Status",    "no-units",        "manual",      '{"value":true}'),
-                (p, "analog-input", 2, "Supply Temp",        "degrees-celsius", "noise",       '{"base":7.0,"noise":0.3}'),
-                (p, "analog-input", 3, "Return Temp",        "degrees-celsius", "noise",       '{"base":12.0,"noise":0.3}'),
-                (p, "analog-input", 4, "Power",              "kilowatts",       "random_walk", '{"value":65,"step":2,"min":25,"max":85}'),
-                (a1,"binary-input", 1, "Fan Status",         "no-units",        "manual",      '{"value":true}'),
-                (a1,"analog-input", 2, "Supply Temp",        "degrees-celsius", "noise",       '{"base":18.0,"noise":1.0}'),
-                (a1,"analog-input", 3, "Return Temp",        "degrees-celsius", "sine",        '{"base":22.0,"amplitude":3.0,"period_hours":24}'),
-                (a1,"analog-input", 4, "Airflow",            "cubic-feet-per-minute","noise",  '{"base":5000,"noise":200}'),
-                (a1,"analog-input", 5, "Cooling Valve",      "percent",         "sine",        '{"base":45.0,"amplitude":20.0,"period_hours":12}'),
-                (a2,"binary-input", 1, "Fan Status",         "no-units",        "manual",      '{"value":true}'),
-                (a2,"analog-input", 2, "Supply Temp",        "degrees-celsius", "noise",       '{"base":18.5,"noise":1.0}'),
-                (a2,"analog-input", 3, "Return Temp",        "degrees-celsius", "sine",        '{"base":22.5,"amplitude":3.0,"period_hours":24}'),
-                (a2,"analog-input", 4, "Airflow",            "cubic-feet-per-minute","noise",  '{"base":4500,"noise":150}'),
-                (a2,"analog-input", 5, "Cooling Valve",      "percent",         "sine",        '{"base":40.0,"amplitude":18.0,"period_hours":12}'),
+
+            def did(instance: int) -> int:
+                return conn.execute(
+                    "SELECT id FROM devices WHERE device_instance=?", (instance,)
+                ).fetchone()[0]
+
+            objects: list = []
+
+            # ── BMS Gateway (1000) ─────────────────────────────────────────────
+            bms = did(1000)
+            objects += [
+                (bms, "binary-value",  1, "Building-Occupied",   "no-units",        "manual",      '{"value":true}'),
+                (bms, "analog-value",  2, "Active-Alarms",       "no-units",        "random_walk", '{"value":2,"step":1,"min":0,"max":8}'),
+                (bms, "analog-input",  3, "Energy-Today-kWh",    "kilowatt-hours",  "random_walk", '{"value":430,"step":12,"min":0,"max":2000}'),
+                (bms, "analog-input",  4, "Peak-Demand-kW",      "kilowatts",       "random_walk", '{"value":182,"step":4,"min":50,"max":320}'),
+                (bms, "analog-input",  5, "Outside-Air-Temp",    "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}'),
+                (bms, "analog-input",  6, "Outside-Air-Humidity","percent",         "sine",        '{"base":55.0,"amplitude":15.0,"period_hours":24}'),
             ]
+
+            # ── Chiller Plant (1001) ───────────────────────────────────────────
+            cp = did(1001)
+            objects += [
+                (cp, "binary-input",  1, "CH-1-Run",             "no-units",        "manual",      '{"value":true}'),
+                (cp, "analog-input",  2, "CH-1-kW",              "kilowatts",       "random_walk", '{"value":212,"step":8,"min":80,"max":320}'),
+                (cp, "analog-input",  3, "CH-1-COP",             "no-units",        "noise",       '{"base":5.8,"noise":0.2}'),
+                (cp, "binary-input",  4, "CH-2-Run",             "no-units",        "manual",      '{"value":true}'),
+                (cp, "analog-input",  5, "CH-2-kW",              "kilowatts",       "random_walk", '{"value":198,"step":8,"min":80,"max":320}'),
+                (cp, "analog-input",  6, "CH-2-COP",             "no-units",        "noise",       '{"base":5.6,"noise":0.2}'),
+                (cp, "analog-input",  7, "CW-Supply-Temp",       "degrees-celsius", "noise",       '{"base":6.5,"noise":0.2}'),
+                (cp, "analog-input",  8, "CW-Return-Temp",       "degrees-celsius", "noise",       '{"base":12.2,"noise":0.2}'),
+                (cp, "analog-input",  9, "CW-Flow",              "liters-per-second","noise",      '{"base":48.0,"noise":1.5}'),
+                (cp, "analog-input", 10, "CW-Diff-Pressure",     "pascals",         "noise",       '{"base":225,"noise":8}'),
+                (cp, "binary-input", 11, "CT-Fan-1-Run",         "no-units",        "manual",      '{"value":true}'),
+                (cp, "binary-input", 12, "CT-Fan-2-Run",         "no-units",        "manual",      '{"value":true}'),
+                (cp, "analog-input", 13, "CT-Leaving-Water-Temp","degrees-celsius", "noise",       '{"base":29.5,"noise":0.5}'),
+                (cp, "analog-input", 14, "CT-Approach-Temp",     "degrees-celsius", "noise",       '{"base":3.2,"noise":0.3}'),
+                (cp, "binary-input", 15, "CW-Pump-1-Run",        "no-units",        "manual",      '{"value":true}'),
+                (cp, "binary-input", 16, "CW-Pump-2-Run",        "no-units",        "manual",      '{"value":false}'),
+            ]
+
+            # ── Hot Water Plant (1002) ─────────────────────────────────────────
+            hw = did(1002)
+            objects += [
+                (hw, "binary-input",  1, "BLR-1-Run",            "no-units",        "manual",      '{"value":true}'),
+                (hw, "analog-input",  2, "BLR-1-Firing-Rate",    "percent",         "noise",       '{"base":62,"noise":5}'),
+                (hw, "analog-input",  3, "BLR-1-Flue-Temp",      "degrees-celsius", "noise",       '{"base":88,"noise":3}'),
+                (hw, "binary-input",  4, "BLR-2-Run",            "no-units",        "manual",      '{"value":false}'),
+                (hw, "analog-input",  5, "BLR-2-Firing-Rate",    "percent",         "manual",      '{"value":0}'),
+                (hw, "analog-input",  6, "HW-Supply-Temp",       "degrees-celsius", "noise",       '{"base":71.0,"noise":0.8}'),
+                (hw, "analog-input",  7, "HW-Return-Temp",       "degrees-celsius", "noise",       '{"base":58.5,"noise":0.8}'),
+                (hw, "analog-input",  8, "HW-Diff-Pressure",     "pascals",         "noise",       '{"base":180,"noise":6}'),
+                (hw, "analog-input",  9, "Gas-Flow",             "cubic-feet-per-minute","random_walk",'{"value":44,"step":3,"min":10,"max":85}'),
+                (hw, "binary-input", 10, "HW-Pump-1-Run",        "no-units",        "manual",      '{"value":true}'),
+                (hw, "binary-input", 11, "HW-Pump-2-Run",        "no-units",        "manual",      '{"value":false}'),
+            ]
+
+            # ── AHU-1  floors 1-2 (1003) ──────────────────────────────────────
+            ahu1 = did(1003)
+            objects += [
+                (ahu1, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}'),
+                (ahu1, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}'),
+                (ahu1, "analog-input",  3, "SF-Speed",           "percent",         "sine",        '{"base":75.0,"amplitude":15.0,"period_hours":12}'),
+                (ahu1, "analog-input",  4, "RF-Speed",           "percent",         "sine",        '{"base":70.0,"amplitude":12.0,"period_hours":12}'),
+                (ahu1, "analog-input",  5, "SAT",                "degrees-celsius", "noise",       '{"base":13.0,"noise":0.4}'),
+                (ahu1, "analog-input",  6, "RAT",                "degrees-celsius", "sine",        '{"base":22.0,"amplitude":2.0,"period_hours":24}'),
+                (ahu1, "analog-input",  7, "MAT",                "degrees-celsius", "noise",       '{"base":16.0,"noise":0.8}'),
+                (ahu1, "analog-input",  8, "OAT",                "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}'),
+                (ahu1, "analog-output", 9, "OAD-Position",       "percent",         "sine",        '{"base":28.0,"amplitude":18.0,"period_hours":24}'),
+                (ahu1, "analog-output",10, "CC-Valve",           "percent",         "sine",        '{"base":55.0,"amplitude":25.0,"period_hours":12}'),
+                (ahu1, "analog-output",11, "HC-Valve",           "percent",         "sine",        '{"base":10.0,"amplitude":9.0,"period_hours":24}'),
+                (ahu1, "analog-input", 12, "SA-Flow",            "cubic-feet-per-minute","noise",  '{"base":8500,"noise":250}'),
+                (ahu1, "analog-input", 13, "SA-Static-Pressure", "pascals",         "noise",       '{"base":375,"noise":12}'),
+                (ahu1, "binary-input", 14, "Filter-DP-Alarm",    "no-units",        "manual",      '{"value":false}'),
+                (ahu1, "binary-input", 15, "Freeze-Stat",        "no-units",        "manual",      '{"value":false}'),
+            ]
+
+            # ── AHU-2  floors 3-4 (1004) ──────────────────────────────────────
+            ahu2 = did(1004)
+            objects += [
+                (ahu2, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}'),
+                (ahu2, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}'),
+                (ahu2, "analog-input",  3, "SF-Speed",           "percent",         "sine",        '{"base":70.0,"amplitude":18.0,"period_hours":12}'),
+                (ahu2, "analog-input",  4, "RF-Speed",           "percent",         "sine",        '{"base":65.0,"amplitude":14.0,"period_hours":12}'),
+                (ahu2, "analog-input",  5, "SAT",                "degrees-celsius", "noise",       '{"base":13.5,"noise":0.4}'),
+                (ahu2, "analog-input",  6, "RAT",                "degrees-celsius", "sine",        '{"base":21.5,"amplitude":2.0,"period_hours":24}'),
+                (ahu2, "analog-input",  7, "MAT",                "degrees-celsius", "noise",       '{"base":15.5,"noise":0.8}'),
+                (ahu2, "analog-input",  8, "OAT",                "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}'),
+                (ahu2, "analog-output", 9, "OAD-Position",       "percent",         "sine",        '{"base":25.0,"amplitude":16.0,"period_hours":24}'),
+                (ahu2, "analog-output",10, "CC-Valve",           "percent",         "sine",        '{"base":50.0,"amplitude":22.0,"period_hours":12}'),
+                (ahu2, "analog-output",11, "HC-Valve",           "percent",         "sine",        '{"base":12.0,"amplitude":9.0,"period_hours":24}'),
+                (ahu2, "analog-input", 12, "SA-Flow",            "cubic-feet-per-minute","noise",  '{"base":7800,"noise":220}'),
+                (ahu2, "analog-input", 13, "SA-Static-Pressure", "pascals",         "noise",       '{"base":360,"noise":12}'),
+                (ahu2, "binary-input", 14, "Filter-DP-Alarm",    "no-units",        "manual",      '{"value":false}'),
+                (ahu2, "binary-input", 15, "Freeze-Stat",        "no-units",        "manual",      '{"value":false}'),
+            ]
+
+            # ── VAV boxes ─────────────────────────────────────────────────────
+            # (instance, zone_temp_base, cool_sp, heat_sp, damper_base, flow_base, reheat_base)
+            vav_cfg = [
+                (1101, 21.5, 23.0, 20.0, 68,  350, 12.0),   # L1 Zone A – north offices
+                (1102, 22.0, 23.0, 20.5, 72,  320, 10.0),   # L1 Zone B – south offices
+                (1201, 21.8, 23.0, 20.0, 65,  400, 14.0),   # L2 Zone A – conference rooms
+                (1202, 22.2, 23.5, 20.5, 70,  370, 11.0),   # L2 Zone B – open plan
+                (1301, 21.0, 22.5, 20.0, 60,  310, 16.0),   # L3 Zone A – exec suites
+                (1302, 19.0, 20.5, 18.0, 90,  520, 5.0),    # L3 Zone B – server room (runs cold, high airflow)
+                (1401, 22.0, 23.0, 20.5, 67,  360, 12.0),   # L4 Zone A – open plan
+                (1402, 21.5, 23.0, 20.0, 63,  300, 18.0),   # L4 Zone B – board room
+            ]
+            for (inst, zt, csp, hsp, dmp, flow, rh) in vav_cfg:
+                vd = did(inst)
+                objects += [
+                    (vd, "analog-input",  1, "Zone-Temp",         "degrees-celsius", "noise",  f'{{"base":{zt},"noise":0.3}}'),
+                    (vd, "analog-value",  2, "Cooling-SP",        "degrees-celsius", "manual", f'{{"value":{csp}}}'),
+                    (vd, "analog-value",  3, "Heating-SP",        "degrees-celsius", "manual", f'{{"value":{hsp}}}'),
+                    (vd, "analog-output", 4, "Damper-Cmd",        "percent",         "sine",   f'{{"base":{dmp},"amplitude":14.0,"period_hours":8}}'),
+                    (vd, "analog-input",  5, "Zone-Airflow",      "cubic-feet-per-minute","noise",f'{{"base":{flow},"noise":18}}'),
+                    (vd, "analog-output", 6, "Reheat-Valve",      "percent",         "sine",   f'{{"base":{rh},"amplitude":10.0,"period_hours":12}}'),
+                    (vd, "binary-input",  7, "Occupancy",         "no-units",        "manual", '{"value":true}'),
+                    (vd, "analog-input",  8, "Zone-CO2",          "parts-per-million","random_walk",f'{{"value":650,"step":30,"min":400,"max":1200}}'),
+                ]
+
             conn.executemany(
                 "INSERT OR IGNORE INTO objects "
                 "(device_id, object_type, object_instance, name, units, behavior, behavior_params) "
                 "VALUES (?,?,?,?,?,?,?)",
                 objects,
             )
-        log.info("Seeded default condo-building data")
+        log.info("Seeded 4-storey office tower: Honeywell/Trane/JCI/Siemens – 13 devices, %d objects", len(objects))
 
     def get_devices(self) -> list[dict]:
         with self._conn() as conn:
