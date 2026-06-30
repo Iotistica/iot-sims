@@ -22,6 +22,8 @@ from typing import Any, Optional, Union
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -511,7 +513,7 @@ class SimEngine:
             for obj_row in objects:
                 if not obj_row["enabled"]:
                     continue
-                bacnet_obj, behavior = self._create_object(obj_row, slot)
+                bacnet_obj, behavior = self._create_object(obj_row, slot, dev["name"])
                 self.app.add_object(bacnet_obj)
                 self._objects[obj_row["id"]] = (bacnet_obj, behavior)
                 bacnet_ids.append(bacnet_obj.objectIdentifier)
@@ -541,7 +543,7 @@ class SimEngine:
             location=dev["name"],
         )
 
-    def _create_object(self, obj_row: dict, slot: int) -> tuple[Any, Behavior]:
+    def _create_object(self, obj_row: dict, slot: int, device_name: str = "") -> tuple[Any, Behavior]:
         phys = slot * 1000 + obj_row["object_instance"]
         behavior = make_behavior(
             obj_row["behavior"],
@@ -550,6 +552,9 @@ class SimEngine:
         )
         val = behavior.compute(self.state)
         otype = obj_row["object_type"]
+        # BACnet requires globally unique object names within a single application,
+        # even across virtual devices — prefix with device name to guarantee uniqueness.
+        obj_name = f"{device_name}.{obj_row['name']}" if device_name else obj_row["name"]
 
         if otype in ("analog-input", "analog-output", "analog-value"):
             units_str = obj_row.get("units") or "no-units"
@@ -559,7 +564,7 @@ class SimEngine:
                 units = EngineeringUnits("no-units")
             bacnet_obj = AnalogInputObject(
                 objectIdentifier=f"{otype},{phys}",
-                objectName=obj_row["name"],
+                objectName=obj_name,
                 presentValue=Real(float(val)),
                 units=units,
             )
@@ -567,7 +572,7 @@ class SimEngine:
             active = bool(val) if not isinstance(val, bool) else val
             bacnet_obj = BinaryInputObject(
                 objectIdentifier=f"{otype},{phys}",
-                objectName=obj_row["name"],
+                objectName=obj_name,
                 presentValue=BinaryPV("active" if active else "inactive"),
             )
         return bacnet_obj, behavior
@@ -642,11 +647,11 @@ class SimEngine:
         if not self.app:
             return
         slot = self._device_slots.get(device_instance, 0)
-        bacnet_obj, behavior = self._create_object(obj_row, slot)
+        dev_obj = self.app._virtual_devices.get(device_instance)
+        dev_name = str(dev_obj.objectName) if dev_obj else ""
+        bacnet_obj, behavior = self._create_object(obj_row, slot, dev_name)
         self.app.add_object(bacnet_obj)
         self._objects[obj_row["id"]] = (bacnet_obj, behavior)
-        # Update device object list
-        dev_obj = self.app._virtual_devices.get(device_instance)
         if dev_obj:
             existing = list(self.app._virtual_object_lists.get(device_instance, []))
             existing.append(bacnet_obj.objectIdentifier)
@@ -745,6 +750,13 @@ async def tick_loop() -> None:
         try:
             await engine.tick()
             await broadcast_state()
+            state = engine.get_state()
+            for dev in state.get("devices", []):
+                vals = "  ".join(
+                    f"{o['name']}={o['value']:.2f}" if isinstance(o["value"], float) else f"{o['name']}={o['value']}"
+                    for o in dev["objects"]
+                )
+                log.info("[%s]  %s", dev["name"], vals)
         except Exception as e:
             log.error("Tick error: %s", e)
 
@@ -774,6 +786,17 @@ api.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+ADMIN_DIST = Path(__file__).parent / "admin" / "dist"
+
+
+@api.get("/", include_in_schema=False)
+async def admin_root():
+    f = ADMIN_DIST / "index.html"
+    if f.exists():
+        return FileResponse(str(f), media_type="text/html")
+    return {"message": "Admin not built. Run: cd admin && npm ci && npm run build"}
 
 
 @api.get("/health")
@@ -935,6 +958,13 @@ async def ws_endpoint(websocket: WebSocket):
     finally:
         if websocket in ws_clients:
             ws_clients.remove(websocket)
+
+
+# ── Admin static assets (Vite build output) ──
+# Must be mounted after all API routes so API paths take precedence.
+_assets_dir = ADMIN_DIST / "assets"
+if _assets_dir.exists():
+    api.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="admin-assets")
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

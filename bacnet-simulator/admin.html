@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BACnet Simulator — Admin</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #1a1a2e; background: #f0f2f5; height: 100vh; overflow: hidden; }
+
+    #app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* Header */
+    .header { background: #001529; color: white; padding: 0 20px; height: 48px; display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+    .header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.3px; }
+    .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+    .status-badge.ok  { background: rgba(82,196,26,0.2);  color: #52c41a; border: 1px solid #52c41a; }
+    .status-badge.err { background: rgba(255,77,79,0.2);  color: #ff4d4f; border: 1px solid #ff4d4f; }
+    .header-spacer { flex: 1; }
+    .header-port { color: #666; font-size: 11px; }
+
+    /* Main layout */
+    .main { display: flex; flex: 1; overflow: hidden; }
+
+    /* Sidebar */
+    .sidebar { width: 260px; background: white; border-right: 1px solid #e8e8e8; display: flex; flex-direction: column; flex-shrink: 0; }
+    .sidebar-header { padding: 12px 16px; border-bottom: 1px solid #e8e8e8; display: flex; align-items: center; justify-content: space-between; }
+    .sidebar-title { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.8px; }
+    .device-list { flex: 1; overflow-y: auto; }
+    .device-item { padding: 10px 16px; cursor: pointer; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #f5f5f5; transition: background 0.12s; user-select: none; }
+    .device-item:hover { background: #f5f7ff; }
+    .device-item.active { background: #e6f7ff; border-right: 3px solid #1890ff; }
+    .device-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .device-dot.on  { background: #52c41a; }
+    .device-dot.off { background: #d9d9d9; }
+    .device-info { flex: 1; min-width: 0; }
+    .device-name     { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+    .device-instance { font-size: 11px; color: #aaa; margin-top: 1px; }
+    .device-edit-btn { background: none; border: none; cursor: pointer; color: #bbb; padding: 2px 4px; font-size: 13px; line-height: 1; border-radius: 3px; }
+    .device-edit-btn:hover { color: #1890ff; background: #e6f7ff; }
+    .sidebar-empty { padding: 24px 16px; font-size: 13px; color: #bbb; text-align: center; }
+
+    /* Content */
+    .content { flex: 1; overflow: auto; padding: 20px; }
+    .content-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+    .content-title { font-size: 18px; font-weight: 600; }
+    .content-subtitle { font-size: 12px; color: #aaa; margin-top: 3px; }
+    .content-actions { display: flex; gap: 8px; flex-shrink: 0; margin-left: 16px; }
+    .no-device { display: flex; align-items: center; justify-content: center; height: 100%; flex-direction: column; gap: 12px; color: #bbb; }
+    .no-device-icon { font-size: 52px; }
+    .no-device-text { font-size: 15px; }
+
+    /* Table */
+    .table-wrap { background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.07); }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #fafafa; padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 700; color: #888; border-bottom: 1px solid #e8e8e8; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 10px 14px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #fafcff; }
+    .table-empty { padding: 48px; text-align: center; color: #bbb; font-size: 13px; }
+
+    /* Badges */
+    .type-chip { font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; padding: 2px 6px; background: #f0f0f0; border-radius: 3px; color: #555; white-space: nowrap; }
+    .behavior-badge { display: inline-block; padding: 2px 7px; border-radius: 3px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .beh-constant    { background: #f5f5f5;   color: #666; }
+    .beh-sine        { background: #e6f7ff;   color: #1890ff; }
+    .beh-noise       { background: #fff7e6;   color: #fa8c16; }
+    .beh-random_walk { background: #f9f0ff;   color: #722ed1; }
+    .beh-manual      { background: #fff1f0;   color: #f5222d; }
+    .enabled-dot { font-size: 16px; }
+    .enabled-dot.on  { color: #52c41a; }
+    .enabled-dot.off { color: #ddd; }
+
+    /* Value */
+    .val-live  { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; color: #1890ff; }
+    .val-stale { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; color: #ccc; }
+
+    /* Buttons */
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 6px 13px; border-radius: 4px; border: 1px solid transparent; cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.12s; white-space: nowrap; }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn-primary { background: #1890ff; color: white; border-color: #1890ff; }
+    .btn-primary:hover:not(:disabled) { background: #40a9ff; border-color: #40a9ff; }
+    .btn-default { background: white; color: #333; border-color: #d9d9d9; }
+    .btn-default:hover:not(:disabled) { border-color: #40a9ff; color: #40a9ff; }
+    .btn-danger  { background: white; color: #f5222d; border-color: #f5222d; }
+    .btn-danger:hover:not(:disabled)  { background: #f5222d; color: white; }
+    .btn-sm  { padding: 4px 10px; font-size: 12px; }
+    .btn-link { background: none; border: none; cursor: pointer; font-size: 12px; padding: 2px 5px; color: #1890ff; font-weight: 500; }
+    .btn-link:hover { color: #40a9ff; }
+    .btn-link.danger { color: #f5222d; }
+    .btn-link.danger:hover { color: #ff4d4f; }
+    .btn-link.warn { color: #fa8c16; }
+    .btn-link.warn:hover { color: #ffa940; }
+
+    /* Modal */
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 200; display: flex; align-items: center; justify-content: center; }
+    .modal { background: white; border-radius: 8px; padding: 24px; min-width: 400px; max-width: 560px; max-height: 90vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.18); }
+    .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 20px; }
+    .modal-footer { margin-top: 24px; display: flex; gap: 8px; justify-content: flex-end; border-top: 1px solid #f0f0f0; padding-top: 16px; }
+
+    /* Form */
+    .form-group { margin-bottom: 14px; }
+    .form-group:last-of-type { margin-bottom: 0; }
+    .form-label { display: block; font-size: 12px; font-weight: 600; color: #555; margin-bottom: 5px; }
+    .form-control { width: 100%; padding: 7px 10px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 13px; outline: none; transition: border-color 0.15s, box-shadow 0.15s; background: white; color: #1a1a2e; }
+    .form-control:focus { border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.12); }
+    .form-row { display: flex; gap: 12px; }
+    .form-row .form-group { flex: 1; min-width: 0; }
+    .form-hint { font-size: 11px; color: #aaa; margin-top: 3px; }
+    .form-check { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+    .form-check input { width: 15px; height: 15px; cursor: pointer; }
+    .form-check label { font-size: 13px; color: #333; cursor: pointer; font-weight: normal; }
+
+    /* Params box */
+    .params-box { background: #fafafa; border: 1px solid #e8e8e8; border-radius: 5px; padding: 14px; }
+    .params-box .form-group { margin-bottom: 10px; }
+    .params-box .form-group:last-child { margin-bottom: 0; }
+
+    /* Error */
+    .field-error { color: #f5222d; font-size: 12px; margin-top: 4px; }
+
+    /* Spinner */
+    .spinner { width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.35); border-top-color: white; border-radius: 50%; animation: spin 0.55s linear infinite; display: inline-block; }
+    .spinner.dark { border-color: rgba(24,144,255,0.3); border-top-color: #1890ff; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <header class="header">
+    <h1>&#9881; BACnet Simulator</h1>
+    <span class="status-badge" :class="health.bacnet_running ? 'ok' : 'err'">
+      {{ health.bacnet_running ? '&#9679; BACnet running' : '&#9675; BACnet stopped' }}
+    </span>
+    <span style="color:#555;font-size:12px">{{ health.devices }} device(s)</span>
+    <div class="header-spacer"></div>
+    <span class="header-port">:{{ apiPort }}</span>
+  </header>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- Sidebar -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Devices</span>
+        <button class="btn btn-primary btn-sm" @click="openAddDevice">+ Add</button>
+      </div>
+      <div class="device-list">
+        <div v-if="!devices.length" class="sidebar-empty">No devices yet</div>
+        <div v-for="d in devices" :key="d.id"
+             class="device-item"
+             :class="{ active: selectedDevice?.id === d.id }"
+             @click="selectDevice(d)">
+          <div class="device-dot" :class="d.enabled ? 'on' : 'off'"></div>
+          <div class="device-info">
+            <div class="device-name">{{ d.name }}</div>
+            <div class="device-instance">ID {{ d.device_instance }}</div>
+          </div>
+          <button class="device-edit-btn" @click.stop="openEditDevice(d)" title="Edit device">&#9998;</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Content -->
+    <main class="content">
+      <div v-if="!selectedDevice" class="no-device">
+        <div class="no-device-icon">&#128225;</div>
+        <div class="no-device-text">Select a device to manage its objects</div>
+      </div>
+
+      <div v-else>
+        <div class="content-header">
+          <div>
+            <div class="content-title">{{ selectedDevice.name }}</div>
+            <div class="content-subtitle">
+              Device {{ selectedDevice.device_instance }}
+              <template v-if="selectedDevice.description"> — {{ selectedDevice.description }}</template>
+              <template v-else> — {{ selectedDevice.model_name }}</template>
+            </div>
+          </div>
+          <div class="content-actions">
+            <button class="btn btn-danger btn-sm" @click="confirmDeleteDevice(selectedDevice)">Delete Device</button>
+            <button class="btn btn-primary btn-sm" @click="openAddObject">+ Add Object</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Inst.</th>
+                <th>Behavior</th>
+                <th>Units</th>
+                <th>Live Value</th>
+                <th>On</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!objects.length">
+                <td colspan="8" class="table-empty">No objects yet — click "+ Add Object"</td>
+              </tr>
+              <tr v-for="obj in objects" :key="obj.id">
+                <td style="font-weight:500">{{ obj.name }}</td>
+                <td><span class="type-chip">{{ obj.object_type }}</span></td>
+                <td style="color:#888">{{ obj.object_instance }}</td>
+                <td><span class="behavior-badge" :class="'beh-' + obj.behavior">{{ obj.behavior }}</span></td>
+                <td style="color:#aaa;font-size:12px">{{ obj.units === 'no-units' ? '—' : obj.units }}</td>
+                <td>
+                  <span :class="liveVal(obj.id) !== null ? 'val-live' : 'val-stale'">{{ fmtVal(obj) }}</span>
+                </td>
+                <td>
+                  <span class="enabled-dot" :class="obj.enabled ? 'on' : 'off'">{{ obj.enabled ? '●' : '○' }}</span>
+                </td>
+                <td style="white-space:nowrap">
+                  <button class="btn-link" @click="openEditObject(obj)">Edit</button>
+                  <button v-if="obj.behavior === 'manual'" class="btn-link warn" @click="openSetValue(obj)">Set</button>
+                  <button class="btn-link danger" @click="confirmDeleteObject(obj)">Del</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ── Modal: Add/Edit Device ── -->
+  <div v-if="devModal.open" class="overlay" @click.self="devModal.open = false">
+    <div class="modal">
+      <div class="modal-title">{{ devModal.edit ? 'Edit Device' : 'Add Device' }}</div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Device Instance *</label>
+          <input class="form-control" type="number" v-model.number="devModal.f.device_instance" min="1" max="4194302" />
+        </div>
+        <div class="form-group" style="display:flex;flex-direction:column">
+          <label class="form-label">Enabled</label>
+          <div class="form-check">
+            <input type="checkbox" id="d-enabled" v-model="devModal.f.enabled_bool">
+            <label for="d-enabled">Active</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input class="form-control" type="text" v-model="devModal.f.name" placeholder="AHU-1-Controller" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <input class="form-control" type="text" v-model="devModal.f.description" placeholder="Air Handling Unit 1" />
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Vendor Name</label>
+          <input class="form-control" type="text" v-model="devModal.f.vendor_name" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Model Name</label>
+          <input class="form-control" type="text" v-model="devModal.f.model_name" />
+        </div>
+      </div>
+
+      <div v-if="devModal.err" class="field-error" style="margin-top:8px">{{ devModal.err }}</div>
+
+      <div class="modal-footer">
+        <button class="btn btn-default" @click="devModal.open = false">Cancel</button>
+        <button class="btn btn-primary" @click="saveDevice" :disabled="devModal.saving">
+          <span v-if="devModal.saving" class="spinner"></span>
+          {{ devModal.edit ? 'Save' : 'Create' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Modal: Add/Edit Object ── -->
+  <div v-if="objModal.open" class="overlay" @click.self="objModal.open = false">
+    <div class="modal">
+      <div class="modal-title">{{ objModal.edit ? 'Edit Object' : 'Add Object' }}</div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Object Type *</label>
+          <select class="form-control" v-model="objModal.f.object_type">
+            <option v-for="t in meta.object_types" :key="t" :value="t">{{ t }}</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Instance *</label>
+          <input class="form-control" type="number" v-model.number="objModal.f.object_instance" min="0" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Name *</label>
+        <input class="form-control" type="text" v-model="objModal.f.name" placeholder="Supply Temp" />
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Units</label>
+          <select class="form-control" v-model="objModal.f.units">
+            <option v-for="u in meta.units" :key="u" :value="u">{{ u }}</option>
+          </select>
+        </div>
+        <div class="form-group" style="display:flex;flex-direction:column">
+          <label class="form-label">Enabled</label>
+          <div class="form-check">
+            <input type="checkbox" id="o-enabled" v-model="objModal.f.enabled_bool">
+            <label for="o-enabled">Active</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Behavior *</label>
+        <select class="form-control" v-model="objModal.f.behavior">
+          <option v-for="b in meta.behaviors" :key="b" :value="b">{{ b }}</option>
+        </select>
+      </div>
+
+      <!-- Behavior params -->
+      <div class="params-box">
+        <!-- constant -->
+        <template v-if="objModal.f.behavior === 'constant'">
+          <div class="form-group">
+            <label class="form-label">Value</label>
+            <input class="form-control" type="number" v-model.number="objModal.p.value" step="any" />
+          </div>
+        </template>
+        <!-- manual -->
+        <template v-else-if="objModal.f.behavior === 'manual'">
+          <div class="form-group">
+            <label class="form-label">Initial Value</label>
+            <input class="form-control" type="number" v-model.number="objModal.p.value" step="any" />
+            <div class="form-hint">Can be overridden at runtime via "Set" action</div>
+          </div>
+        </template>
+        <!-- sine -->
+        <template v-else-if="objModal.f.behavior === 'sine'">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Base</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.base" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Amplitude</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.amplitude" step="any" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Period (hours)</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.period_hours" step="any" min="0.1" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Phase (hours)</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.phase_hours" step="any" />
+            </div>
+          </div>
+        </template>
+        <!-- noise -->
+        <template v-else-if="objModal.f.behavior === 'noise'">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Base</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.base" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Noise ±</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.noise" step="any" min="0" />
+            </div>
+          </div>
+        </template>
+        <!-- random_walk -->
+        <template v-else-if="objModal.f.behavior === 'random_walk'">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Initial Value</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.value" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Step ±</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.step" step="any" min="0" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Min</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.min" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Max</label>
+              <input class="form-control" type="number" v-model.number="objModal.p.max" step="any" />
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div v-if="objModal.err" class="field-error" style="margin-top:10px">{{ objModal.err }}</div>
+
+      <div class="modal-footer">
+        <button class="btn btn-default" @click="objModal.open = false">Cancel</button>
+        <button class="btn btn-primary" @click="saveObject" :disabled="objModal.saving">
+          <span v-if="objModal.saving" class="spinner"></span>
+          {{ objModal.edit ? 'Save' : 'Create' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Modal: Set Manual Value ── -->
+  <div v-if="setVal.open" class="overlay" @click.self="setVal.open = false">
+    <div class="modal" style="min-width:320px;max-width:360px">
+      <div class="modal-title">Set Value — {{ setVal.obj?.name }}</div>
+      <div class="form-group">
+        <label class="form-label">New Value</label>
+        <input class="form-control" type="number" v-model.number="setVal.value" step="any" @keyup.enter="doSetValue" autofocus />
+      </div>
+      <div v-if="setVal.err" class="field-error">{{ setVal.err }}</div>
+      <div class="modal-footer">
+        <button class="btn btn-default" @click="setVal.open = false">Cancel</button>
+        <button class="btn btn-primary" @click="doSetValue" :disabled="setVal.saving">
+          <span v-if="setVal.saving" class="spinner"></span>
+          Set
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Modal: Confirm Delete ── -->
+  <div v-if="confirm.open" class="overlay" @click.self="confirm.open = false">
+    <div class="modal" style="min-width:320px;max-width:400px">
+      <div class="modal-title">Confirm Delete</div>
+      <p style="color:#555;font-size:14px;margin-bottom:4px">{{ confirm.msg }}</p>
+      <p style="color:#aaa;font-size:12px">This action cannot be undone.</p>
+      <div class="modal-footer">
+        <button class="btn btn-default" @click="confirm.open = false">Cancel</button>
+        <button class="btn btn-danger" @click="confirm.go">Delete</button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- #app -->
+
+<script>
+const { createApp, ref, reactive, watch, onMounted, onUnmounted } = Vue;
+
+createApp({
+  setup() {
+    const apiPort = location.port || '47900';
+
+    // ── State ──
+    const health  = reactive({ status: 'unknown', bacnet_running: false, devices: 0 });
+    const meta    = reactive({ object_types: [], behaviors: [], units: [] });
+    const devices = ref([]);
+    const selectedDevice = ref(null);
+    const objects = ref([]);
+    const live    = ref({});   // obj id → current value from WS
+
+    // ── WebSocket ──
+    let ws = null;
+    function wsConnect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws.onmessage = e => {
+        const data = JSON.parse(e.data);
+        const map = {};
+        (data.devices || []).forEach(d => (d.objects || []).forEach(o => { map[o.id] = o.value; }));
+        live.value = map;
+      };
+      ws.onclose = () => setTimeout(wsConnect, 3000);
+      ws.onerror = () => ws.close();
+    }
+
+    function liveVal(id) {
+      const v = live.value[id];
+      return v !== undefined ? v : null;
+    }
+
+    function fmtVal(obj) {
+      const v = liveVal(obj.id);
+      if (v === null) return '—';
+      if (typeof v === 'boolean') return v ? 'ON' : 'OFF';
+      const n = Number(v);
+      return isNaN(n) ? String(v) : n.toFixed(2);
+    }
+
+    // ── HTTP helpers ──
+    async function api(path, opts = {}) {
+      const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.detail || res.statusText);
+      }
+      if (res.status === 204) return null;
+      return res.json();
+    }
+
+    // ── Loaders ──
+    async function loadHealth() {
+      try { Object.assign(health, await api('/health')); } catch {}
+    }
+    async function loadMeta() {
+      try { Object.assign(meta, await api('/meta')); } catch {}
+    }
+    async function loadDevices() {
+      try {
+        devices.value = await api('/devices');
+        if (selectedDevice.value) {
+          const found = devices.value.find(d => d.id === selectedDevice.value.id);
+          selectedDevice.value = found ?? null;
+          if (selectedDevice.value) await loadObjects();
+        }
+      } catch {}
+    }
+    async function loadObjects() {
+      if (!selectedDevice.value) return;
+      try { objects.value = await api(`/devices/${selectedDevice.value.id}/objects`); } catch {}
+    }
+    function selectDevice(d) {
+      selectedDevice.value = d;
+      loadObjects();
+    }
+
+    // ── Device modal ──
+    const devModal = reactive({
+      open: false, edit: false, saving: false, err: '',
+      f: { device_instance: 1001, name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled_bool: true, id: null },
+    });
+
+    function openAddDevice() {
+      devModal.edit = false; devModal.err = '';
+      Object.assign(devModal.f, { device_instance: 1001, name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled_bool: true, id: null });
+      devModal.open = true;
+    }
+    function openEditDevice(d) {
+      devModal.edit = true; devModal.err = '';
+      Object.assign(devModal.f, { ...d, enabled_bool: !!d.enabled });
+      devModal.open = true;
+    }
+    async function saveDevice() {
+      devModal.err = '';
+      if (!devModal.f.name.trim()) { devModal.err = 'Name is required'; return; }
+      devModal.saving = true;
+      const body = { ...devModal.f, enabled: devModal.f.enabled_bool ? 1 : 0 };
+      delete body.enabled_bool;
+      try {
+        if (devModal.edit) {
+          await api(`/devices/${body.id}`, { method: 'PUT', body: JSON.stringify(body) });
+        } else {
+          delete body.id;
+          await api('/devices', { method: 'POST', body: JSON.stringify(body) });
+        }
+        devModal.open = false;
+        await loadDevices();
+        await loadHealth();
+      } catch (e) {
+        devModal.err = e.message;
+      } finally {
+        devModal.saving = false;
+      }
+    }
+
+    // ── Object modal ──
+    const DEFAULT_PARAMS = {
+      constant:    { value: 0 },
+      manual:      { value: 0 },
+      sine:        { base: 20.0, amplitude: 5.0, period_hours: 24.0, phase_hours: 0.0 },
+      noise:       { base: 0.0, noise: 1.0 },
+      random_walk: { value: 50.0, step: 1.0, min: 0.0, max: 100.0 },
+    };
+    const objModal = reactive({
+      open: false, edit: false, saving: false, err: '', editId: null,
+      f: { object_type: 'analog-input', object_instance: 1, name: '', units: 'no-units', behavior: 'constant', enabled_bool: true },
+      p: { value: 0 },
+    });
+    watch(() => objModal.f.behavior, b => {
+      objModal.p = { ...(DEFAULT_PARAMS[b] || { value: 0 }) };
+    });
+
+    function openAddObject() {
+      objModal.edit = false; objModal.editId = null; objModal.err = '';
+      Object.assign(objModal.f, { object_type: meta.object_types[0] || 'analog-input', object_instance: 1, name: '', units: 'no-units', behavior: 'constant', enabled_bool: true });
+      objModal.p = { value: 0 };
+      objModal.open = true;
+    }
+    function openEditObject(obj) {
+      objModal.edit = true; objModal.editId = obj.id; objModal.err = '';
+      Object.assign(objModal.f, { ...obj, enabled_bool: !!obj.enabled });
+      try { objModal.p = JSON.parse(obj.behavior_params) || { value: 0 }; }
+      catch { objModal.p = { value: 0 }; }
+      objModal.open = true;
+    }
+    async function saveObject() {
+      objModal.err = '';
+      if (!objModal.f.name.trim()) { objModal.err = 'Name is required'; return; }
+      objModal.saving = true;
+      const body = { ...objModal.f, enabled: objModal.f.enabled_bool ? 1 : 0, behavior_params: JSON.stringify(objModal.p) };
+      delete body.enabled_bool; delete body.id; delete body.device_id;
+      try {
+        if (objModal.edit) {
+          await api(`/devices/${selectedDevice.value.id}/objects/${objModal.editId}`, { method: 'PUT', body: JSON.stringify(body) });
+        } else {
+          await api(`/devices/${selectedDevice.value.id}/objects`, { method: 'POST', body: JSON.stringify(body) });
+        }
+        objModal.open = false;
+        await loadObjects();
+      } catch (e) {
+        objModal.err = e.message;
+      } finally {
+        objModal.saving = false;
+      }
+    }
+
+    // ── Set value modal ──
+    const setVal = reactive({ open: false, obj: null, value: 0, saving: false, err: '' });
+    function openSetValue(obj) {
+      setVal.obj = obj; setVal.err = '';
+      setVal.value = liveVal(obj.id) ?? 0;
+      setVal.open = true;
+    }
+    async function doSetValue() {
+      setVal.saving = true; setVal.err = '';
+      try {
+        await api(`/devices/${selectedDevice.value.id}/objects/${setVal.obj.id}/value`, {
+          method: 'POST', body: JSON.stringify({ value: setVal.value }),
+        });
+        setVal.open = false;
+      } catch (e) {
+        setVal.err = e.message;
+      } finally {
+        setVal.saving = false;
+      }
+    }
+
+    // ── Confirm modal ──
+    const confirm = reactive({ open: false, msg: '', go: null });
+    function confirmDeleteDevice(d) {
+      confirm.msg = `Delete device "${d.name}" (ID ${d.device_instance}) and all its objects?`;
+      confirm.go = async () => {
+        confirm.open = false;
+        await api(`/devices/${d.id}`, { method: 'DELETE' });
+        if (selectedDevice.value?.id === d.id) { selectedDevice.value = null; objects.value = []; }
+        await loadDevices(); await loadHealth();
+      };
+      confirm.open = true;
+    }
+    function confirmDeleteObject(obj) {
+      confirm.msg = `Delete object "${obj.name}"?`;
+      confirm.go = async () => {
+        confirm.open = false;
+        await api(`/devices/${selectedDevice.value.id}/objects/${obj.id}`, { method: 'DELETE' });
+        await loadObjects();
+      };
+      confirm.open = true;
+    }
+
+    // ── Lifecycle ──
+    let healthTimer = null;
+    onMounted(async () => {
+      await loadMeta();
+      await loadDevices();
+      await loadHealth();
+      wsConnect();
+      healthTimer = setInterval(loadHealth, 10_000);
+    });
+    onUnmounted(() => {
+      clearInterval(healthTimer);
+      ws?.close();
+    });
+
+    return {
+      apiPort, health, meta, devices, selectedDevice, objects,
+      liveVal, fmtVal, selectDevice,
+      devModal, openAddDevice, openEditDevice, saveDevice,
+      objModal, openAddObject, openEditObject, saveObject,
+      setVal, openSetValue, doSetValue,
+      confirm, confirmDeleteDevice, confirmDeleteObject,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
