@@ -5,6 +5,7 @@ import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import ObjectDrawer from './components/ObjectDrawer.vue'
 import ProfilesDrawer from './components/ProfilesDrawer.vue'
+import TemplatePickerModal from './components/TemplatePickerModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import type { Device, SimObject, Meta, Health } from './types'
 import { api } from './api'
@@ -23,7 +24,8 @@ const deviceDrawerOpen  = ref(false)
 const editingDevice     = ref<Device | null>(null)
 const objectDrawerOpen  = ref(false)
 const editingObject     = ref<SimObject | null>(null)
-const profilesDrawerOpen = ref(false)
+const profilesDrawerOpen   = ref(false)
+const templateModalOpen    = ref(false)
 
 // Set-value modal
 const setValOpen    = ref(false)
@@ -247,7 +249,10 @@ onUnmounted(() => {
                   <template v-else> — {{ selectedDevice.model_name }}</template>
                 </div>
               </div>
-              <a-button type="primary" @click="openAddObject">+ Add Object</a-button>
+              <a-space>
+                <a-button @click="templateModalOpen = true">From Template</a-button>
+                <a-button type="primary" @click="openAddObject">+ Add Object</a-button>
+              </a-space>
             </div>
 
             <a-table
@@ -316,6 +321,13 @@ onUnmounted(() => {
     <ProfilesDrawer
       v-model:open="profilesDrawerOpen"
       @loaded="async () => { await loadDevices(); selectedDevice.value = null; objects.value = []; await loadHealth() }"
+    />
+
+    <!-- Template picker -->
+    <TemplatePickerModal
+      v-model:open="templateModalOpen"
+      :device-id="selectedDevice?.id"
+      @applied="loadObjects"
     />
 
     <!-- Set value modal -->
