@@ -28,14 +28,14 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 from bacpypes3.local.device import DeviceObject
-from bacpypes3.local.analog import AnalogInputObject
-from bacpypes3.local.binary import BinaryInputObject
+from bacpypes3.local.analog import AnalogInputObject, AnalogOutputObject, AnalogValueObject
+from bacpypes3.local.binary import BinaryInputObject, BinaryOutputObject, BinaryValueObject
 from bacpypes3.app import Application
 from bacpypes3.primitivedata import Real, ObjectIdentifier
 from bacpypes3.basetypes import EngineeringUnits, BinaryPV
 from bacpypes3.debugging import bacpypes_debugging, ModuleLogger
 from bacpypes3.local.networkport import NetworkPortObject
-from bacpypes3.apdu import ReadPropertyACK
+from bacpypes3.apdu import ReadPropertyACK, SimpleAckPDU
 
 import logging
 logging.basicConfig(
@@ -378,6 +378,16 @@ class Database:
             conn.execute("UPDATE objects SET manual_value=? WHERE id=?", (value, obj_id))
             conn.commit()
 
+    def write_object(self, obj_id: int, value: Any) -> None:
+        """Switch object to manual behavior and persist the written value."""
+        params = json.dumps({"value": value})
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE objects SET behavior='manual', behavior_params=?, manual_value=? WHERE id=?",
+                (params, value, obj_id),
+            )
+            conn.commit()
+
     def delete_object(self, obj_id: int) -> bool:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM objects WHERE id=?", (obj_id,))
@@ -694,6 +704,7 @@ class SimApplication(Application):
         super().__init__(*args, **kwargs)
         self._virtual_devices: dict[int, DeviceObject] = {}
         self._virtual_object_lists: dict[int, list] = {}
+        self._sim_engine: Any = None  # set by SimEngine after construction
 
     def get_object_id(self, objid):
         obj = super().get_object_id(objid)
@@ -761,6 +772,64 @@ class SimApplication(Application):
                 return
         await super().do_ReadPropertyRequest(apdu)
 
+    async def do_WritePropertyRequest(self, apdu) -> None:
+        if self._sim_engine is None:
+            await super().do_WritePropertyRequest(apdu)
+            return
+
+        # Only intercept present-value writes (property identifier 85)
+        prop = apdu.propertyIdentifier
+        try:
+            prop_code = int(prop)
+        except Exception:
+            prop_code = getattr(prop, "value", None)
+        if prop_code != 85:
+            await super().do_WritePropertyRequest(apdu)
+            return
+
+        # Find the bacpypes3 object
+        obj = self.get_object_id(apdu.objectIdentifier)
+        if obj is None:
+            await super().do_WritePropertyRequest(apdu)
+            return
+
+        # Resolve to DB id by object identity
+        db_id: Optional[int] = None
+        for did, (bobj, _) in self._sim_engine._objects.items():
+            if bobj is obj:
+                db_id = did
+                break
+        if db_id is None:
+            await super().do_WritePropertyRequest(apdu)
+            return
+
+        obj_row = await asyncio.to_thread(self._sim_engine.db.get_object, db_id)
+        if not obj_row:
+            await super().do_WritePropertyRequest(apdu)
+            return
+
+        otype = obj_row["object_type"]
+        WRITABLE = {"analog-output", "analog-value", "binary-output", "binary-value"}
+        if otype not in WRITABLE:
+            await super().do_WritePropertyRequest(apdu)
+            return
+
+        # Extract the written value
+        try:
+            if "analog" in otype:
+                value: Any = float(apdu.propertyValue.cast_out(Real))
+            else:
+                bpv = apdu.propertyValue.cast_out(BinaryPV)
+                value = (str(bpv) == "active")
+        except Exception as e:
+            log.warning("WriteProperty decode error on %s: %s", apdu.objectIdentifier, e)
+            await super().do_WritePropertyRequest(apdu)
+            return
+
+        # Persist to DB and update in-memory sim
+        await self._sim_engine.write_object(db_id, value)
+        await self.response(SimpleAckPDU(context=apdu))
+
 
 # ─── Sim Engine ───────────────────────────────────────────────────────────────
 
@@ -813,6 +882,7 @@ class SimEngine:
         )
 
         self.app = SimApplication.from_object_list([primary_dev_obj, self.network_port])
+        self.app._sim_engine = self
         await asyncio.sleep(0.3)
 
         self.app._virtual_devices[primary["device_instance"]] = primary_dev_obj
@@ -879,13 +949,23 @@ class SimEngine:
         # even across virtual devices — prefix with device name to guarantee uniqueness.
         obj_name = f"{device_name}.{obj_row['name']}" if device_name else obj_row["name"]
 
-        if otype in ("analog-input", "analog-output", "analog-value"):
+        _ANALOG_CLS = {
+            "analog-input":  AnalogInputObject,
+            "analog-output": AnalogOutputObject,
+            "analog-value":  AnalogValueObject,
+        }
+        _BINARY_CLS = {
+            "binary-input":  BinaryInputObject,
+            "binary-output": BinaryOutputObject,
+            "binary-value":  BinaryValueObject,
+        }
+        if otype in _ANALOG_CLS:
             units_str = obj_row.get("units") or "no-units"
             try:
                 units = EngineeringUnits(units_str)
             except Exception:
                 units = EngineeringUnits("no-units")
-            bacnet_obj = AnalogInputObject(
+            bacnet_obj = _ANALOG_CLS[otype](
                 objectIdentifier=f"{otype},{phys}",
                 objectName=obj_name,
                 presentValue=Real(float(val)),
@@ -893,7 +973,8 @@ class SimEngine:
             )
         else:
             active = bool(val) if not isinstance(val, bool) else val
-            bacnet_obj = BinaryInputObject(
+            cls = _BINARY_CLS.get(otype, BinaryInputObject)
+            bacnet_obj = cls(
                 objectIdentifier=f"{otype},{phys}",
                 objectName=obj_name,
                 presentValue=BinaryPV("active" if active else "inactive"),
@@ -993,6 +1074,20 @@ class SimEngine:
         obj_row = self.db.get_object(obj_id)
         if obj_row:
             self._update_value(bacnet_obj, obj_row["object_type"], value)
+        return True
+
+    async def write_object(self, obj_id: int, value: Any) -> bool:
+        """Handle a BACnet WriteProperty — switches the object to manual, persists, updates live."""
+        if obj_id not in self._objects:
+            return False
+        bacnet_obj, _ = self._objects[obj_id]
+        obj_row = await asyncio.to_thread(self.db.get_object, obj_id)
+        if not obj_row:
+            return False
+        await asyncio.to_thread(self.db.write_object, obj_id, value)
+        new_b = ManualBehavior({"value": value})
+        self._objects[obj_id] = (bacnet_obj, new_b)
+        self._update_value(bacnet_obj, obj_row["object_type"], value)
         return True
 
     def get_state(self) -> dict:
