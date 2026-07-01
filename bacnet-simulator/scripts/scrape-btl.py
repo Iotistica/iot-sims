@@ -95,6 +95,8 @@ def scrape(headless: bool = True, debug: bool = False) -> dict:
             sys.exit(1)
 
         # ── Step 2: scrape each manufacturer page ──────────────────────────────
+        first_product_logged = False  # log the first extracted product for diagnosis
+
         for i, mfr in enumerate(manufacturers, 1):
             mfr_name = mfr["name"]
             mfr_id   = mfr["id"]
@@ -104,22 +106,41 @@ def scrape(headless: bool = True, debug: bool = False) -> dict:
 
             try:
                 page.goto(url, timeout=45_000, wait_until="domcontentloaded")
-                page.wait_for_timeout(2500)
+                # Wait up to 8s for any product element to appear before scraping
+                try:
+                    page.wait_for_selector(
+                        "table tr td, .product, .listing-item, [class*='product'], [class*='listing']",
+                        timeout=8_000
+                    )
+                except PlaywrightTimeout:
+                    pass  # fall through to extraction anyway
+                page.wait_for_timeout(1000)
 
-                if debug and i <= 3:
+                if debug and i <= 5:
                     page.screenshot(path=f"btl-mfr-{i}.png", full_page=True)
                     Path(f"btl-mfr-{i}.html").write_text(page.content(), encoding="utf-8")
 
-                products = _extract_products_from_page(page)
+                result = _extract_products_from_page(page)
+                products  = result["products"]
+                strategy  = result["strategy"]
+
+                # Log the first extraction in detail to verify correctness
+                if not first_product_logged and products:
+                    first_product_logged = True
+                    print(f"\n  [DIAGNOSIS] Strategy '{strategy}' matched on {mfr_name}:")
+                    for p in products[:5]:
+                        print(f"    {p}")
 
                 if products:
-                    print(f" → {len(products)} products")
+                    print(f" → {len(products)} [{strategy}]")
                     for prod in products:
                         _add(vendors, mfr_name, prod["name"], prod.get("type", ""))
                 else:
-                    print(" → 0 (not found)")
+                    dbg = result.get("debug", {})
+                    print(f" → 0 [tables={dbg.get('tables',0)} rows={dbg.get('tableRows',0)}]")
+                    if i <= 3:  # print body preview for first few misses
+                        print(f"    BODY: {str(dbg.get('bodyPreview',''))[:300]}")
 
-                # polite rate limit
                 time.sleep(0.3)
 
             except PlaywrightTimeout:
@@ -132,78 +153,80 @@ def scrape(headless: bool = True, debug: bool = False) -> dict:
     return _build(vendors)
 
 
-def _extract_products_from_page(page) -> list[dict]:
+def _extract_products_from_page(page) -> dict:
     """
     Try several strategies to find product rows on the current page.
-    Returns list of {name, type} dicts.
+    Returns { products: [{name, type}], strategy: str }.
     """
     return page.evaluate(f"""
         () => {{
-            const results = [];
-            const profileRe = {PROFILE_RE.pattern!r};
+            const profileRe = /{PROFILE_RE.pattern}/;
 
-            // ── Strategy 1: HTML table rows ────────────────────────────────────
-            const rows = document.querySelectorAll('table tr');
-            rows.forEach(row => {{
+            // ── Strategy 1: HTML table rows (2+ columns) ───────────────────────
+            const tableRows = [];
+            document.querySelectorAll('table tr').forEach(row => {{
                 const cells = Array.from(row.querySelectorAll('td')).map(c => c.innerText.trim());
-                if (cells.length >= 1 && cells[0].length > 2 && !/^(product|model|name|type)$/i.test(cells[0])) {{
+                if (cells.length >= 2 && cells[0].length > 2 && !/^(product|model|name|type|manufacturer)$/i.test(cells[0])) {{
                     const text = cells.join(' ');
                     const m = text.match(profileRe);
-                    results.push({{ name: cells[0], type: m ? m[1] : '' }});
+                    tableRows.push({{ name: cells[0], type: m ? m[1] : '' }});
                 }}
             }});
-            if (results.length > 0) return results;
+            if (tableRows.length > 0) return {{ products: tableRows, strategy: 'table-rows' }};
 
-            // ── Strategy 2: common CMS list / card classes ─────────────────────
+            // ── Strategy 2: single-column table (name only) ────────────────────
+            const singleRows = [];
+            document.querySelectorAll('table tr td:first-child').forEach(td => {{
+                const text = td.innerText.trim();
+                if (text.length > 4 && text.length < 200 && !/^(product|model|name|filter)$/i.test(text)) {{
+                    const m = td.closest('tr')?.innerText.match(profileRe);
+                    singleRows.push({{ name: text, type: m ? m[1] : '' }});
+                }}
+            }});
+            if (singleRows.length > 0) return {{ products: singleRows, strategy: 'single-col-table' }};
+
+            // ── Strategy 3: common CMS list / card classes ─────────────────────
             const candidates = [
                 '.product-listing-item', '.btl-listing-item', '.btl-product',
                 '.listing-item', '.product-item', '.product-row',
-                '.views-row', '.view-row', '.wpb_row', 'li.product',
+                '.views-row', '.view-row', 'li.product',
                 '[class*="listing-item"]', '[class*="product-row"]',
             ];
             for (const sel of candidates) {{
                 const items = document.querySelectorAll(sel);
-                if (items.length > 2) {{
+                if (items.length >= 1) {{
+                    const found = [];
                     items.forEach(el => {{
                         const text = el.innerText.trim();
                         if (text && text.length > 3 && text.length < 500) {{
                             const m = text.match(profileRe);
-                            results.push({{ name: text.split('\\n')[0].trim(), type: m ? m[1] : '' }});
+                            found.push({{ name: text.split('\\n')[0].trim(), type: m ? m[1] : '' }});
                         }}
                     }});
-                    if (results.length) return results;
+                    if (found.length) return {{ products: found, strategy: 'css:' + sel }};
                 }}
             }}
 
-            // ── Strategy 3: JavaScript data blobs in <script> tags ─────────────
-            // Some WP plugins embed product data as JSON in inline scripts.
-            const scripts = Array.from(document.querySelectorAll('script:not([src])'));
-            for (const s of scripts) {{
+            // ── Strategy 4: JavaScript data blobs in <script> tags ─────────────
+            for (const s of document.querySelectorAll('script:not([src])')) {{
                 const src = s.textContent || '';
-                // Look for JSON arrays that might be product data
-                const arrayMatch = src.match(/(?:var|let|const|window\\.\\w+)\\s*=\\s*(\[\\{{.*?\\}}.*?\\])/s);
+                const arrayMatch = src.match(/(?:var |let |const |window\\.\\w+\\s*=\\s*)(\[\\{{[\\s\\S]*?\\}}\\])/);
                 if (arrayMatch) {{
                     try {{
                         const data = JSON.parse(arrayMatch[1]);
-                        if (Array.isArray(data) && data.length > 1) {{
-                            data.forEach(item => {{
-                                const name = item.name || item.model || item.product || item.title || '';
-                                const type = item.profile || item.type || item.category || '';
-                                if (name && name.length > 2) {{
-                                    results.push({{ name: String(name).trim(), type: String(type).trim() }});
-                                }}
-                            }});
-                            if (results.length) return results;
+                        if (Array.isArray(data) && data.length >= 1) {{
+                            const found = data.map(item => ({{
+                                name: String(item.name || item.model || item.product || item.title || '').trim(),
+                                type: String(item.profile || item.type || item.category || '').trim(),
+                            }})).filter(x => x.name.length > 2);
+                            if (found.length) return {{ products: found, strategy: 'js-blob' }};
                         }}
                     }} catch(e) {{}}
                 }}
-                // Look for wp_localize_script style objects with product arrays
-                const matches = [...src.matchAll(/"(product_name|model|ProductName)"\\s*:\\s*"([^"]+)"/g)];
-                matches.forEach(m => results.push({{ name: m[2], type: '' }}));
             }}
-            if (results.length) return results;
 
-            // ── Strategy 4: scan all leaf text nodes for profile code patterns ──
+            // ── Strategy 5: scan all leaf text nodes for profile code patterns ──
+            const textNodes = [];
             const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
             let node;
             while ((node = walker.nextNode())) {{
@@ -212,13 +235,22 @@ def _extract_products_from_page(page) -> list[dict]:
                     const m = text.match(profileRe);
                     if (m) {{
                         const name = text.replace(profileRe, '').trim().replace(/^[-|·\\s]+|[-|·\\s]+$/g, '');
-                        if (name && name.length > 3) {{
-                            results.push({{ name, type: m[1] }});
-                        }}
+                        if (name && name.length > 3) textNodes.push({{ name, type: m[1] }});
                     }}
                 }}
             }}
-            return results;
+            if (textNodes.length) return {{ products: textNodes, strategy: 'text-nodes' }};
+
+            // ── Strategy 6: dump page structure for diagnosis ──────────────────
+            return {{
+                products: [],
+                strategy: 'none',
+                debug: {{
+                    tables: document.querySelectorAll('table').length,
+                    tableRows: document.querySelectorAll('table tr').length,
+                    bodyPreview: document.body.innerText.slice(0, 800),
+                }}
+            }};
         }}
     """)
 
