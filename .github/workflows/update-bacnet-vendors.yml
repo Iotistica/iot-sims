@@ -10,6 +10,7 @@ jobs:
   scrape:
     name: Scrape BTL Product Database
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
 

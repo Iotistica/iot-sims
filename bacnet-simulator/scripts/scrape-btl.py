@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """
-Scrapes the BACnet International BTL product database and outputs
-bacnet-vendors.json to bacnet-simulator/.
+Scrapes the BACnet International BTL product database.
+
+What we learned from the first debug run:
+- Manufacturer select: name='manu', values are numeric IDs (e.g. 345 = '75F')
+- Profile select: name='profile', values are numeric IDs
+- Correct filter URL: ?s=product_listing&filter_product_listing=1&manu=<id>
+- Only 17 network requests on load — no separate AJAX data call visible,
+  so products are either server-rendered or embedded in a JS data blob
 
 Strategy:
-  1. Intercept the AJAX/fetch request the page makes when filtering
-  2. If that fails, iterate through manufacturer options via the UI
-  3. If that fails, fall back to parsing any visible text
+  1. Load base page, extract manu select options (name → numeric id)
+  2. For each manufacturer, GET ?...&manu=<id> and extract products
+  3. Look for products in: DOM tables, class-based elements, JS script blobs
+  4. Fall back to full-page text scan for BTL profile codes
 
 Usage:
-    pip install playwright beautifulsoup4 requests
+    pip install playwright
     playwright install chromium
-    python scrape-btl.py [--output path/to/bacnet-vendors.json] [--debug]
+    python scrape-btl.py [--output path/to/bacnet-vendors.json] [--debug] [--workers N]
 """
 
 import argparse
 import json
-import os
 import re
 import sys
 import time
@@ -26,334 +32,206 @@ from pathlib import Path
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 except ImportError:
-    print("ERROR: playwright not installed. Run: pip install playwright && playwright install chromium", file=sys.stderr)
+    print("ERROR: pip install playwright && playwright install chromium", file=sys.stderr)
     sys.exit(1)
 
-BTL_URL = "https://www.bacnetinternational.net/btl/?s=product_listing&filter_product_listing=1"
+BASE_URL = "https://www.bacnetinternational.net/btl/?s=product_listing&filter_product_listing=1"
 
 PROFILE_LABELS = {
-    "B-AWS":   "Workstation",
-    "B-OWS":   "Operator Workstation",
-    "B-OD":    "Operator Display",
-    "B-LOD":   "Lightweight Operator Display",
-    "B-BC":    "Building Controller",
-    "B-AAC":   "Advanced Application Controller",
-    "B-ASC":   "Application Specific Controller",
-    "B-LSC":   "Lighting Application Specific Controller",
-    "B-SS":    "Smart Sensor",
-    "B-SA":    "Smart Actuator",
-    "B-RTR":   "Router",
-    "B-GW":    "Gateway",
-    "B-BBMD":  "BBMD",
-    "B-LD":    "Lighting Director",
-    "B-GEN":   "Generic",
-    "B-SCHUB": "SC Hub",
+    "B-AWS": "Workstation", "B-OWS": "Operator Workstation",
+    "B-OD": "Operator Display", "B-LOD": "Lightweight Operator Display",
+    "B-BC": "Building Controller", "B-AAC": "Advanced Application Controller",
+    "B-ASC": "Application Specific Controller",
+    "B-LSC": "Lighting Application Specific Controller",
+    "B-SS": "Smart Sensor", "B-SA": "Smart Actuator",
+    "B-RTR": "Router", "B-GW": "Gateway", "B-BBMD": "BBMD",
+    "B-LD": "Lighting Director", "B-GEN": "Generic", "B-SCHUB": "SC Hub",
 }
+
+PROFILE_RE = re.compile(r'\b(B-(?:AWS|OWS|OD|LOD|XAWS|ALSWS|AACWS|BC|AAC|ASC|LSC|LD|SS|SA|RTR|GW|BBMD|GEN|SCHUB))\b')
 
 
 def scrape(headless: bool = True, debug: bool = False) -> dict:
     vendors: dict[str, list[dict]] = {}
-    captured_requests: list[dict] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ctx = browser.new_context(
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 900},
         )
-        page = context.new_page()
 
-        # --- Intercept all network requests to find the data endpoint ---
-        def on_request(request):
-            url = request.url
-            # Only capture interesting requests (skip images, css, fonts)
-            if any(ext in url for ext in ['.png', '.jpg', '.css', '.woff', '.gif', '.ico']):
-                return
-            captured_requests.append({
-                "url": url,
-                "method": request.method,
-                "post_data": request.post_data,
-            })
-
-        def on_response(response):
-            url = response.url
-            ct = response.headers.get("content-type", "")
-            # Capture JSON responses that look like product data
-            if "json" in ct and any(kw in url.lower() for kw in ["product", "listing", "btl", "ajax", "filter"]):
-                try:
-                    body = response.body()
-                    print(f"  [API] JSON response from: {url}")
-                    if debug:
-                        print(f"       Preview: {body[:500]}")
-                except Exception:
-                    pass
-
-        page.on("request", on_request)
-        page.on("response", on_response)
-
-        print(f"Loading: {BTL_URL}")
-        try:
-            page.goto(BTL_URL, timeout=60_000, wait_until="networkidle")
-        except PlaywrightTimeout:
-            print("WARNING: networkidle timeout — continuing anyway")
-            page.goto(BTL_URL, timeout=60_000, wait_until="domcontentloaded")
-            page.wait_for_timeout(5000)
+        # ── Step 1: load base page, get manufacturer list ──────────────────────
+        page = ctx.new_page()
+        print(f"Loading base page…")
+        page.goto(BASE_URL, timeout=60_000, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
 
         if debug:
-            page.screenshot(path="btl-initial.png", full_page=True)
-            with open("btl-initial.html", "w", encoding="utf-8") as f:
-                f.write(page.content())
-            print("Saved btl-initial.png and btl-initial.html")
+            page.screenshot(path="btl-base.png", full_page=True)
+            Path("btl-base.html").write_text(page.content(), encoding="utf-8")
+            print("Saved btl-base.png + btl-base.html")
 
-        # --- Dump all network requests seen ---
-        print(f"\nNetwork requests captured: {len(captured_requests)}")
-        ajax_urls = [r for r in captured_requests if "ajax" in r["url"].lower() or "admin-ajax" in r["url"].lower() or "filter" in r["url"].lower()]
-        for r in ajax_urls[:10]:
-            print(f"  {r['method']} {r['url']}")
-            if r.get("post_data"):
-                print(f"    POST: {r['post_data'][:200]}")
-
-        # --- Strategy 1: Find all select elements and their options ---
-        print("\nInspecting page selects...")
-        selects_info = page.evaluate("""
+        manufacturers: list[dict] = page.evaluate("""
             () => {
-                const result = [];
-                document.querySelectorAll('select').forEach(sel => {
-                    result.push({
-                        name: sel.name,
-                        id: sel.id,
-                        className: sel.className,
-                        optionCount: sel.options.length,
-                        firstOptions: Array.from(sel.options).slice(0, 5).map(o => ({value: o.value, text: o.text})),
-                    });
-                });
-                return result;
+                const sel = document.querySelector('select[name="manu"]');
+                if (!sel) return [];
+                return Array.from(sel.options)
+                    .map(o => ({ id: o.value.trim(), name: o.text.trim() }))
+                    .filter(o => o.id && o.id !== '' && o.name !== 'Filter by Manufacturer');
             }
         """)
-        for s in selects_info:
-            print(f"  select name={s['name']!r} id={s['id']!r} class={s['className']!r} options={s['optionCount']}")
-            for opt in s['firstOptions']:
-                print(f"    option value={opt['value']!r} text={opt['text']!r}")
-
-        # --- Find the manufacturer select ---
-        mfr_select_info = None
-        for s in selects_info:
-            if s['optionCount'] > 50:  # manufacturer list has 235+ options
-                mfr_select_info = s
-                print(f"\nUsing select as manufacturer list: name={s['name']!r} id={s['id']!r}")
-                break
-
-        if not mfr_select_info:
-            print("WARNING: Could not identify manufacturer select element")
-        else:
-            # Get all manufacturer options
-            sel_selector = f"select[name='{mfr_select_info['name']}']" if mfr_select_info['name'] else f"select#{mfr_select_info['id']}" if mfr_select_info['id'] else "select"
-            manufacturers = page.evaluate(f"""
-                () => {{
-                    const sel = document.querySelector({json.dumps(sel_selector)});
-                    if (!sel) return [];
-                    return Array.from(sel.options)
-                        .map(o => ({{ value: o.value.trim(), text: o.text.trim() }}))
-                        .filter(o => o.value && o.value !== '' && o.value !== '0');
-                }}
+        print(f"Manufacturers found: {len(manufacturers)}")
+        if not manufacturers:
+            print("ERROR: Could not read manu select — page structure changed", file=sys.stderr)
+            # print page selects for diagnosis
+            selects = page.evaluate("""
+                () => Array.from(document.querySelectorAll('select')).map(s => ({
+                    name: s.name, id: s.id, options: s.options.length,
+                    sample: Array.from(s.options).slice(0,3).map(o => o.value + '=' + o.text)
+                }))
             """)
-            print(f"Found {len(manufacturers)} manufacturers")
-            if manufacturers:
-                print(f"First few: {[m['text'] for m in manufacturers[:5]]}")
+            print(json.dumps(selects, indent=2))
+            sys.exit(1)
 
-            # --- Strategy 2: Interact with the select for each manufacturer ---
-            for i, mfr in enumerate(manufacturers, 1):
-                name = mfr['text'] or mfr['value']
-                value = mfr['value']
-                print(f"  [{i}/{len(manufacturers)}] {name}", end="", flush=True)
+        # ── Step 2: scrape each manufacturer page ──────────────────────────────
+        for i, mfr in enumerate(manufacturers, 1):
+            mfr_name = mfr["name"]
+            mfr_id   = mfr["id"]
+            url = f"{BASE_URL}&manu={mfr_id}"
 
-                try:
-                    # Select the manufacturer and trigger change
-                    page.select_option(sel_selector, value=value)
-                    page.wait_for_timeout(2000)
+            print(f"  [{i}/{len(manufacturers)}] {mfr_name} (id={mfr_id})", end="", flush=True)
 
-                    # Look for any submit button and click it
-                    submit = page.query_selector("input[type=submit], button[type=submit], .filter-submit, #filter-submit")
-                    if submit:
-                        submit.click()
-                        page.wait_for_timeout(2000)
+            try:
+                page.goto(url, timeout=45_000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2500)
 
-                    if debug and i <= 3:
-                        page.screenshot(path=f"btl-mfr-{i}.png", full_page=True)
+                if debug and i <= 3:
+                    page.screenshot(path=f"btl-mfr-{i}.png", full_page=True)
+                    Path(f"btl-mfr-{i}.html").write_text(page.content(), encoding="utf-8")
 
-                    # Extract products from current page state
-                    products = _extract_products(page)
+                products = _extract_products_from_page(page)
 
-                    if products:
-                        print(f" → {len(products)} products")
-                        for prod in products:
-                            _add_product(vendors, name, prod.get("name", ""), prod.get("type", ""))
-                    else:
-                        # Last resort: scan page text
-                        text = page.inner_text("body")
-                        found = _parse_text_for_products(text, name)
-                        if found:
-                            print(f" → {len(found)} (text)")
-                            for p in found:
-                                _add_product(vendors, name, p["name"], p.get("type", ""))
-                        else:
-                            print(" → 0")
+                if products:
+                    print(f" → {len(products)} products")
+                    for prod in products:
+                        _add(vendors, mfr_name, prod["name"], prod.get("type", ""))
+                else:
+                    print(" → 0 (not found)")
 
-                    time.sleep(0.2)
+                # polite rate limit
+                time.sleep(0.3)
 
-                except PlaywrightTimeout:
-                    print(" → TIMEOUT")
-                except Exception as e:
-                    print(f" → ERROR: {e}")
-
-        # --- Strategy 3: Try iterating URL parameters directly ---
-        if not vendors:
-            print("\nFalling back to URL-based scraping...")
-            _scrape_by_url(page, vendors, debug)
-
-        if debug:
-            page.screenshot(path="btl-final.png", full_page=True)
+            except PlaywrightTimeout:
+                print(" → TIMEOUT")
+            except Exception as e:
+                print(f" → ERROR: {e}")
 
         browser.close()
 
-    return _build_output(vendors)
+    return _build(vendors)
 
 
-def _extract_products(page) -> list[dict]:
-    """Try multiple DOM strategies to find product entries on the current page."""
-    return page.evaluate("""
-        () => {
+def _extract_products_from_page(page) -> list[dict]:
+    """
+    Try several strategies to find product rows on the current page.
+    Returns list of {name, type} dicts.
+    """
+    return page.evaluate(f"""
+        () => {{
             const results = [];
-            const profileRe = /\\b(B-[A-Z]+)\\b/;
+            const profileRe = {PROFILE_RE.pattern!r};
 
-            // Strategy: table rows
-            document.querySelectorAll('table tr').forEach(row => {
+            // ── Strategy 1: HTML table rows ────────────────────────────────────
+            const rows = document.querySelectorAll('table tr');
+            rows.forEach(row => {{
                 const cells = Array.from(row.querySelectorAll('td')).map(c => c.innerText.trim());
-                if (cells.length >= 1 && cells[0].length > 2) {
-                    const profileMatch = cells.join(' ').match(profileRe);
-                    results.push({ name: cells[0], type: profileMatch ? profileMatch[1] : '' });
-                }
-            });
+                if (cells.length >= 1 && cells[0].length > 2 && !/^(product|model|name|type)$/i.test(cells[0])) {{
+                    const text = cells.join(' ');
+                    const m = text.match(profileRe);
+                    results.push({{ name: cells[0], type: m ? m[1] : '' }});
+                }}
+            }});
+            if (results.length > 0) return results;
+
+            // ── Strategy 2: common CMS list / card classes ─────────────────────
+            const candidates = [
+                '.product-listing-item', '.btl-listing-item', '.btl-product',
+                '.listing-item', '.product-item', '.product-row',
+                '.views-row', '.view-row', '.wpb_row', 'li.product',
+                '[class*="listing-item"]', '[class*="product-row"]',
+            ];
+            for (const sel of candidates) {{
+                const items = document.querySelectorAll(sel);
+                if (items.length > 2) {{
+                    items.forEach(el => {{
+                        const text = el.innerText.trim();
+                        if (text && text.length > 3 && text.length < 500) {{
+                            const m = text.match(profileRe);
+                            results.push({{ name: text.split('\\n')[0].trim(), type: m ? m[1] : '' }});
+                        }}
+                    }});
+                    if (results.length) return results;
+                }}
+            }}
+
+            // ── Strategy 3: JavaScript data blobs in <script> tags ─────────────
+            // Some WP plugins embed product data as JSON in inline scripts.
+            const scripts = Array.from(document.querySelectorAll('script:not([src])'));
+            for (const s of scripts) {{
+                const src = s.textContent || '';
+                // Look for JSON arrays that might be product data
+                const arrayMatch = src.match(/(?:var|let|const|window\\.\\w+)\\s*=\\s*(\[\\{{.*?\\}}.*?\\])/s);
+                if (arrayMatch) {{
+                    try {{
+                        const data = JSON.parse(arrayMatch[1]);
+                        if (Array.isArray(data) && data.length > 1) {{
+                            data.forEach(item => {{
+                                const name = item.name || item.model || item.product || item.title || '';
+                                const type = item.profile || item.type || item.category || '';
+                                if (name && name.length > 2) {{
+                                    results.push({{ name: String(name).trim(), type: String(type).trim() }});
+                                }}
+                            }});
+                            if (results.length) return results;
+                        }}
+                    }} catch(e) {{}}
+                }}
+                // Look for wp_localize_script style objects with product arrays
+                const matches = [...src.matchAll(/"(product_name|model|ProductName)"\\s*:\\s*"([^"]+)"/g)];
+                matches.forEach(m => results.push({{ name: m[2], type: '' }}));
+            }}
             if (results.length) return results;
 
-            // Strategy: list items / divs with product-like classes
-            const selectors = [
-                '.product', '.product-item', '.listing-item', '.btl-product',
-                '[class*="product-row"]', '[class*="listing-row"]',
-                '.views-row', '.view-row', '.wpb_wrapper li',
-                'article', '.entry', '.post',
-            ];
-            for (const sel of selectors) {
-                const items = document.querySelectorAll(sel);
-                if (items.length > 2) {
-                    items.forEach(item => {
-                        const text = item.innerText.trim();
-                        if (text && text.length > 3 && text.length < 300) {
-                            const profileMatch = text.match(profileRe);
-                            results.push({ name: text.split('\\n')[0].trim(), type: profileMatch ? profileMatch[1] : '' });
-                        }
-                    });
-                    if (results.length) return results;
-                }
-            }
-
-            // Strategy: look for any element containing a BTL profile code near a product name
-            document.querySelectorAll('*').forEach(el => {
-                if (el.children.length === 0) {  // leaf nodes only
-                    const text = el.innerText?.trim();
-                    if (text && profileRe.test(text) && text.length < 200) {
-                        results.push({ name: text.replace(profileRe, '').trim(), type: (text.match(profileRe) || [''])[1] });
-                    }
-                }
-            });
-
-            return results;
-        }
-    """)
-
-
-def _parse_text_for_products(text: str, vendor: str) -> list[dict]:
-    """Scan raw page text for product name + BTL profile code patterns."""
-    results = []
-    for line in text.split("\n"):
-        line = line.strip()
-        if not line or len(line) < 4 or len(line) > 250:
-            continue
-        m = re.search(r'\b(B-[A-Z]+)\b', line)
-        if m:
-            profile = m.group(1)
-            name = line[:m.start()].strip(" -|·\t")
-            if name and len(name) > 3 and profile in PROFILE_LABELS:
-                results.append({"name": name, "type": profile})
-    return results
-
-
-def _scrape_by_url(page, vendors: dict, debug: bool) -> None:
-    """Fallback: iterate URL parameters for each manufacturer from dropdown."""
-    # First, get manufacturer list from the page dropdown
-    page.goto(BTL_URL, timeout=60_000, wait_until="domcontentloaded")
-    page.wait_for_timeout(3000)
-
-    all_text = page.inner_text("body")
-
-    # Try to get manufacturer select options via URL param approach
-    for param_name in ["listing_manufacturer", "manufacturer", "mfr", "vendor"]:
-        mfrs = page.evaluate(f"""
-            () => {{
-                const sel = document.querySelector('select[name="{param_name}"]');
-                if (!sel) return null;
-                return Array.from(sel.options)
-                    .map(o => ({{ value: o.value.trim(), text: o.text.trim() }}))
-                    .filter(o => o.value && o.value !== '' && o.value !== '0' && o.value !== 'all');
+            // ── Strategy 4: scan all leaf text nodes for profile code patterns ──
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {{
+                const text = node.textContent.trim();
+                if (text.length > 3 && text.length < 250) {{
+                    const m = text.match(profileRe);
+                    if (m) {{
+                        const name = text.replace(profileRe, '').trim().replace(/^[-|·\\s]+|[-|·\\s]+$/g, '');
+                        if (name && name.length > 3) {{
+                            results.push({{ name, type: m[1] }});
+                        }}
+                    }}
+                }}
             }}
-        """)
-        if mfrs:
-            print(f"  Found select[name='{param_name}'] with {len(mfrs)} options")
-            for mfr in mfrs:
-                url = f"{BTL_URL}&{param_name}={mfr['value'].replace(' ', '+')}"
-                _fetch_manufacturer_page(page, url, mfr['text'], vendors)
-            return
-
-    print("  No manufacturer select found by name — dumping page structure for diagnosis")
-    structure = page.evaluate("""
-        () => ({
-            title: document.title,
-            forms: Array.from(document.forms).map(f => ({
-                action: f.action, method: f.method,
-                inputs: Array.from(f.elements).map(e => ({ tag: e.tagName, type: e.type, name: e.name, id: e.id }))
-            })),
-            selectCount: document.querySelectorAll('select').length,
-            bodyPreview: document.body.innerText.slice(0, 500),
-        })
+            return results;
+        }}
     """)
-    print(json.dumps(structure, indent=2))
 
 
-def _fetch_manufacturer_page(page, url: str, mfr_name: str, vendors: dict) -> None:
-    print(f"  {mfr_name}", end="", flush=True)
-    try:
-        page.goto(url, timeout=30_000, wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
-        products = _extract_products(page)
-        if products:
-            print(f" → {len(products)}")
-            for p in products:
-                _add_product(vendors, mfr_name, p["name"], p.get("type", ""))
-        else:
-            print(" → 0")
-    except Exception as e:
-        print(f" → {e}")
-
-
-def _add_product(vendors: dict, vendor: str, name: str, profile: str) -> None:
-    if not name or len(name) < 3:
-        return
+def _add(vendors: dict, vendor: str, name: str, profile: str) -> None:
+    name   = name.strip()
     vendor = vendor.strip()
-    if not vendor:
+    if not name or len(name) < 3 or not vendor:
         return
     if vendor not in vendors:
         vendors[vendor] = []
     entry: dict = {"name": name}
-    if profile and profile in PROFILE_LABELS:
+    if profile in PROFILE_LABELS:
         entry["type"] = profile
         entry["typeLabel"] = PROFILE_LABELS[profile]
     elif profile:
@@ -362,48 +240,40 @@ def _add_product(vendors: dict, vendor: str, name: str, profile: str) -> None:
         vendors[vendor].append(entry)
 
 
-def _build_output(vendors: dict) -> dict:
-    vendor_list = [
-        {"name": name, "models": sorted(models, key=lambda m: m["name"])}
-        for name, models in sorted(vendors.items())
-        if name and models
-    ]
+def _build(vendors: dict) -> dict:
     return {
         "updated": str(date.today()),
         "source": "BACnet International BTL Database",
         "url": "https://www.bacnetinternational.net/btl/",
-        "vendors": vendor_list,
+        "vendors": [
+            {"name": n, "models": sorted(m, key=lambda x: x["name"])}
+            for n, m in sorted(vendors.items()) if m
+        ],
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape BTL BACnet vendor/product database")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--output", default=None)
     parser.add_argument("--no-headless", action="store_true")
-    parser.add_argument("--debug", action="store_true", help="Save screenshots and HTML for diagnosis")
+    parser.add_argument("--debug", action="store_true", help="Save screenshots/HTML for first 3 manufacturers")
     args = parser.parse_args()
 
-    if args.output:
-        out_path = Path(args.output)
-    else:
-        script_dir = Path(__file__).parent
-        out_path = script_dir.parent / "bacnet-vendors.json"
-
+    out_path = Path(args.output) if args.output else Path(__file__).parent.parent / "bacnet-vendors.json"
     print(f"Output: {out_path}")
+
     data = scrape(headless=not args.no_headless, debug=args.debug)
 
-    vendor_count = len(data["vendors"])
+    vendor_count  = len(data["vendors"])
     product_count = sum(len(v["models"]) for v in data["vendors"])
-    print(f"\nScraped {vendor_count} vendors, {product_count} products")
+    print(f"\nResult: {vendor_count} vendors, {product_count} products")
 
     if vendor_count == 0:
-        print("WARNING: No vendors scraped — BTL page structure may have changed.", file=sys.stderr)
-        print("Preserving existing bacnet-vendors.json.", file=sys.stderr)
+        print("WARNING: 0 vendors — preserving existing file.", file=sys.stderr)
         sys.exit(1)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    out_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Written: {out_path}")
 
 
