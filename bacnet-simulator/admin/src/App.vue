@@ -8,6 +8,7 @@ import ProfilesDrawer from './components/ProfilesDrawer.vue'
 import TemplatePickerModal from './components/TemplatePickerModal.vue'
 import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
+import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import type { Device, SimObject, Meta, Health } from './types'
 import { api } from './api'
 import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined } from '@ant-design/icons-vue'
@@ -382,8 +383,9 @@ onUnmounted(() => {
           </div>
         </a-layout-sider>
 
-        <!-- Content: objects -->
-        <a-layout-content style="overflow:auto;padding:20px">
+        <!-- Content: objects + log -->
+        <a-layout-content style="display:flex;flex-direction:column;overflow:hidden">
+        <div style="flex:1;overflow:auto;padding:20px">
 
           <div v-if="!selectedDevice" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px">
             <ApiOutlined style="font-size:48px;color:#d9d9d9" />
@@ -450,6 +452,8 @@ onUnmounted(() => {
             </a-table>
           </template>
 
+        </div>
+        <DeviceLogPanel :device-id="selectedDevice?.id ?? null" />
         </a-layout-content>
       </a-layout>
     </a-layout>

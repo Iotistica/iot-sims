@@ -14,6 +14,7 @@ import socket
 import sqlite3
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1177,6 +1178,16 @@ db: Database = None  # type: ignore
 engine: SimEngine = None  # type: ignore
 ws_clients: list[WebSocket] = []
 
+# ─── Per-device event log ─────────────────────────────────────────────────────
+_device_logs: dict[int, deque] = {}
+_MAX_LOG = 300
+
+
+def _log_event(device_id: int, level: str, message: str) -> None:
+    if device_id not in _device_logs:
+        _device_logs[device_id] = deque(maxlen=_MAX_LOG)
+    _device_logs[device_id].append({"ts": time.time(), "level": level, "message": message})
+
 
 # ─── WebSocket broadcaster ────────────────────────────────────────────────────
 
@@ -1304,7 +1315,7 @@ async def create_device(body: DeviceCreate):
         device = await asyncio.to_thread(db.create_device, body.model_dump())
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Device instance {body.device_instance} already exists")
-    # Hot-add the device to the running stack
+    _log_event(device["id"], "info", f"Device created: {device['name']} (instance {device['device_instance']})")
     asyncio.create_task(engine.reload())
     return device
 
@@ -1326,6 +1337,13 @@ async def update_device(device_id: int, body: DeviceUpdate):
         updated = await asyncio.to_thread(db.update_device, device_id, body.model_dump())
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Device instance {body.device_instance} already exists")
+    enabled_changed = d["enabled"] != body.enabled
+    if enabled_changed:
+        _log_event(device_id, "info", f"Device {'enabled' if body.enabled else 'disabled'}")
+    elif d["name"] != body.name:
+        _log_event(device_id, "info", f"Device renamed to '{body.name}'")
+    else:
+        _log_event(device_id, "info", "Device configuration updated")
     asyncio.create_task(engine.reload())
     return updated
 
@@ -1358,7 +1376,7 @@ async def create_object(device_id: int, body: ObjectCreate):
         obj = await asyncio.to_thread(db.create_object, device_id, body.model_dump())
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Object {body.object_type},{body.object_instance} already exists on this device")
-    # Try hot-add
+    _log_event(device_id, "info", f"Object added: {body.name} ({body.object_type}:{body.object_instance})")
     if d["enabled"] and body.enabled:
         asyncio.create_task(engine.add_object_hot(d["device_instance"], obj))
     return obj
@@ -1379,6 +1397,13 @@ async def update_object(device_id: int, obj_id: int, body: ObjectUpdate):
     if not obj or obj["device_id"] != device_id:
         raise HTTPException(404, "Object not found")
     updated = await asyncio.to_thread(db.update_object, obj_id, body.model_dump())
+    enabled_changed = obj["enabled"] != body.enabled
+    if enabled_changed:
+        _log_event(device_id, "info", f"Object {obj['name']}: {'enabled' if body.enabled else 'disabled'}")
+    elif obj["behavior"] != body.behavior:
+        _log_event(device_id, "info", f"Object {obj['name']}: behavior changed to {body.behavior}")
+    else:
+        _log_event(device_id, "info", f"Object {obj['name']}: configuration updated")
     asyncio.create_task(engine.reload())
     return updated
 
@@ -1388,8 +1413,15 @@ async def delete_object(device_id: int, obj_id: int):
     obj = await asyncio.to_thread(db.get_object, obj_id)
     if not obj or obj["device_id"] != device_id:
         raise HTTPException(404, "Object not found")
+    _log_event(device_id, "warn", f"Object removed: {obj['name']} ({obj['object_type']}:{obj['object_instance']})")
     await asyncio.to_thread(db.delete_object, obj_id)
     asyncio.create_task(engine.reload())
+
+
+@api.get("/devices/{device_id}/logs")
+async def get_device_logs(device_id: int, limit: int = 100):
+    entries = list(_device_logs.get(device_id, []))
+    return entries[-limit:]
 
 
 @api.post("/devices/{device_id}/objects/{obj_id}/value")
@@ -1399,6 +1431,8 @@ async def set_object_value(device_id: int, obj_id: int, body: SetValueRequest):
         raise HTTPException(404, "Object not found")
     await asyncio.to_thread(db.set_manual_value, obj_id, body.value)
     engine.set_manual_value(obj_id, body.value)
+    val_str = str(body.value) + (f" {obj['units']}" if obj.get("units") and obj["units"] != "no-units" else "")
+    _log_event(device_id, "info", f"Manual override: {obj['name']} → {val_str}")
     return {"ok": True}
 
 

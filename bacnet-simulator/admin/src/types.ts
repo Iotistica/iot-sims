@@ -41,6 +41,12 @@ export interface Profile {
   device_count: number
 }
 
+export interface LogEntry {
+  ts: number
+  level: 'info' | 'warn' | 'error'
+  message: string
+}
+
 export interface DraftObject {
   _id: string
   object_type: string
