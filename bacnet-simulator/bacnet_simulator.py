@@ -866,6 +866,8 @@ class SimEngine:
         self._device_slots: dict[int, int] = {}
         self._reload_event = asyncio.Event()
         self._current_values: dict = {}  # for API
+        # object DB id → last logged value (for change detection)
+        self._prev_values: dict[int, Any] = {}
 
     async def start(self) -> None:
         devices = await asyncio.to_thread(self.db.get_devices)
@@ -1034,6 +1036,21 @@ class SimEngine:
             val = new_b.compute(self.state)
             self._update_value(bacnet_obj, obj_row["object_type"], val)
 
+            # Log value changes
+            prev = self._prev_values.get(obj_id)
+            if prev is not None:
+                changed = (isinstance(val, bool) and val != prev) or \
+                          (isinstance(val, float) and abs(val - prev) >= 0.1)
+                if changed:
+                    units = obj_row.get("units", "")
+                    unit_str = f" {units}" if units and units != "no-units" else ""
+                    if isinstance(val, bool):
+                        msg = f"{obj_row['name']}: {'ON' if prev else 'OFF'} → {'ON' if val else 'OFF'}"
+                    else:
+                        msg = f"{obj_row['name']}: {prev:.2f} → {val:.2f}{unit_str}"
+                    _log_event(dev["id"], "info", msg)
+            self._prev_values[obj_id] = val
+
             did = dev["device_instance"]
             if did not in snapshot:
                 snapshot[did] = {"device_instance": did, "name": dev["name"], "objects": []}
@@ -1059,6 +1076,7 @@ class SimEngine:
                 except Exception:
                     pass
             self._objects.clear()
+            self._prev_values.clear()
             self._current_values = {}
             # bacpypes3 doesn't expose a clean shutdown so we just clear our state
             self.app = None
