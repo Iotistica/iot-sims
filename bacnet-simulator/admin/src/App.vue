@@ -119,6 +119,27 @@ function deleteDevice(d: Device) {
 function openAddObject() { editingObject.value = null; objectDrawerOpen.value = true }
 function openEditObject(obj: SimObject) { editingObject.value = obj; objectDrawerOpen.value = true }
 async function onObjectSaved() { await loadObjects() }
+async function duplicateObject(obj: SimObject) {
+  if (!selectedDevice.value) return
+  const nextInstance = objects.value.length
+    ? Math.max(...objects.value.map(o => o.object_instance)) + 1
+    : obj.object_instance + 1
+  try {
+    await api.objects.create(selectedDevice.value.id, {
+      object_type:     obj.object_type,
+      object_instance: nextInstance,
+      name:            `${obj.name} Copy`,
+      units:           obj.units,
+      behavior:        obj.behavior,
+      behavior_params: obj.behavior_params,
+      enabled:         obj.enabled,
+    })
+    await loadObjects()
+    message.success(`Duplicated "${obj.name}"`)
+  } catch (e: unknown) {
+    message.error((e as Error).message)
+  }
+}
 function deleteObject(obj: SimObject) {
   Modal.confirm({
     title: `Delete "${obj.name}"?`,
@@ -166,7 +187,7 @@ const columns: TableColumnsType = [
   { title: 'Units',      dataIndex: 'units',           key: 'units',    width: 150 },
   { title: 'Live Value', key: 'value',                 width: 110 },
   { title: 'On',         key: 'enabled',               width: 50  },
-  { title: '',           key: 'actions',               width: 145 },
+  { title: '',           key: 'actions',               width: 175 },
 ]
 
 // Lifecycle
@@ -293,6 +314,7 @@ onUnmounted(() => {
                 <template v-else-if="column.key === 'actions'">
                   <a-space :size="2">
                     <a-button type="link" size="small" @click="openEditObject(record as SimObject)">Edit</a-button>
+                    <a-button type="link" size="small" style="color:#8c8c8c" @click="duplicateObject(record as SimObject)">Copy</a-button>
                     <a-button
                       v-if="(record as SimObject).behavior === 'manual'"
                       type="link" size="small"
