@@ -198,8 +198,10 @@ jobs:
             --azure-file-volume-share-name "bacnet-storage-volume" \
             --azure-file-volume-mount-path "/data" \
             --environment-variables DATA_DIR=/data SIM_API_PORT=47900 BACNET_PORT=47808 \
-            --cpu 1 --memory 1 \
+            --cpu 1 --memory 1.5 \
             --os-type Linux \
+            --ip-address Public \
+            --location canadacentral \
             --restart-policy Always \
             --no-wait
           echo "Waiting for container to reach Running state..."
