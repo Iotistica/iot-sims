@@ -4,7 +4,11 @@ import { message } from 'ant-design-vue'
 import { api } from '../api'
 import type { Device } from '../types'
 
-const props = defineProps<{ open: boolean; device: Device | null }>()
+const props = defineProps<{
+  open: boolean
+  device: Device | null
+  existingInstances?: number[]
+}>()
 const emit  = defineEmits<{ 'update:open': [v: boolean]; saved: [] }>()
 
 const loading = ref(false)
@@ -16,6 +20,13 @@ const form = reactive({
   model_name: 'BACnet Simulator',
   enabled: true,
 })
+
+function nextFreeInstance(): number {
+  const taken = new Set(props.existingInstances ?? [])
+  let id = 1001
+  while (taken.has(id)) id++
+  return id
+}
 
 // ── Vendor / model picker ─────────────────────────────────────────────────────
 
@@ -61,7 +72,7 @@ watch(() => props.open, (v) => {
   if (props.device) {
     Object.assign(form, { ...props.device, enabled: !!props.device.enabled })
   } else {
-    Object.assign(form, { device_instance: 1001, name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true })
+    Object.assign(form, { device_instance: nextFreeInstance(), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true })
   }
 })
 
