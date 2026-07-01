@@ -217,9 +217,69 @@ jobs:
           # Clean up Docker builder cache
           docker buildx prune -f --keep-storage 5GB || true
 
+  deploy:
+    name: Deploy to Azure Container Instance
+    needs: [version, buildx]
+    runs-on: [ubuntu-24.04]
+    environment: production
+
+    steps:
+      - name: Azure login
+        uses: azure/login@a65d910e8af852a8061c627c456678983e180302 # v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Export current ACI config
+        run: |
+          az container export \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.ACI_NAME }}" \
+            --file aci-current.yml
+
+      - name: Update image tag in config
+        run: |
+          IMAGE="iotistic/bacnet-simulator:${{ needs.version.outputs.package_version }}"
+          # Replace the image line in the exported YAML
+          sed -i "s|image: iotistic/bacnet-simulator:.*|image: ${IMAGE}|g" aci-current.yml
+          echo "Deploying image: ${IMAGE}"
+          grep "image:" aci-current.yml
+
+      - name: Redeploy with updated image
+        run: |
+          az container create \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --file aci-current.yml \
+            --no-wait
+          echo "Waiting for container to reach Running state..."
+          az container wait \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.ACI_NAME }}" \
+            --custom "instanceView.state=='Running'" \
+            --timeout 180
+
+      - name: Show deployment result
+        if: always()
+        run: |
+          az container show \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.ACI_NAME }}" \
+            --query "{state:instanceView.state, image:containers[0].image, ip:ipAddress.ip, fqdn:ipAddress.fqdn}" \
+            --output table
+
+      - name: Write deploy summary
+        run: |
+          FQDN=$(az container show \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.ACI_NAME }}" \
+            --query "ipAddress.fqdn" --output tsv)
+          echo "## Deployed to Azure" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ needs.version.outputs.package_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Admin UI:** http://${FQDN}:47900" >> $GITHUB_STEP_SUMMARY
+          echo "**BACnet UDP:** ${FQDN}:47808" >> $GITHUB_STEP_SUMMARY
+
   report:
     name: Generate Reports
-    needs: [version, buildx]
+    needs: [version, buildx, deploy]
     runs-on: [ubuntu-24.04]
     if: always()
     
