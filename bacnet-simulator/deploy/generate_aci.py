@@ -23,9 +23,10 @@ config = {
                     {"protocol": "UDP", "port": 47808},
                 ],
                 "environmentVariables": [
-                    {"name": "DATA_DIR",     "value": "/data"},
-                    {"name": "SIM_API_PORT", "value": "47900"},
-                    {"name": "BACNET_PORT",  "value": "47808"},
+                    {"name": "DATA_DIR",       "value": "/data"},
+                    {"name": "SIM_API_PORT",   "value": "47900"},
+                    {"name": "BACNET_PORT",    "value": "47808"},
+                    {"name": "BACPYPES_IFACE", "value": "0.0.0.0"},
                 ],
                 "volumeMounts": [{"name": "bacnet-data", "mountPath": "/data"}],
             },
