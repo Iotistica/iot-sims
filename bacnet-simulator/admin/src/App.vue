@@ -4,6 +4,7 @@ import { Modal, message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import ObjectDrawer from './components/ObjectDrawer.vue'
+import ProfilesDrawer from './components/ProfilesDrawer.vue'
 import type { Device, SimObject, Meta, Health } from './types'
 import { api } from './api'
 
@@ -17,10 +18,11 @@ const objects = ref<SimObject[]>([])
 const liveValues = ref<Record<number, number | boolean>>({})
 
 // Drawers
-const deviceDrawerOpen = ref(false)
-const editingDevice    = ref<Device | null>(null)
-const objectDrawerOpen = ref(false)
-const editingObject    = ref<SimObject | null>(null)
+const deviceDrawerOpen  = ref(false)
+const editingDevice     = ref<Device | null>(null)
+const objectDrawerOpen  = ref(false)
+const editingObject     = ref<SimObject | null>(null)
+const profilesDrawerOpen = ref(false)
 
 // Set-value modal
 const setValOpen    = ref(false)
@@ -186,7 +188,8 @@ onUnmounted(() => {
         </span>
         <span style="color:#555;font-size:12px">{{ health.devices }} device(s)</span>
         <div style="flex:1" />
-        <span style="color:#444;font-size:11px">:{{ apiPort }}</span>
+        <a-button size="small" @click="profilesDrawerOpen = true">Profiles</a-button>
+        <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
       </a-layout-header>
 
       <a-layout>
@@ -304,6 +307,12 @@ onUnmounted(() => {
       :device-id="selectedDevice?.id"
       :meta="meta"
       @saved="onObjectSaved"
+    />
+
+    <!-- Profiles drawer -->
+    <ProfilesDrawer
+      v-model:open="profilesDrawerOpen"
+      @loaded="async () => { await loadDevices(); selectedDevice.value = null; objects.value = []; await loadHealth() }"
     />
 
     <!-- Set value modal -->

@@ -22,7 +22,7 @@ from typing import Any, Optional, Union
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
@@ -112,6 +112,15 @@ class Database:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     manual_value REAL,
                     UNIQUE(device_id, object_type, object_instance)
+                );
+
+                CREATE TABLE IF NOT EXISTS profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    device_count INTEGER NOT NULL DEFAULT 0,
+                    data TEXT NOT NULL DEFAULT '{}'
                 );
             """)
         log.info("Database ready at %s", self.path)
@@ -372,6 +381,90 @@ class Database:
     def delete_object(self, obj_id: int) -> bool:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM objects WHERE id=?", (obj_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    # ── Profiles ──────────────────────────────────────────────────────────────
+
+    def get_profiles(self) -> list[dict]:
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT id, name, description, created_at, device_count FROM profiles ORDER BY created_at DESC"
+            )]
+
+    def get_profile(self, profile_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM profiles WHERE id=?", (profile_id,)).fetchone()
+            return dict(r) if r else None
+
+    def save_profile(self, name: str, description: str) -> dict:
+        with self._conn() as conn:
+            devices = [dict(r) for r in conn.execute(
+                "SELECT * FROM devices ORDER BY device_instance"
+            )]
+            for dev in devices:
+                dev["objects"] = [dict(r) for r in conn.execute(
+                    "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance",
+                    (dev["id"],),
+                )]
+            data = json.dumps({"devices": devices})
+            cur = conn.execute(
+                "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
+                (name, description, len(devices), data),
+            )
+            conn.commit()
+            return dict(conn.execute(
+                "SELECT id, name, description, created_at, device_count FROM profiles WHERE id=?",
+                (cur.lastrowid,),
+            ).fetchone())
+
+    def load_profile(self, profile_id: int) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("SELECT data FROM profiles WHERE id=?", (profile_id,)).fetchone()
+            if not row:
+                return False
+            payload = json.loads(row["data"])
+            conn.execute("DELETE FROM devices")
+            conn.commit()
+            for dev in payload.get("devices", []):
+                objects = dev.pop("objects", [])
+                dev.pop("id", None)
+                cur = conn.execute(
+                    "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled) "
+                    "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled)",
+                    dev,
+                )
+                dev_id = cur.lastrowid
+                for obj in objects:
+                    obj.pop("id", None)
+                    obj.pop("device_id", None)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO objects "
+                        "(device_id, object_type, object_instance, name, units, behavior, "
+                        "behavior_params, enabled, manual_value) "
+                        "VALUES (:device_id, :object_type, :object_instance, :name, :units, "
+                        ":behavior, :behavior_params, :enabled, :manual_value)",
+                        {**obj, "device_id": dev_id, "manual_value": obj.get("manual_value")},
+                    )
+            conn.commit()
+            return True
+
+    def import_profile(self, name: str, description: str, data: dict) -> dict:
+        with self._conn() as conn:
+            device_count = len(data.get("devices", []))
+            cur = conn.execute(
+                "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
+                (name, description, device_count, json.dumps(data)),
+            )
+            conn.commit()
+            return dict(conn.execute(
+                "SELECT id, name, description, created_at, device_count FROM profiles WHERE id=?",
+                (cur.lastrowid,),
+            ).fetchone())
+
+    def delete_profile(self, profile_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
             conn.commit()
             return cur.rowcount > 0
 
@@ -856,6 +949,17 @@ class SetValueRequest(BaseModel):
     value: Any
 
 
+class ProfileCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+
+
+class ProfileImport(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+    data: dict
+
+
 # ─── Globals (shared between FastAPI and engine) ──────────────────────────────
 
 db: Database = None  # type: ignore
@@ -1064,6 +1168,53 @@ async def set_object_value(device_id: int, obj_id: int, body: SetValueRequest):
     await asyncio.to_thread(db.set_manual_value, obj_id, body.value)
     engine.set_manual_value(obj_id, body.value)
     return {"ok": True}
+
+
+# ── Profiles ──
+
+@api.get("/profiles")
+async def list_profiles():
+    return await asyncio.to_thread(db.get_profiles)
+
+
+@api.post("/profiles", status_code=201)
+async def save_profile(body: ProfileCreate):
+    return await asyncio.to_thread(db.save_profile, body.name, body.description)
+
+
+@api.delete("/profiles/{profile_id}", status_code=204)
+async def delete_profile(profile_id: int):
+    deleted = await asyncio.to_thread(db.delete_profile, profile_id)
+    if not deleted:
+        raise HTTPException(404, "Profile not found")
+
+
+@api.post("/profiles/{profile_id}/load")
+async def load_profile(profile_id: int):
+    ok = await asyncio.to_thread(db.load_profile, profile_id)
+    if not ok:
+        raise HTTPException(404, "Profile not found")
+    asyncio.create_task(engine.reload())
+    return {"ok": True}
+
+
+@api.get("/profiles/{profile_id}/export")
+async def export_profile(profile_id: int):
+    row = await asyncio.to_thread(db.get_profile, profile_id)
+    if not row:
+        raise HTTPException(404, "Profile not found")
+    content = json.dumps(json.loads(row["data"]), indent=2)
+    filename = row["name"].replace(" ", "_") + ".json"
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api.post("/profiles/import", status_code=201)
+async def import_profile(body: ProfileImport):
+    return await asyncio.to_thread(db.import_profile, body.name, body.description, body.data)
 
 
 # ── State + reload ──

@@ -32,3 +32,11 @@ export interface Health {
   bacnet_running: boolean
   devices: number
 }
+
+export interface Profile {
+  id: number
+  name: string
+  description: string
+  created_at: string
+  device_count: number
+}
