@@ -5,6 +5,7 @@ import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import ObjectDrawer from './components/ObjectDrawer.vue'
 import ProfilesDrawer from './components/ProfilesDrawer.vue'
+import IotisticaLogo from './components/IotisticaLogo.vue'
 import type { Device, SimObject, Meta, Health } from './types'
 import { api } from './api'
 
@@ -181,12 +182,14 @@ onUnmounted(() => {
     <a-layout style="height:100vh">
 
       <!-- Header -->
-      <a-layout-header style="display:flex;align-items:center;gap:14px;padding:0 20px;height:48px;line-height:48px">
-        <span style="color:white;font-size:15px;font-weight:600;letter-spacing:.3px">⚙ BACnet Simulator</span>
-        <span :style="{ fontSize:'12px', color: health.bacnet_running ? '#52c41a' : '#ff4d4f' }">
-          {{ health.bacnet_running ? '● BACnet running' : '○ BACnet stopped' }}
+      <a-layout-header style="display:flex;align-items:center;gap:12px;padding:0 20px;height:48px;line-height:48px;background:#0a0a0a;border-bottom:1px solid rgba(255,255,255,0.08)">
+        <IotisticaLogo :size="24" />
+        <span style="color:rgba(255,255,255,0.85);font-size:15px;font-weight:600;letter-spacing:.3px">Iotistica</span>
+        <span style="color:rgba(255,255,255,0.25);font-size:13px;font-weight:400">BACnet Simulator</span>
+        <span :style="{ fontSize:'12px', color: health.bacnet_running ? '#52c41a' : '#ff4d4f', marginLeft: '8px' }">
+          {{ health.bacnet_running ? '● running' : '○ stopped' }}
         </span>
-        <span style="color:#555;font-size:12px">{{ health.devices }} device(s)</span>
+        <span style="color:#555;font-size:12px">· {{ health.devices }} device(s)</span>
         <div style="flex:1" />
         <a-button size="small" @click="profilesDrawerOpen = true">Profiles</a-button>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
