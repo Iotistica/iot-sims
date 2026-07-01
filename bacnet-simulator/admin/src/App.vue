@@ -305,6 +305,7 @@ onUnmounted(() => {
     <DeviceDrawer
       v-model:open="deviceDrawerOpen"
       :device="editingDevice"
+      :existing-instances="devices.map(d => d.device_instance)"
       @saved="onDeviceSaved"
     />
 
