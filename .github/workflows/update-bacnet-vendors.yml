@@ -10,13 +10,16 @@ jobs:
   scrape:
     name: Scrape BTL Product Database
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Fetch latest so we can rebase before push
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -24,29 +27,15 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install playwright
-          playwright install chromium --with-deps
+        run: pip install requests beautifulsoup4
 
       - name: Run BTL scraper
         id: scrape
         run: |
           python bacnet-simulator/scripts/scrape-btl.py \
-            --output bacnet-simulator/bacnet-vendors.json \
-            --debug
+            --output bacnet-simulator/bacnet-vendors.json
         env:
           PYTHONUNBUFFERED: "1"
-
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: btl-scraper-debug
-          path: |
-            btl-*.png
-            btl-*.html
-          if-no-files-found: ignore
-          retention-days: 3
 
       - name: Show result summary
         if: always()
@@ -73,5 +62,7 @@ jobs:
             VENDORS=$(jq '.vendors | length' bacnet-simulator/bacnet-vendors.json)
             PRODUCTS=$(jq '[.vendors[].models | length] | add' bacnet-simulator/bacnet-vendors.json)
             git commit -m "chore: update BACnet vendor database ($VENDORS vendors, $PRODUCTS products) [skip ci]"
-            git push
+            # Rebase on top of any commits pushed since checkout, then push
+            git pull --rebase origin main
+            git push origin main
           fi
