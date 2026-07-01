@@ -10,7 +10,7 @@ import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import type { Device, SimObject, Meta, Health } from './types'
 import { api } from './api'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
 
@@ -29,6 +29,7 @@ const editingObject     = ref<SimObject | null>(null)
 const profilesDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
 const saveTemplateOpen     = ref(false)
+const activeProfileName    = ref<string | null>(null)
 
 // Set-value modal
 const setValOpen    = ref(false)
@@ -147,6 +148,35 @@ function deleteDevice(d: Device) {
   })
 }
 
+// Profile actions
+function newProfile() {
+  Modal.confirm({
+    title: 'Start a new profile?',
+    content: devices.value.length
+      ? `This will delete all ${devices.value.length} device(s) and their objects. Save the current setup as a profile first if you want to keep it.`
+      : 'This will clear the current state and give you a blank canvas.',
+    okText: 'Clear & Start Fresh',
+    okType: 'danger',
+    async onOk() {
+      await Promise.allSettled(devices.value.map(d => api.devices.del(d.id)))
+      selectedDevice.value = null
+      objects.value = []
+      activeProfileName.value = null
+      await loadDevices()
+      await loadHealth()
+      message.success('Ready — add your first device')
+    },
+  })
+}
+
+async function onProfileLoaded(name: string) {
+  activeProfileName.value = name
+  await loadDevices()
+  selectedDevice.value = null
+  objects.value = []
+  await loadHealth()
+}
+
 // Object actions
 function openAddObject() { editingObject.value = null; objectDrawerOpen.value = true }
 function openEditObject(obj: SimObject) { editingObject.value = obj; objectDrawerOpen.value = true }
@@ -250,6 +280,11 @@ onUnmounted(() => {
         </span>
         <span style="color:#555;font-size:12px">· {{ health.devices }} device(s)</span>
         <div style="flex:1" />
+        <a-tag v-if="activeProfileName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProfileName }}</a-tag>
+        <a-button size="small" @click="newProfile">
+          <template #icon><FileAddOutlined /></template>
+          New Profile
+        </a-button>
         <a-button size="small" @click="profilesDrawerOpen = true">Profiles</a-button>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
       </a-layout-header>
@@ -387,7 +422,7 @@ onUnmounted(() => {
     <!-- Profiles drawer -->
     <ProfilesDrawer
       v-model:open="profilesDrawerOpen"
-      @loaded="async () => { await loadDevices(); selectedDevice.value = null; objects.value = []; await loadHealth() }"
+      @loaded="onProfileLoaded"
     />
 
     <!-- Save as template -->
