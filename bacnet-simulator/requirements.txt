@@ -3,3 +3,8 @@ fastapi==0.115.6
 uvicorn==0.32.1
 websockets==13.1
 pydantic==2.10.3
+
+# scrape-btl.py dependencies
+requests>=2.31
+beautifulsoup4>=4.12
+pdfplumber>=0.11    # optional — only needed for --parse-pics / --update-pics
