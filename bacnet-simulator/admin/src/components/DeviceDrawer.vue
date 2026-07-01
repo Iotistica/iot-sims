@@ -127,12 +127,21 @@ async function save() {
         </a-col>
         <a-col :span="12">
           <a-form-item label="Model Name">
-            <a-auto-complete
+            <!-- a-select when vendor is in BTL list (click-to-open dropdown) -->
+            <a-select
+              v-if="modelOptions.length"
               v-model:value="form.model_name"
+              show-search
+              allow-clear
+              placeholder="Select model…"
               :options="modelOptions"
               :filter-option="filterOption"
-              allow-clear
-              placeholder="e.g. PXC50-E.D"
+            />
+            <!-- plain input for custom vendors not in list -->
+            <a-input
+              v-else
+              v-model:value="form.model_name"
+              placeholder="e.g. BACnet Simulator"
             />
           </a-form-item>
         </a-col>
