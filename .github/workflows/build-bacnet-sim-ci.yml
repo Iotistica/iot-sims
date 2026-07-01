@@ -167,42 +167,6 @@ jobs:
             iotistic/bacnet-simulator:${{ needs.version.outputs.sha_short }}
             iotistic/bacnet-simulator:${{ needs.version.outputs.package_version }}
 
-  build-arm:
-    name: Build & Push (arm64 + arm/v7)
-    needs: version
-    runs-on: [ubuntu-24.04]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: main
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      - name: Build & Push arm64 + arm/v7
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        with:
-          context: ./bacnet-simulator
-          file: ./bacnet-simulator/Dockerfile
-          push: true
-          platforms: linux/arm64,linux/arm/v7
-          cache-from: type=registry,ref=iotistic/bacnet-simulator:buildcache-arm
-          cache-to: type=registry,ref=iotistica/bacnet-simulator:buildcache-arm,mode=max
-          tags: |
-            iotistic/bacnet-simulator:${{ needs.version.outputs.sha_short }}-arm
-            iotistic/bacnet-simulator:${{ needs.version.outputs.package_version }}-arm
-
   deploy:
     name: Deploy to Azure Container Instance
     needs: [version, build-amd64]
@@ -267,7 +231,7 @@ jobs:
 
   report:
     name: Generate Reports
-    needs: [version, build-amd64, build-arm, deploy]
+    needs: [version, build-amd64, deploy]
     runs-on: [ubuntu-24.04]
     if: always()
     
