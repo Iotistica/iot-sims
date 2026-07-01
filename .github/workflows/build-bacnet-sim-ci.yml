@@ -183,27 +183,61 @@ jobs:
         run: |
           IMAGE="iotistic/bacnet-simulator:${{ needs.version.outputs.package_version }}"
           echo "Deploying image: ${IMAGE}"
+
+          # Generate YAML — required to mix TCP (47900) and UDP (47808) on same container
+          cat > aci-deploy.yml <<EOF
+          apiVersion: '2021-10-01'
+          name: ${{ vars.ACI_NAME }}
+          location: canadacentral
+          properties:
+            containers:
+            - name: bacnet-sim
+              properties:
+                image: ${IMAGE}
+                resources:
+                  requests:
+                    cpu: 1
+                    memoryInGB: 1.5
+                ports:
+                - protocol: TCP
+                  port: 47900
+                - protocol: UDP
+                  port: 47808
+                environmentVariables:
+                - name: DATA_DIR
+                  value: /data
+                - name: SIM_API_PORT
+                  value: '47900'
+                - name: BACNET_PORT
+                  value: '47808'
+                volumeMounts:
+                - name: bacnet-data
+                  mountPath: /data
+            volumes:
+            - name: bacnet-data
+              azureFile:
+                shareName: bacnet-storage-volume
+                storageAccountName: iotistic
+                storageAccountKey: '${{ secrets.AZURE_STORAGE_KEY }}'
+            ipAddress:
+              type: Public
+              dnsNameLabel: ${{ vars.ACI_DNS_LABEL }}
+              ports:
+              - protocol: TCP
+                port: 47900
+              - protocol: UDP
+                port: 47808
+            osType: Linux
+            restartPolicy: Always
+          EOF
+
           az container delete \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --name "${{ vars.ACI_NAME }}" \
             --yes 2>/dev/null || true
           az container create \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --name "${{ vars.ACI_NAME }}" \
-            --image "${IMAGE}" \
-            --ports 47900 47808 \
-            --protocol TCP \
-            --azure-file-volume-account-name "iotistic" \
-            --azure-file-volume-account-key "${{ secrets.AZURE_STORAGE_KEY }}" \
-            --azure-file-volume-share-name "bacnet-storage-volume" \
-            --azure-file-volume-mount-path "/data" \
-            --environment-variables DATA_DIR=/data SIM_API_PORT=47900 BACNET_PORT=47808 \
-            --cpu 1 --memory 1.5 \
-            --os-type Linux \
-            --ip-address Public \
-            --dns-name-label "${{ vars.ACI_DNS_LABEL }}" \
-            --location canadacentral \
-            --restart-policy Always \
+            --file aci-deploy.yml \
             --no-wait
           echo "Waiting for container to reach Running state..."
           for i in $(seq 1 30); do
