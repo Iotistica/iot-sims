@@ -215,35 +215,35 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Export current ACI config
-        run: |
-          az container export \
-            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --name "${{ vars.ACI_NAME }}" \
-            --file aci-current.yml
-
-      - name: Update image tag and restore storage key
+      - name: Redeploy with updated image and volume
         run: |
           IMAGE="iotistic/bacnet-simulator:${{ needs.version.outputs.package_version }}"
-          # Update image tag
-          sed -i "s|image: iotistic/bacnet-simulator:.*|image: ${IMAGE}|g" aci-current.yml
-          # Inject storage key (az container export omits secrets)
-          sed -i "s|storageAccountKey:.*|storageAccountKey: '${{ secrets.AZURE_STORAGE_KEY }}'|g" aci-current.yml
           echo "Deploying image: ${IMAGE}"
-          grep "image:" aci-current.yml
-
-      - name: Redeploy with updated image
-        run: |
           az container create \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --file aci-current.yml \
+            --name "${{ vars.ACI_NAME }}" \
+            --image "${IMAGE}" \
+            --ports 47900 47808 \
+            --protocol TCP \
+            --azure-file-volume-account-name "iotistic" \
+            --azure-file-volume-account-key "${{ secrets.AZURE_STORAGE_KEY }}" \
+            --azure-file-volume-share-name "bacnet-storage-volume" \
+            --azure-file-volume-mount-path "/data" \
+            --environment-variables DATA_DIR=/data SIM_API_PORT=47900 BACNET_PORT=47808 \
+            --cpu 1 --memory 1 \
+            --os-type Linux \
+            --restart-policy Always \
             --no-wait
           echo "Waiting for container to reach Running state..."
-          az container wait \
-            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --name "${{ vars.ACI_NAME }}" \
-            --custom "instanceView.state=='Running'" \
-            --timeout 180
+          for i in $(seq 1 30); do
+            STATE=$(az container show \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --name "${{ vars.ACI_NAME }}" \
+              --query "instanceView.state" --output tsv 2>/dev/null || echo "Unknown")
+            echo "  [$i/30] state: ${STATE}"
+            [ "${STATE}" = "Running" ] && break
+            sleep 6
+          done
 
       - name: Show deployment result
         if: always()
@@ -256,14 +256,14 @@ jobs:
 
       - name: Write deploy summary
         run: |
-          FQDN=$(az container show \
+          IP=$(az container show \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --name "${{ vars.ACI_NAME }}" \
-            --query "ipAddress.fqdn" --output tsv)
+            --query "ipAddress.ip" --output tsv)
           echo "## Deployed to Azure" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** \`${{ needs.version.outputs.package_version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Admin UI:** http://${FQDN}:47900" >> $GITHUB_STEP_SUMMARY
-          echo "**BACnet UDP:** ${FQDN}:47808" >> $GITHUB_STEP_SUMMARY
+          echo "**Admin UI:** http://${IP}:47900" >> $GITHUB_STEP_SUMMARY
+          echo "**BACnet UDP:** ${IP}:47808" >> $GITHUB_STEP_SUMMARY
 
   report:
     name: Generate Reports
