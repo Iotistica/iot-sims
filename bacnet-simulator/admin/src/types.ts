@@ -40,3 +40,25 @@ export interface Profile {
   created_at: string
   device_count: number
 }
+
+export interface DraftObject {
+  _id: string
+  object_type: string
+  object_instance: number
+  name: string
+  units: string
+  behavior: string
+  behavior_params: string
+  enabled: boolean
+}
+
+export interface DraftDevice {
+  _id: string
+  device_instance: number
+  name: string
+  description: string
+  vendor_name: string
+  model_name: string
+  enabled: boolean
+  objects: DraftObject[]
+}

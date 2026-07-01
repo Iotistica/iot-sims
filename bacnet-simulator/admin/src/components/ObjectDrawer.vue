@@ -10,8 +10,14 @@ const props = defineProps<{
   object: SimObject | null
   deviceId: number | undefined
   meta: Meta
+  draftMode?: boolean
+  draftObject?: Record<string, any> | null
 }>()
-const emit = defineEmits<{ 'update:open': [v: boolean]; saved: [] }>()
+const emit = defineEmits<{
+  'update:open': [v: boolean]
+  saved: []
+  'draft-saved': [data: Record<string, any>]
+}>()
 
 const DEFAULT_PARAMS: Record<string, any> = {
   constant:    { value: 0 },
@@ -54,11 +60,20 @@ function onFaultBaseChange() {
 
 watch(() => props.open, (v) => {
   if (!v) return
-  if (props.object) {
-    const o = props.object
-    Object.assign(form, { ...o, enabled: !!o.enabled })
-    try { params.value = { ...JSON.parse(o.behavior_params) } }
-    catch { params.value = { value: 0 } }
+  const src = props.draftMode ? props.draftObject : props.object
+  if (src) {
+    Object.assign(form, {
+      object_type: src.object_type ?? 'analog-input',
+      object_instance: src.object_instance ?? 1,
+      name: src.name ?? '',
+      units: src.units ?? 'no-units',
+      behavior: src.behavior ?? 'constant',
+      enabled: !!src.enabled,
+    })
+    try {
+      const raw = src.behavior_params
+      params.value = { ...(typeof raw === 'string' ? JSON.parse(raw) : raw) }
+    } catch { params.value = { value: 0 } }
   } else {
     Object.assign(form, {
       object_type: props.meta.object_types[0] ?? 'analog-input',
@@ -74,6 +89,11 @@ watch(() => form.behavior, (b) => {
 
 async function save() {
   if (!form.name.trim()) { message.error('Name is required'); return }
+  if (props.draftMode) {
+    emit('draft-saved', { ...form, behavior_params: JSON.stringify(params.value) })
+    emit('update:open', false)
+    return
+  }
   if (!props.deviceId) return
   loading.value = true
   const body = { ...form, enabled: form.enabled ? 1 : 0, behavior_params: JSON.stringify(params.value) }

@@ -8,8 +8,14 @@ const props = defineProps<{
   open: boolean
   device: Device | null
   existingInstances?: number[]
+  draftMode?: boolean
+  draftDevice?: Record<string, any> | null
 }>()
-const emit  = defineEmits<{ 'update:open': [v: boolean]; saved: [] }>()
+const emit = defineEmits<{
+  'update:open': [v: boolean]
+  saved: []
+  'draft-saved': [data: Record<string, any>]
+}>()
 
 const loading = ref(false)
 const form = reactive({
@@ -69,8 +75,16 @@ async function loadVendors() {
 watch(() => props.open, (v) => {
   if (!v) return
   loadVendors()
-  if (props.device) {
-    Object.assign(form, { ...props.device, enabled: !!props.device.enabled })
+  const src = props.draftMode ? props.draftDevice : props.device
+  if (src) {
+    Object.assign(form, {
+      device_instance: src.device_instance,
+      name: src.name,
+      description: src.description ?? '',
+      vendor_name: src.vendor_name,
+      model_name: src.model_name,
+      enabled: !!src.enabled,
+    })
   } else {
     Object.assign(form, { device_instance: nextFreeInstance(), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true })
   }
@@ -78,6 +92,11 @@ watch(() => props.open, (v) => {
 
 async function save() {
   if (!form.name.trim()) { message.error('Name is required'); return }
+  if (props.draftMode) {
+    emit('draft-saved', { ...form })
+    emit('update:open', false)
+    return
+  }
   loading.value = true
   const body = { ...form, enabled: form.enabled ? 1 : 0 }
   try {

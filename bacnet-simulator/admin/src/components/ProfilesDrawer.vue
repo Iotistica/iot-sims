@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { SaveOutlined, DownloadOutlined, UploadOutlined, DeleteOutlined } from '@ant-design/icons-vue'
+import { SaveOutlined, DownloadOutlined, UploadOutlined, DeleteOutlined, BuildOutlined } from '@ant-design/icons-vue'
 import type { Profile } from '../types'
 import { api } from '../api'
+import ProfileBuilderDrawer from './ProfileBuilderDrawer.vue'
 
 const emit = defineEmits<{
   'update:open': [val: boolean]
@@ -22,6 +23,9 @@ const saving = ref(false)
 
 // Import
 const importLoading = ref(false)
+
+// Builder
+const builderOpen = ref(false)
 
 async function load() {
   loading.value = true
@@ -127,12 +131,27 @@ watch(() => props.open, (isOpen) => {
 </script>
 
 <template>
+  <ProfileBuilderDrawer
+    v-model:open="builderOpen"
+    @saved="load"
+  />
+
   <a-drawer
     :open="open"
     title="Profiles"
     width="500"
     @close="close"
   >
+    <!-- Build from scratch -->
+    <div style="margin-bottom: 16px">
+      <a-button block @click="builderOpen = true">
+        <template #icon><BuildOutlined /></template>
+        Build New Profile from Scratch
+      </a-button>
+    </div>
+
+    <a-divider style="margin: 0 0 20px; font-size: 12px; color: #bbb">or save the current live setup</a-divider>
+
     <!-- Save current config -->
     <div style="margin-bottom: 24px; padding: 16px; background: #fafafa; border-radius: 6px; border: 1px solid #e8e8e8">
       <div style="font-size: 12px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px">
