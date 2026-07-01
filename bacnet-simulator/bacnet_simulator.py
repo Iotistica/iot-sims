@@ -1218,6 +1218,7 @@ api.add_middleware(
 
 
 ADMIN_DIST = Path(__file__).parent / "admin" / "dist"
+ADMIN_PUBLIC = Path(__file__).parent / "admin" / "public"
 
 
 @api.get("/", include_in_schema=False)
@@ -1226,6 +1227,18 @@ async def admin_root():
     if f.exists():
         return FileResponse(str(f), media_type="text/html")
     return {"message": "Admin not built. Run: cd admin && npm ci && npm run build"}
+
+
+@api.get("/favicon.svg", include_in_schema=False)
+async def admin_favicon():
+    f = ADMIN_PUBLIC / "favicon.svg"
+    if f.exists():
+        return FileResponse(str(f), media_type="image/svg+xml")
+    f = ADMIN_DIST / "favicon.svg"
+    if f.exists():
+        return FileResponse(str(f), media_type="image/svg+xml")
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404)
 
 
 @api.get("/bacnet-vendors.json", include_in_schema=False)

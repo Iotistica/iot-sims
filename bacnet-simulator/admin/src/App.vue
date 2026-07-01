@@ -152,10 +152,8 @@ function deleteDevice(d: Device) {
 function newProfile() {
   Modal.confirm({
     title: 'Start a new profile?',
-    content: devices.value.length
-      ? `This will delete all ${devices.value.length} device(s) and their objects. Save the current setup as a profile first if you want to keep it.`
-      : 'This will clear the current state and give you a blank canvas.',
-    okText: 'Clear & Start Fresh',
+    content: 'Save the current setup as a profile first if you want to keep it.',
+    okText: 'Start Fresh',
     okType: 'danger',
     async onOk() {
       await Promise.allSettled(devices.value.map(d => api.devices.del(d.id)))
