@@ -31,9 +31,21 @@ jobs:
         id: scrape
         run: |
           python bacnet-simulator/scripts/scrape-btl.py \
-            --output bacnet-simulator/bacnet-vendors.json
+            --output bacnet-simulator/bacnet-vendors.json \
+            --debug
         env:
           PYTHONUNBUFFERED: "1"
+
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btl-scraper-debug
+          path: |
+            btl-*.png
+            btl-*.html
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: Show result summary
         if: always()
