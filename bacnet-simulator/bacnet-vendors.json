@@ -1,277 +1,6436 @@
 {
   "updated": "2026-07-01",
-  "source": "BACnet International BTL Database (seed)",
+  "source": "BACnet International BTL Database",
   "url": "https://www.bacnetinternational.net/btl/",
   "vendors": [
     {
-      "name": "ABB",
+      "name": "75F",
       "models": [
-        { "name": "Cylon CXpro-HD", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "Cylon CXpro-LD", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Cylon UC32", "type": "B-ASC", "typeLabel": "Application Specific Controller" }
+        {
+          "name": "HyperStat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "AAON Parkville",
+      "models": [
+        {
+          "name": "BGC Controller | VCBX Controller | PCIM Controller | Daikin/Goodman DDC Controller | VCCX Controller | VCCX Controller-UPS | PreheatX Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "PT Link II BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Pioneer Gold 2.0 | Pioneer Gold 3.0 | TS-BACnet Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VCCX-IP | VCCX-IP FLO | VCCX-IP-GH | VCCX-454 | VCCX-454-FLO | VCCX-454-GH",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VCCX2 Controller | LF Chiller Controller | DX Chiller Controller | AZ3 Main Controller | AZ3 VAV/Zone BACnet P.D. Controller | AZ3 VAV/Zone BACnet P.I. Controller | VAV/Zone BACnet P.D. Controller | VAV/Zone BACnet P.I. Controller | VCCX2-CES Controller | Main DX Barrel Chiller Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VCCX2 Controller | VCCX2-FLO Controller | VCCX2-GH Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "AB Industrietechnik SRL",
+      "models": [
+        {
+          "name": "Evolution Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "AB Regin",
+      "models": [
+        {
+          "name": "EXOrealC family of freely programmable controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EXOrealC family of pre-programmed controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "RCF fan-coil controller/thermostat series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Regio Room Devices",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Regio room controller series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "ABB, Inc.",
+      "models": [
+        {
+          "name": "ABB Cylon Communications Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ABB E-Clipse 80 Bypass Family",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ABB E-Clipse Bypass",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "AC/S 1.2.1",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "ASPECT-SUPERVISOR",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "BACnet/IP option module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "CB Series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "E-AIRON FCL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "FLXeon",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "HVAC Drive",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Integra IT-8000",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Integra N4 Supervisor",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Low Voltage AC Motor Drive",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "M4M20, M4M30",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "OpenStat",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Programmable Logic Controller AC500",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Programmable Logic Controller AC500 V3",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Softstarter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Water Drive",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "X series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "ADF Technologies Sdn Bhd",
+      "models": [
+        {
+          "name": "ADF XTEC",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "ADFvision",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "ALRE-IT Regeltechnik GmbH",
+      "models": [
+        {
+          "name": "KTRBUu217.456",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "ARC Informatique",
+      "models": [
+        {
+          "name": "PcVue",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "ARCOM",
+      "models": [
+        {
+          "name": "HLBC -E Family",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "ASI Controls",
+      "models": [
+        {
+          "name": "ASIC/1",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ASIC/3",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Abies Technology Inc.",
+      "models": [
+        {
+          "name": "BACnet IP Thermostats/ Transmitters/ Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet MS/TP Thermostats / Transmitters / Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Accuenergy (Canada) Inc.",
+      "models": [
+        {
+          "name": "AcuRev 1310 Series Power and Energy Meter",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "AcuRev 2100 Series Multichannel Multifunction Power and Energy Meter",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Acuvim II Series Multifunction Power and Energy Meter",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Accutrol LLC",
+      "models": [
+        {
+          "name": "AVC",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "AVR Product Family",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Adveco Technology Co. Ltd.",
+      "models": [
+        {
+          "name": "X Network Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Aeterlink Corp",
+      "models": [
+        {
+          "name": "Sumit",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Agnosys GmbH",
+      "models": [
+        {
+          "name": "AGNOSYS BSK Controller Serie F BSK V3.5, AGNOSYS BR Controller Serie F BR V1.0",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Airtek International, Inc.",
+      "models": [
+        {
+          "name": "BACnet Advanced Operator Workstation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "BACnet Operator Display Panel",
+          "type": "B-OD",
+          "typeLabel": "Operator Display"
+        }
       ]
     },
     {
       "name": "Alerton",
       "models": [
-        { "name": "Ascent LINX", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "BACtalk VLC-Pro", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "BACtalk VLC2", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Envision for BACtalk", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "AIE",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "ALERTON GLOBAL CONTROLLER – SMOKE",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Advanced VLC",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Alerton VisualLogic® IP Controller Model(s)",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Ascent Control Module (ACM)",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BACnet Fixed Function Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet IP (CAT5/6, T1L) Modular VAV Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "BACnet IP (CAT5/6, T1L) Unitary Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "BACnet IP (CAT5/6, T1L) VAVi Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "BCM-ETH",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BCM-MSTP",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MS/TP Microset II",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VLC-444e",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VLX-Platinum",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Visual Logic Display",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VisualLogic® Unitary Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Automated Logic",
+      "name": "Antec Controls",
       "models": [
-        { "name": "ALC E-BUS ZN-LP", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "ALC LGR", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "ALC LGX", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "WebCTRL Server", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "Cava™ Touchscreen Fume Hood Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Lume™ Room Pressure Monitor",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Pace™ Critical Space Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
       ]
     },
     {
-      "name": "Azbil (Yamatake)",
+      "name": "Ariston USA LLC",
       "models": [
-        { "name": "DMM-BACnet", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Savic-net FX", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "MODBUS/BACnet Adapter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Beckhoff",
+      "name": "Armstrong Fluid Technology",
       "models": [
-        { "name": "TF8040 BACnet/IP Server", "type": "B-BC", "typeLabel": "Building Controller" }
+        {
+          "name": "Design Envelope Pumps - Design Envelope Pump Controller (DEPC)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Belimo",
+      "name": "Armstrong Monitoring Corporation",
       "models": [
-        { "name": "Belimo Gateway MP to BACnet/IP", "type": "B-GW", "typeLabel": "Gateway" },
-        { "name": "Energy Valve BACnet", "type": "B-SA", "typeLabel": "Smart Actuator" },
-        { "name": "Room Sensor CO2/Temp BACnet", "type": "B-SS", "typeLabel": "Smart Sensor" }
+        {
+          "name": "AMC UTx-B Series Gas Sensor/Transmitter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "AMC UTx-REF-B Series Refrigerant Sensor/Transmitter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Bosch",
+      "name": "Astronics-PECO",
       "models": [
-        { "name": "DIGIMAT FX1012", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "PRC1.00 Presence and Climate Controller", "type": "B-ASC", "typeLabel": "Application Specific Controller" }
+        {
+          "name": "T8168B Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Carrier",
+      "name": "Automated Logic Corporation",
       "models": [
-        { "name": "CentraLine HAWK", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "CentraLine EAGLE", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "i-Vu Open Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "i-Vu Plus CCN", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "i-Vu Touch Screen", "type": "B-OD", "typeLabel": "Operator Display" }
+        {
+          "name": "Automated Logic AAR",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Automated Logic AMR",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Automated Logic Chilled Water System Optimizer",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Automated Logic LGR Line / Automated Logic ME Line",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Automated Logic PlantCTRL",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Configurable BACnet Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Equipment Portal",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OptiFlex Advanced Application Controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OptiFlex Advanced VAV Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OptiFlex BACnet Advanced Application Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlex BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "OptiFlex Compact Segment Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "OptiFlexTM BACnet Gateway",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlexTM BACnet Hardware Integrator",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlexTM Integration Router",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlex™ BACnet Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlex™ BACnet Building Controller - Non-Routing",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlex™ BACnet Gateway",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlex™ BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "OptiFlex™ Chilled Water System Optimizer",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlex™ Compact Segment Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "OptiFlex™ Integrator",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiFlex™ Network Isolator",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "OptiFlex™ PlantCTRL Chiller Plant Controls",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Room Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "SE Line",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "WebCTRL ® Server",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "WebZONE",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "ZN341A",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "ZN341v+",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "Automation Components Inc.",
+      "models": [
+        {
+          "name": "BN Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Avelon Cetex AG",
+      "models": [
+        {
+          "name": "Avelon Beetle BACnet Service",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Azbil Corporation",
+      "models": [
+        {
+          "name": "Advanced Controller for pump unit | Advanced Controller for chiller unit | Advanced Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Compact Remote I/O Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "GYY-LMV-BAC series VAV controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "General Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Infilex BC",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Variable Air Volume Controller with Actuator for BACnet MS/TP Communication",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "savic-net™",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "B.E.G. Brück Electronic GmbH",
+      "models": [
+        {
+          "name": "ROUTER2-DALISYS-BACnet-REG",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "BACMOVE Technologies Inc.",
+      "models": [
+        {
+          "name": "DALION",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "BDR Thermea Group B.V.",
+      "models": [
+        {
+          "name": "GTW-21",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "BELIMO Automation AG",
+      "models": [
+        {
+          "name": "2-way EPIV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "6-Way PIQCV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "6-Way-EPIV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "6-way EPIV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Butterfly-Valve Actuator",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "CQ Zone Rotary Actuator",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Damper Actuator",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Duct and outdoor air sensors",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "ECON-ZIP-BASE + ECON-ZIP-COM",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Energy Valve",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Energy Valve (America)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Energy Valve (Europe/Asia)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Field Module for Fire Damper",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "General Air Water",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "JR / QR / YR",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Rotary actuator for butterfly valves",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Rotary actuator for butterfly valves (America)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Thermal Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VAV-Compact",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VAV-Universal",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ZoneEase VAV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "BEST Co., Ltd.",
+      "models": [
+        {
+          "name": "SMART IoT",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Smart Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "BV-Control AG",
+      "models": [
+        {
+          "name": "Field Module for Fire Damper",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Badger Meter Inc.",
+      "models": [
+        {
+          "name": "Dynasonics TFX-500w Flow Meter",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "Flow Meter",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "M2000 Electromagnetic Flow Meter",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "ModMAG M2000",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "Thermal Energy (BTU) Meter",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "BeaconMedaes",
+      "models": [
+        {
+          "name": "TotalAlert 360 Controls",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Beckhoff Automation GmbH",
+      "models": [
+        {
+          "name": "TwinCAT BACnet",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Beijing Hailin Control Technology Inc.",
+      "models": [
+        {
+          "name": "Harlin H Series Digital Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Bihl+Wiedemann GmbH",
+      "models": [
+        {
+          "name": "AS-i 3.0 BACnet/IP Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Blue Ridge Technologies",
+      "models": [
+        {
+          "name": "Essentials Unified Lighting Control Platform",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Bock Water Heaters, Inc.",
+      "models": [
+        {
+          "name": "Electric Water Heater Control",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Bosch Building Automation GmbH",
+      "models": [
+        {
+          "name": "WEBVISION",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "ems2 building controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "ems5 building controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Building Robotics, Inc. (Comfy)",
+      "models": [
+        {
+          "name": "Comfy Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "CET Electric Technology Inc.",
+      "models": [
+        {
+          "name": "PMC-53A | PMC-53A-E",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Caleffi S.p.A.",
+      "models": [
+        {
+          "name": "LEGIOMIXevo 6003 Series",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Carel Industries S.p.A.",
+      "models": [
+        {
+          "name": "c.pCO Family",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "c.pCOOEM",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "pCONet Family",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "pCOWeb Family",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "uPC3",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Carlo Gavazzi Controls S.p.A.",
+      "models": [
+        {
+          "name": "EMS10XXXXXX",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "MONITORING GATEWAY AND CONTROLLER",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Smart Building Web",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "WM20/30/40 Smart Power Analyzer",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Carrier Corporation",
+      "models": [
+        {
+          "name": "Carrier AppController",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier Chiller Plant Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier Connect FX Wi-Fi Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Carrier Connect ProF Wi-Fi Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Carrier Connect Wi-Fi Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Carrier Fan Coil Open",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier MPC Open XPC",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier RTU Open",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier RTU-MP",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier UC Open Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier UC Open XP",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier UPC Open",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier Unit Vent Open",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VAV Fan Terminal",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VAV Fan Terminal II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VAV Fan Terminal, metric II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VAV Single Duct",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VAV Single Duct II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VAV Single Duct, metric II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VVT Bypass",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VVT Bypass II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VVT Bypass, metric II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VVT Zone Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VVT Zone Controller II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier VVT Zone Controller, metric II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier Zone Controller II",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier i-Vu Chilled Water System Optimizer",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Carrier i-Vu Open Link",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Carrier i-Vu Open Router",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Configurable BACnet Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SmartView",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "SystemVu",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Tru-Vu Advanced Application Controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Tru-Vu Dual IP Programmable Zone Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "TruVu MPC Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TruVu MPC Controller, non-routing",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TruVu MPC Processor",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TruVu Rooftop Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "TruVu WSHP Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "TruVu ™ Compact BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "TruVu ™ MPC Controller, non-routing",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TruVu™ BACnet Advanced Application Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TruVu™ Chilled Water System Optimizer",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TruVu™ ChillerVu™ Plant Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TruVu™ Compact BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "TruVu™ Compact Link BACnet Integrator",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TruVu™ Isolated Network Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "WTC BACnet Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "i-Vu Pro User Interface",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "i-Vu Pro User interface",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "i-Vu XT Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "i-Vu ™ XT Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "i-Vu™ XT BACnet Link",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "i-Vu™ XT Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "iVu XT BACnet Link",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Carrier Japan Corporation",
+      "models": [
+        {
+          "name": "BN Interface",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Carrier SCS",
+      "models": [
+        {
+          "name": "WTC BACnet Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "CentraLine by Honeywell GmbH",
+      "models": [
+        {
+          "name": "CentraLine ARENA AX Building Management Supervisor, Advanced Work Station AWS",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "CentraLine ARENA AX Building Management Supervisor, Operating Work Station OWS",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "CentraLine ARENA NX Building Management Supervisor",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "CentraLine EAGLE",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "CentraLine Eagle Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "CentraLine HAWK200",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "CentraLine HAWK600",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Eaglehawk",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Codra",
+      "models": [
+        {
+          "name": "Panorama Suite",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Computrols",
+      "models": [
+        {
+          "name": "Serial Connector",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "VAV-C",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VAVB-BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Comsys Bärtsch AG",
+      "models": [
+        {
+          "name": "CB_Touch",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Condair Group AG",
+      "models": [
+        {
+          "name": "Integrated Controller 2.0 (IC2.0)",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "ConneXSoft GmbH",
+      "models": [
+        {
+          "name": "CXS BACnet DA Server",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        }
       ]
     },
     {
       "name": "Contemporary Controls",
       "models": [
-        { "name": "BASRT-B MS/TP Router", "type": "B-RTR", "typeLabel": "Router" },
-        { "name": "BACRP BACnet Router", "type": "B-RTR", "typeLabel": "Router" },
-        { "name": "BBMD-2 BACnet/IP BBMD", "type": "B-BBMD", "typeLabel": "BBMD" }
+        {
+          "name": "BASrouter",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "BASstat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Daikin Applied",
+      "name": "Continental Controls Systems, LLC",
       "models": [
-        { "name": "Daikin One+ Smart Thermostat", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Microtech III Unit Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "Rebel Applied Rooftop BACnet", "type": "B-AAC", "typeLabel": "Advanced Application Controller" }
+        {
+          "name": "WattNode BACnet",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Control Solutions, Inc.",
+      "models": [
+        {
+          "name": "Babel Buster",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Babel Buster 2 BACnet-Modbus Network Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Babel Buster BB3-3101",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "CoolAutomation Ltd.",
+      "models": [
+        {
+          "name": "CoolMaster EDGE",
+          "type": "B-GEN",
+          "typeLabel": "Generic"
+        },
+        {
+          "name": "CoolMaster | CooLinkBridge",
+          "type": "B-GEN",
+          "typeLabel": "Generic"
+        }
+      ]
+    },
+    {
+      "name": "Cooper Lighting Solutions",
+      "models": [
+        {
+          "name": "WaveLinx CORE",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Crestron Electronics, Inc.",
+      "models": [
+        {
+          "name": "Crestron 3-Series Control Systems",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Crestron 4-Series Control System",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Cristal Controls Ltd",
+      "models": [
+        {
+          "name": "CCLP-BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Critical Environment Technologies Canada",
+      "models": [
+        {
+          "name": "CETCI BACnet Module for QCC-B, FCS-B, LPT-P-B and LPT-B",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "CGAS Family of Gas Detectors",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "FCS",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Critical Room Control",
+      "models": [
+        {
+          "name": "Integrated Room Controller (IRC)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Current Lighting",
+      "models": [
+        {
+          "name": "NXAC-120",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "DAIKIN Industries Ltd.",
+      "models": [
+        {
+          "name": "D3-NET/BACnet MS/TP Communication adaptor",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "DK-CONNECT edge, Daikin HERO Pro Edge",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "DVH Series Light Commercial Packaged Unit",
+          "type": "B-GEN",
+          "typeLabel": "Generic"
+        },
+        {
+          "name": "MEGA-Q BACnet MS/TP Communication Adaptor",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        }
+      ]
+    },
+    {
+      "name": "DENT Instruments",
+      "models": [
+        {
+          "name": "PowerScout 12HD",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "PowerScout 48HD",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Powerscout 3HD",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "DEOS AG",
+      "models": [
+        {
+          "name": "OPEN 4100 EMS",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OPEN 600 EMS",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OPEN 810 EMS",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OPEN.WRX EMS",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OPENweb",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Daikin Applied Solutions Americas, Inc.",
+      "models": [
+        {
+          "name": "Daikin TC300 Thermostats",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Daikin TC500A Commercial Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Daikin TR100 Wall Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Daikin TR50 IAQ Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "SITELINE Unit Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "SITELINE VAV Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "Danfoss Drives A/S",
+      "models": [
+        {
+          "name": "Frequency Converter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "MCA 125 BACnet/IP",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "NovoCon",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VLT® HVAC Drive",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "iC7 Drive",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
       "name": "Delta Controls",
       "models": [
-        { "name": "enteliBUS Manager (eBMGR)", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "enteliBUS Controller (eBCon)", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "eMB-PLUS Expansion Module", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "ORCAview BACnet/IP", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "Application Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "DVC (VAV) Application Controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "O 3",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "ORCAview",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Room System Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "System Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "System Manager",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "V4 Product Platform",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "enteliBUS 3.40",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "enteliWEB",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "enteliWEB 2.2",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "enteliZONE",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "enteliZONE Unitary",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Distech Controls",
+      "name": "Delta Electronics, Inc.",
       "models": [
-        { "name": "EC-BOS-8", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "ECL-300 ZS", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "ECL-600", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "ECL-800", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "ECLYPSE Connected Building Controller", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "ENVYSION BACnet/IP", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "CFP2000",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "CP2000",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "IoT/Smart Building Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Emerson",
+      "name": "Distech Controls, Inc.",
       "models": [
-        { "name": "Network Power BACnet Gateway", "type": "B-GW", "typeLabel": "Gateway" },
-        { "name": "Ovation BACnet Interface", "type": "B-BC", "typeLabel": "Building Controller" }
+        {
+          "name": "EC-BOS-8",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "EC-Net Supervisor",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "ECB AAC Series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "ECB ASC Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ECY Series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "ECY-APEX",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "ECY-STAT Series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Eclypse Series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "RCB-PFC Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SOLSTYCE Series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "nLight ECLYPSE Senes",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
       ]
     },
     {
-      "name": "FieldServer Technologies",
+      "name": "Dwyer Instruments, Inc.",
       "models": [
-        { "name": "ProtoAir FS-B35-0-50", "type": "B-GW", "typeLabel": "Gateway" },
-        { "name": "QuickServer FS-QS-X110", "type": "B-GW", "typeLabel": "Gateway" },
-        { "name": "QuickServer FS-QS-X120", "type": "B-GW", "typeLabel": "Gateway" }
+        {
+          "name": "AVPT",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "AVUL, AVLV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "CDTA",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "GSTC",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Series DHC Digihelic",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Series IEF, Series IEFB",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Series MSX-Comms Magnesense®, Series MSX Pro-Comms Magnesense®",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Series RHPX Humidity/Temperature Transmitter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Series RSME, Series RSMC",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Honeywell",
+      "name": "EBTRON, Inc.",
       "models": [
-        { "name": "Excel 500 W7750", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "Excel 800 WEBs", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "JADE W7220", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "SPYDER PUL6438", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "SPYDER PVL6436", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "WEB-600", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "WEB-700", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "WEB-740", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "WEB-800", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "WEB-850", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "WEB-8000", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "EBI R500", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "Gold Series Dual Ethernet Output Airflow and Temperature Measuring Device",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Gold Series GTB108e",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Gold Series GTC108e",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Gold Series GTM108",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Gold Series GTM108e",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Gold Series GTM116",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Hybrid Series Dual Ethernet Output Airflow and Temperature Measuring Device",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Hybrid Series RS-485 Output Airflow and Temperature Measuring Device",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Hybrid Series RS-485 and Ethernet Output Airflow and Temperature Measuring Device",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "IAQSens CO2, RH, and Temperature Measuring Devices",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "IAQSens CO2, RH, and Temperature Measuring Devices..",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
       ]
     },
     {
-      "name": "Johnson Controls",
+      "name": "ETM professional control GmbH",
       "models": [
-        { "name": "FX-PC Application Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "FX-PCV VAV Controller", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Metasys ADS/ADX Server", "type": "B-OWS", "typeLabel": "Operator Workstation" },
-        { "name": "Metasys CGE", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Metasys LCS85", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Metasys NAE45", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Metasys NAE55", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Metasys NCE25", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Metasys SNE10050", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "TEC3000 Series", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Verasys VS-SGW140", "type": "B-BC", "typeLabel": "Building Controller" }
+        {
+          "name": "WinCC Open Architecture BACnet",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "EasyIO Holdings Pte. Ltd.",
+      "models": [
+        {
+          "name": "EasyIO 30P Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EasyIO FC Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EasyIO FG+Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EasyIO FS Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EasyIO FT Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EasyIO FW Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Eaton Corporation",
+      "models": [
+        {
+          "name": "All products",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "PowerXL DG1",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "PowerXL DH1",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "PowerXL DM1pro",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "EmFirst",
+      "models": [
+        {
+          "name": "EmFirst DDC Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "EnOcean Edge Inc.",
+      "models": [
+        {
+          "name": "SmartServer and SmartConnect Series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Engineered Air",
+      "models": [
+        {
+          "name": "CenCon",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Enlighted, Inc.",
+      "models": [
+        {
+          "name": "BACnet Interface for Enlighted Systems",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Esmé Solutions",
+      "models": [
+        {
+          "name": "DIP Family",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Eurocircuits Erkelenz GmbH",
+      "models": [
+        {
+          "name": "BACring",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "Eurotherm by Schneider Electric",
+      "models": [
+        {
+          "name": "EPC3000",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "nanodac",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Fidelix Tech Oy",
+      "models": [
+        {
+          "name": "Fidelix PLC Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Fr. Sauter AG",
+      "models": [
+        {
+          "name": "BACnet native Client for SAUTER Vision Center",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "BACnet/SC Software Hub",
+          "type": "B-SCHUB",
+          "typeLabel": "SC Hub"
+        },
+        {
+          "name": "EY modulo 3 Room Controllers – ecos311",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EY-modulo 5 Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "EY-modulo 5 Room Automation Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "EY-modulo 6 Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Smart Actuator",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VAV Kompaktregler BACnet M",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "flexotron",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "modulo 6 BACnet Router and SC-Hub",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        }
+      ]
+    },
+    {
+      "name": "Frimat GmbH",
+      "models": [
+        {
+          "name": "AS315bac",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Frimat_BAVI",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Fuji Electric Co., Ltd.",
+      "models": [
+        {
+          "name": "Low Voltage AC Drives",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Low voltage AC drives",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Fujitsu General Limited",
+      "models": [
+        {
+          "name": "BACnet Gateway for VRF System",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Functional Devices, Inc.",
+      "models": [
+        {
+          "name": "BACnet RIB",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet RIB®",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "GD Midea Heating & Ventilating Equipment Co., Ltd.",
+      "models": [
+        {
+          "name": "KONG DDC-E0 series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "KONG M0 series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "M-BMS",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "MD AC Gateway (BACnet/IP)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "MD AC Gateway(BACnet/IP)",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "POL648.10/MID",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "POL698.10/MID",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "GREE ELECTRIC APPLIANCES INC OF ZHUHAI",
+      "models": [
+        {
+          "name": "GMLink IP controller | GMLink IO controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "GRUNER AG",
+      "models": [
+        {
+          "name": "VAV-Compact",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Geberit International AG",
+      "models": [
+        {
+          "name": "Geberit Gateway",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        }
+      ]
+    },
+    {
+      "name": "Gebäude Automatisierung GmbH",
+      "models": [
+        {
+          "name": "AS-M B50",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Georg Fischer JRG AG",
+      "models": [
+        {
+          "name": "Hycleen Automation System",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Greystone Energy Systems Inc.",
+      "models": [
+        {
+          "name": "Carbon Monoxide Detector",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Horticulture Sensor",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Grundfos Management A/S",
+      "models": [
+        {
+          "name": "CIM/CIU",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "MIXIT",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "HDC I CONTROLS INC.",
+      "models": [
+        {
+          "name": "Fronnix BACnet Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Fronnix Controller - IDC702",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "iBRX1 Controller (Fronnix BACnet Master Controller)",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "iCos",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "HERMOS AG",
+      "models": [
+        {
+          "name": "FIS#bacnet",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Hager Electro SAS",
+      "models": [
+        {
+          "name": "AGARDIO Manager",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "Hangzhou Weiyi Technology Co., Ltd",
+      "models": [
+        {
+          "name": "IoT/Smart Building Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "IoT/Smart Building/Network Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "Honeywell International",
+      "models": [
+        {
+          "name": "301C Controller, AirAlert 96D",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "961 series BACnet Thermostat Driver",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet Fixed Function Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet MSTP, IP and T1L Unitary Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "BACnet MSTP, IP and T1L VAV Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "CIPer30",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "CIPer50",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "CentraLine Arena NX Building Management Supervisor",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "CentraLine EAGLEHAWK NX",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "CentraLine HAWK 8000 Integration Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Class 3200 Meter",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Class 3400 Meter",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Class 5000 Meter",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Class Green Net",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "ComfortPoint™ Open Digital I/O Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "ComfortPoint™ Open Small Point Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "ComfortPoint™ Open Variable Air Volume Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Din-Mon",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Din-Mon Advanced Meter",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Edge Control Series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "HBS Comfort Point NX",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "HT9631D Series Driver",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Honeywell Comfort Point™ Open IRM Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Honeywell ComfortPoint Open Compact VAV Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Honeywell ComfortPoint TM Open Plant Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Honeywell ComfortPointTM Open Plant Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Honeywell ComfortPoint™ Open Plant Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Honeywell Enterprise Buildings Integrator™",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Honeywell INNCOM RCU",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Honeywell Smart Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Honeywell SmartVFD",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Honeywell TC300 Thermostats",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Honeywell TC500A Commercial Thermostat | Room Pressure Indicator | Fume Hood Display",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Honeywell TR100 Wall Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Honeywell WEB-8000 Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Honeywell WEB-8000 Series Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "IAQPoint2",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "IQX12",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Interval Data Recorder (IDR)",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Niagara Advanced controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "O3-BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "OEM Multivalent Controller NX",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PUC Series for BACnet MS/TP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Programmable Enhanced BACnet IP Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Programmable Unitary Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Spyder",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Spyder Micro BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Stryker BACnet VAV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SymmetrE™",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "TB3 Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "WEBs N4 Supervisor BACnet Advanced Workstation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Horten Iot (Jiangsu) Co., Ltd",
+      "models": [
+        {
+          "name": "IoT/Smart Building Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "IoT/Smart Building/Network Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "Hysine Controls",
+      "models": [
+        {
+          "name": "BCU/BLC/ELV series  programmable logic controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "ICONAG-Leittechnik GmbH",
+      "models": [
+        {
+          "name": "B-CON BMS",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "ICONICS, Inc.",
+      "models": [
+        {
+          "name": "GENESIS64",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "IDEC Corporation",
+      "models": [
+        {
+          "name": "FC6A Plus CPU module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "IMI Hydronic Engineering",
+      "models": [
+        {
+          "name": "TA-Slider 160 BACnet MS/TP (CO)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TA-Slider 1600 Plus BACnet MS/TP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TA-Slider 1600 Plus BACnet/IP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TA-Slider 500 BACnet MS/TP (R24)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TA-Slider 750 Plus BACnet IP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TA-Slider 750 Plus BACnet MS/TP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TA-Smart | TA-Smart-Dp | TA-Smart Fail-Safe",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Industrial Control Communications, Inc.",
+      "models": [
+        {
+          "name": "PicoPort Communications Module | Mirius Multi-Interface Serial Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Infinitum Electric",
+      "models": [
+        {
+          "name": "Aircore EC Communication Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Ingenieurgesellschaft für Gebäudeautomation",
+      "models": [
+        {
+          "name": "iBMS Building Management System",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Innotech",
+      "models": [
+        {
+          "name": "NeoLink",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "NeoView",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Omni BEMS Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "SKIA Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Intesis (HMS Industrial Networks, SLU)",
+      "models": [
+        {
+          "name": "IBOX-BAC-ROUTER",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Intesis Air Conditioning Interface Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Intesis BACnet Client 700 Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Intesis BACnet Client Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Intesis BACnet Server 700 Series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Intesis BACnet Server 700 Series AIR",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Intesis BACnet Server Series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Intesis HVAC Interface Series 2E",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Invertek Drives Ltd.",
+      "models": [
+        {
+          "name": "ODV-3",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Isoil Industria Spa",
+      "models": [
+        {
+          "name": "MV311",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "J2 Innovations",
+      "models": [
+        {
+          "name": "FIN Framework",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "FIN Framework BACnet Operator Workstation",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Johnson Controls Inc.",
+      "models": [
+        {
+          "name": "A525 Series Wall Mount Refrigeration and Defrost Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Advanced Application Field Equipment Controller (FAC)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Advanced Application Field Equipment Controller (FAC) | VAV Modular Assembly Controller (VMA)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Advanced Application Programmable Controller (PCA)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Advanced Application Programmable Controller (PCA) | Programmable Controller VAV (PCV)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Advanced Terminal Unit Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Advanced Terminal Unit Controller (ATC)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Application and Data Server (ADS)",
+          "type": "B-SCHUB",
+          "typeLabel": "SC Hub"
+        },
+        {
+          "name": "Application and Data Server (ADS), Extended Application and Data Server (ADX)",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Application and Data Server - Lite - A (ADS-LITE-A)",
+          "type": "B-SCHUB",
+          "typeLabel": "SC Hub"
+        },
+        {
+          "name": "Application and Data Server - Lite - E (ADS-LITE-E)",
+          "type": "B-SCHUB",
+          "typeLabel": "SC Hub"
+        },
+        {
+          "name": "BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "Color Terminal Equipment Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "DR5 Refrigerated Case Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EasyIO Neo Series Serial Port Communication Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EasyIO and EasyIO Neo Series Controller and EASI series Integrated Controller Actuator",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Extended Application and Data Server (ADX)",
+          "type": "B-SCHUB",
+          "typeLabel": "SC Hub"
+        },
+        {
+          "name": "FMS-2000 Series Critical Environment Controllers & Monitors",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Facility Explorer",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Facility Explorer 4.1 BACnet Operator Workstation - B-OWS",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "Facility Explorer Critical Environment Controller (CCE)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Facility Explorer Critical Environment Controller (CCM)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Facility Explorer FX80 Series Supervisory Controllers",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Facility Explorer FX90 Series Supervisory Controllers",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Facility Explorer General Purpose Application Controller (F4-CGE)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Facility Explorer General Purpose Application Controller (F4-CGM)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Facility Explorer I/O Expansion Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Facility Explorer Server",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Facility Explorer VAV Box Controller (CVM)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Facility Explorer VAV Box Controller (F4-CVE)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Input/Output Module (IOM)",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "JBOC Communication Module BACnet MSTP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Johnson Controls Smart Equipment Unit Control Board",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "MR5 Refrigerated Case Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Metasys Critical Environment Controller (CCE)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Metasys Critical Environment Controller (CCM)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Metasys Critical infrastructure Manager",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Metasys General Purpose Application Controller (CGE)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Metasys General Purpose Application Controller (CGM)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Metasys I/O Expansion Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Metasys VAV Box Controller (CVE)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Metasys VAV Box Controller (CVM)",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Modbus Gateway",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "Mxi64",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "NAE85 Network Automation Engine (NAE),LCS85 LonWorks® Control Server (LCS)",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "NAE85 Network Automation Engine, LCS85 LonWorks ® Control Server",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Network Automation Engine",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Network Automation Engine (NAE)",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Network CO2 Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Network Control Engine",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Network Integration Engine",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Network Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Open Application Server",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Open Data Server",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "Peak Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Peak IOM 16UI",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Peak IOM 8RO 8AO",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Premier RTU",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Programmable Controller Expansion Input/Output Module (PCX)",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "SNC Series of Network Control Engines, SNE Series of Network Engines",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "SNC Series of Supervisory Controllers",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "SNE Series of Network Engines, SNC Series of Network Control Engines",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Smart Equipment Unit Control Board",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Smart chiller Control",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "T8800",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "T9800",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VAV1507 VAV Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VRF Smart Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Variable Air Volume (VAV) Controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Variable Air Volume (VAV) Modular Assembly Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
       "name": "KMC Controls",
       "models": [
-        { "name": "BAC-5000 Series", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "BAC-5831E Conquest", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "BAC-5900 Series", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "BAC-A1616BC", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "SAC-0101 Smart Actuator", "type": "B-SA", "typeLabel": "Smart Actuator" }
+        {
+          "name": "ASC for Titus VAV, SD Cooling Only | ASC for Titus VAV, Reheat and Fan | ASC for Titus VAV, DD",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Appstat for Fan Coil Unit | Appstat for Roof Top Unit | Appstat for Heat Pump Unit | Appstat for Zoning System | Appstat, Generic",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Conquest Advanced Application Controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Conquest BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "Conquest II BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "Conquest II Controller Family",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "SimplyVAV, Cooling/Heating | SimplyVAV, Fan & Reheat | SimplyVAV, Fan & Reheat, Position | SimplyVAV, Dual Duct | ASC for Titus VAV, SD Cooling Only | ASC for Titus VAV, SD Cooling Only | ASC for Titus VAV, Reheat and Fan | ASC for Titus VAV, Reheat and Fan | ASC for Titus VAV, DD | ASC for Titus VAV, DD | ASC RTU Controller | ASC RTU Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TotalControl",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
       ]
     },
     {
-      "name": "Lennox",
+      "name": "KONE Inc.",
       "models": [
-        { "name": "iHarmony Zoning System", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Prodigy 2.0 M3 Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" }
+        {
+          "name": "KONE Connection 015",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Pelican Wireless",
+      "name": "Kieback&Peter GmbH & Co. KG",
       "models": [
-        { "name": "Pelican Bay Thermostat", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Pelican Wireless Controller", "type": "B-BC", "typeLabel": "Building Controller" }
+        {
+          "name": "Automation Advanced Application Controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "DDC4000e",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Neutrino GLT",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Neutrino-GLT",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Qanteon",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
       ]
     },
     {
-      "name": "Reliable Controls",
+      "name": "LG CNS",
       "models": [
-        { "name": "MACH-Pro2L", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "MACH-ProV", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "RC-Studio BACnet", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "Smart Green Platform",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
       ]
     },
     {
-      "name": "Sauter",
+      "name": "LG Electronics Inc.",
       "models": [
-        { "name": "ecos504 ROOM Controller", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "ecos511 Compact Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "moduNet300 CASE Engine", "type": "B-BC", "typeLabel": "Building Controller" }
+        {
+          "name": "AC Smart 5",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "AC Smart BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ACP 5",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ACP BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BNU-BAC (BACnet Gateway)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "LG BECON Manager",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "LG Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "LG Building Management",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "LG Smart Lighting Manager",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "MultiSITE Remote Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "LOGIsystem Co., Ltd.",
+      "models": [
+        {
+          "name": "LOGIsystem DDC Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "LOYTEC electronics GmbH",
+      "models": [
+        {
+          "name": "BACnet Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BACnet L-IOB Controller and I/O Modules",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BACnet Touch Panel",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "L-IP BACnet Router",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "LS Electric, Automation Solution",
+      "models": [
+        {
+          "name": "BACnet/IP Driver",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Legrand",
+      "models": [
+        {
+          "name": "BACnet Interface",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Lennox International Inc.",
+      "models": [
+        {
+          "name": "BACnet Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Lennox CORE Lite Unit Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Lennox CORE Unit Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Prodigy II Rooftop Unit controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Prodigy Rooftop Unit Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VRF BACnet Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "intelliGen Condensing Unit Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "intelliGen Refrigeration Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Lenze Americas",
+      "models": [
+        {
+          "name": "i500",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Loxone Electronics GmbH",
+      "models": [
+        {
+          "name": "Miniserver",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Lutron Electronic Co., Inc.",
+      "models": [
+        {
+          "name": "BACnet Guest Room Software License",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Quantum Lighting Control System BACnet IP Software License",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Vive Wireless Hub",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Lynxspring, Inc.",
+      "models": [
+        {
+          "name": "BACxxxx-yyyy-LX",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "JENE-PC8000",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "JENEsys",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "MBS GmbH",
+      "models": [
+        {
+          "name": "MBS Universal-Gateway",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "METZ CONNECT GmbH",
+      "models": [
+        {
+          "name": "BACnet Server for EWIO2",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BMT-Modules",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BMT-RTR/SC | BMT-F-RTR/SC",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "BMT-Routers",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        }
+      ]
+    },
+    {
+      "name": "MG Co., Ltd.",
+      "models": [
+        {
+          "name": "BACnet MS/TP I/O Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet/IP I/O Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "MRBAS Co. ,Ltd",
+      "models": [
+        {
+          "name": "WEBAS",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "mrBCON",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "MSA Safety, Inc.",
+      "models": [
+        {
+          "name": "BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "Chillgard 5000",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Chillgard VRF",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ProtoNode / ProtoAir / ProtoCessor / ProtoCarrier / QuickServer / EZ Gateway / BACnet IoT Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Matrix iControl Sdn. Bhd.",
+      "models": [
+        {
+          "name": "MGP and IO-30 Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "MGP and IO-30P Pro Series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "MIC-J8000",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MIC-S-N4",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Measurlogic",
+      "models": [
+        {
+          "name": "DTS Series of Revenue Grade Meters (IP)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "DTS Series of Revenue Grade Meters (MS/TP)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "MechoSystems Inc.",
+      "models": [
+        {
+          "name": "WhisperShade BACnet Interface",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Meitav-tec Ltd.",
+      "models": [
+        {
+          "name": "Configurable Terminal Unit Controller with BACnet Communication",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Configurable Terminal Unit Controller with BACnet communication",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Micro Control Systems",
+      "models": [
+        {
+          "name": "MCS-NITROMAG",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Mircom Engineering",
+      "models": [
+        {
+          "name": "OpenBAS NX Series",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Mitsubishi Electric Corporation",
+      "models": [
+        {
+          "name": "Centralized Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Mitsubishi Electric Europe B.V. UK Branch",
+      "models": [
+        {
+          "name": "Procon MelcoBEMS MINI (A1M) Product",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Motorola Solutions Inc.",
+      "models": [
+        {
+          "name": "Halo 4 IoT Smart Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Moxa Inc.",
+      "models": [
+        {
+          "name": "MGate 5217 Series",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "MGate MB3660 Series",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "NENUTEC ASIA PACIFIC PTE LTD",
+      "models": [
+        {
+          "name": "NSVA VAV Smart Actuator",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "NETxAutomation Software GmbH",
+      "models": [
+        {
+          "name": "NETx BMS Platform",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Nara Controls Inc.",
+      "models": [
+        {
+          "name": "MEGA Series BACnet Advanced Workstation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "MEGA Series BACnet Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Neptronic",
+      "models": [
+        {
+          "name": "Temperature Controller Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Netix Global B.V.",
+      "models": [
+        {
+          "name": "IoT / Smart Building / Network Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "IoT/Smart Building/Network Gateway",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "IoT/Smart Building/Network Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "Netix NE Series Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Smart Building Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "UniView NEO",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Uniview Supra BACnet Advanced Workstation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "Neuberger Gebäudeautomation GmbH",
+      "models": [
+        {
+          "name": "Open.Room",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PMC",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Nidec Control Techniques Ltd.",
+      "models": [
+        {
+          "name": "HVAC Drive H300",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SI-BACnet IP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Novar",
+      "models": [
+        {
+          "name": "XIO Remote I/O",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "ODIN Automation Systems, LLC",
+      "models": [
+        {
+          "name": "Operator Display Integrated Network (ODIN)",
+          "type": "B-OD",
+          "typeLabel": "Operator Display"
+        }
+      ]
+    },
+    {
+      "name": "OEMCtrl",
+      "models": [
+        {
+          "name": "OEMCtrl I/O Flex 6126",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OEMCtrl I/O Pro 812u",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OEMCtrl I/O Zone",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OEMCtrl I/O Zone 8112",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OEMCtrl OEMPrtl Pro",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OEMCtrl STPI-E",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OEMCtrl UPC",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OEMCtrl XPC",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OptiCORE LS-1628-A",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiCORE LS-1628-u",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiCORE LS-CPU",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiCORE OEM Gateway",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiCORE Router-E OEM-RE",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "OptiCORE Unitary Equipment Controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OptiCore Compact Gateway",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "OptiCore Dual IP VAV Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OptiCore™ Isolated Network Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "WebCTRL for OEM",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "WebCTRL® for OEM",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "OJ Electronics A/S",
+      "models": [
+        {
+          "name": "OJ Green Zone",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "OJ-Air2",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "OJ-DV, OJ-DRHX",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "ONICON Incorporated",
+      "models": [
+        {
+          "name": "BTU Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Flow Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Occitaline",
+      "models": [
+        {
+          "name": "OxBigData",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Opera Electronics Inc",
+      "models": [
+        {
+          "name": "Opera 6000",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Optergy Pty. Ltd.",
+      "models": [
+        {
+          "name": "P442",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "P864",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "WBG-1000",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Panasonic Life Solution India Pvt Ltd.",
+      "models": [
+        {
+          "name": "FIN‑BACnet‑OWS",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "PNS-303 series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PNS-P1000 series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PNS-PTU/TU series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PNS-VAV series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Panotec Co., Ltd.",
+      "models": [
+        {
+          "name": "BrainEye SKIA",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Omni BEMS Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Paragon Controls Inc.",
+      "models": [
+        {
+          "name": "Multi-Trans Smart Ecosystem – Flow and Pressure Measurement System",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Pegasus Automation International LLC",
+      "models": [
+        {
+          "name": "EC device",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "GCU Product",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Pegasus Smart Actuator",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "Pegasus Smart Building Gateway",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Pegasus Smart Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Phoenix Contact GmbH und Co. KG",
+      "models": [
+        {
+          "name": "EMpro - Multifunctional energy measuring devices",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ILC 2050 products",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Phoenix Controls",
+      "models": [
+        {
+          "name": "Actuator Control Module (ACM)",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "Portal",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Room Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Room Integrator",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Room Manager",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Supervisor",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Vista",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Piscada AS",
+      "models": [
+        {
+          "name": "Piscada BAS",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        }
+      ]
+    },
+    {
+      "name": "PowerTech Engineering AS",
+      "models": [
+        {
+          "name": "PowerTech B-BC",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Powers",
+      "models": [
+        {
+          "name": "IntelliStation",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "IntelliStation 2",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Price Industries",
+      "models": [
+        {
+          "name": "Disio",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Price Intelligent Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Stream",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "THERMA-FUSER DIFFUSER",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Priva B.V.",
+      "models": [
+        {
+          "name": "Blue ID C4 Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Blue ID S10 Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Top Integration",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "ecoTwin BACnet Server",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Produal Oy",
+      "models": [
+        {
+          "name": "Produal Proxima® CU",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Produal Proxima® CU-LH",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Room Transmitter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Quantum Automation (Asia) Pte. Ltd.",
+      "models": [
+        {
+          "name": "Programmable DDC",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "QA-iCON64-B-RTR/B-SCHUB",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "iCON-1200iRIO Programmable DDC",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "iCON-1400 Programmable DDC, Programmable VAV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "iCON-1600 Programmable DDC",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "iCON-1900 Programmable DDC",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "iCON-3400PB-BC Programmable Building Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Regulator Australia Pty Ltd",
+      "models": [
+        {
+          "name": "TC6644",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Reliable Controls Corporation",
+      "models": [
+        {
+          "name": "MACH-Pro1™",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-Pro2™",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-ProAir",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-ProAir™",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-ProCom™",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-ProLight",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-ProSys™",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-ProView™",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-ProView™ LCD",
+          "type": "B-OD",
+          "typeLabel": "Operator Display"
+        },
+        {
+          "name": "MACH-ProWebCom™",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "MACH-ProWebSys™",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "MACH-ProZone",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "MACH-ProZone™",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "RC-Archive®",
+          "type": "B-GEN",
+          "typeLabel": "Generic"
+        },
+        {
+          "name": "RC-FLEXair-M®",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "RC-FLEXair®",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "RC-FLEXone-M®",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "RC-RemoteAccess®",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "RC-Studio®",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "RC-WebView®",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "SMART-Space™ Controller",
+          "type": "B-GEN",
+          "typeLabel": "Generic"
+        }
+      ]
+    },
+    {
+      "name": "Resideo Smart Homes Technology (Tianjin) Co., Ltd",
+      "models": [
+        {
+          "name": "O3-BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Resource Data Management",
+      "models": [
+        {
+          "name": "RDM Intuitive Range of Plant Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Rockwell Automation",
+      "models": [
+        {
+          "name": "BACnet IP Comm Adapter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "FieldBus Communication Option Device",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Rolbit Ltd.",
+      "models": [
+        {
+          "name": "GWX Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Royal Service Air Conditioning Corp",
+      "models": [
+        {
+          "name": "ROYAL VAV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Ruskin",
+      "models": [
+        {
+          "name": "TDFi- FA Electronic Fan Array Inlet Monitor",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TDP05K Thermal Dispersion Probe Airflow Measuring System",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Thermal Dispersion Fan Inlet Airflow Measuring System",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "S.E.T Air Conditioning Engineering CO., LIMITED",
+      "models": [
+        {
+          "name": "SB Links Product Family",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "SE-Elektronic GmbH",
+      "models": [
+        {
+          "name": "BACnet Advanced Application Controller M-DDC",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "BACnet Building Controller E-DDC",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BACnet Building Controller E-DDC M7",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "SOMFY",
+      "models": [
+        {
+          "name": "IB+ TouchBuco BACnet",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Saia-Burgess Controls AG",
+      "models": [
+        {
+          "name": "ControlEdge PCD",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "DPG1024",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Honeywell PCD",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Saia PCD",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Saia PCD Supervisor",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Saia PCD1",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Saia PCD3",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Saia PCD7",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Samsung Electronics Co., Ltd.",
+      "models": [
+        {
+          "name": "DMS BACnet Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "b.IoT IO Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "b.IoT Modular Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "b.IoT Server",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "b.IoT Smart Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "b.IoT Smart Gateway",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
       ]
     },
     {
       "name": "Schneider Electric",
       "models": [
-        { "name": "EcoStruxure BMS Server", "type": "B-OWS", "typeLabel": "Operator Workstation" },
-        { "name": "MNB-300 Controller", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "MNB-1000 Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "MNB-5000 Controller", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "MP-C Open Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "MP-V VAV Controller", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "SmartStruxure Solution", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "TAC Vista MNL-800", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "TAC I/A Series MNB-V", "type": "B-ASC", "typeLabel": "Application Specific Controller" }
+        {
+          "name": "ATV212",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Altivar Process",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Andover Continuum b3xxx Series |  System Controller, Terminal Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "BACnet Operator Workstation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "C-Bus Network Automation Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EM3570 Series DIN Ethernet Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EM4800",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "EasyLogic Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "EcoStruxure Building Operation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "EcoStruxure Fire Operation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "I/A Series® G3 ENC, TRD-T, TRD-J, TRD-NXS",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "I/A Series® G3 TRD-NXT",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "I/A Series® MicroNet Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "I/A Series® MicroNet™ Plant Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ION Product Family",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "MP Series Controllers",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Multi-Purpose Manager",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Network Management Card 2",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Network Management Card 4",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "PM5500 Power Meter Series, PM5300 Power Meter Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SE8000 Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Schneider Electric Relay Panel LPB BACnet",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Smart Field IO Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Smart Field UC Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Smart Field UC IP Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "SmartX IP Controllers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SoHVAC M168 Controller with BACnet IP communication module TM168BACW",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SoHVAC M168 Controller with BACnet MS/TP communication module TM168BACS",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SpaceLogic Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "SpaceLogic IP-IO Modules",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "SpaceLogic KNX BMS IP Gateway",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SpaceLogic Living Space Room Unit",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SpaceLogic Thermostat - TC900 Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SpaceLogic™ Touchscreen Room Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "StruxureWare Building Operation Automation Server",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "StruxureWare Building Operation Enterprise Server",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "Three Phase Easy UPS Network Management Card",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VT8000 Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Variable Air Volume Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Wiser for C-Bus Automation Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "bCX1 Controller/Router",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "iEM3165 Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "iEM3265 Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "iEM3365 Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "iEM3565 Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "spaceLYnk, Wiser for KNX",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "﻿iEM3465 Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Schneider Electric - Eliwell Controls S.r.l.",
+      "models": [
+        {
+          "name": "Free Advance",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Modicon M171 family",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Modicon M172 Family",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "Setra Systems, Inc.",
+      "models": [
+        {
+          "name": "Pressurized Environment Monitor",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SRH200D and SRH300D",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Setra FLEX",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Shanghai Sunfull Automation Co., Ltd.",
+      "models": [
+        {
+          "name": "DDC & IO Module",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "E Series",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "Edge Gateway",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "IoT Gateway",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "IoT HMI",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "Others",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "Protocol Gateway",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "WEB Gateway",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "WEB HMI",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "WiFi",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        }
+      ]
+    },
+    {
+      "name": "Shanghai Yuankong Automation Technology Co., Ltd.",
+      "models": [
+        {
+          "name": "DDC Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Shenzhen MEK Intellisys Pte Ltd.",
+      "models": [
+        {
+          "name": "IoT/Smart Building Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "IoT/Smart Building/Network Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "IoT/Smart Building/Network Gateway",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "IoT/Smart Building/Network Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        }
+      ]
+    },
+    {
+      "name": "Shina System Co. Ltd",
+      "models": [
+        {
+          "name": "Field Control Unit 2000 series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Lighting Control Unit series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Master Control Unit series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "SiBAS HMI Software Series",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
       ]
     },
     {
       "name": "Siemens",
       "models": [
-        { "name": "APOGEE ATR Drive Controller", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "APOGEE P1 FLN Automation Station", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "APOGEE TRA Terminal Room Controller", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Desigo CC", "type": "B-OWS", "typeLabel": "Operator Workstation" },
-        { "name": "Desigo PXA30-RC0", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Desigo PXC00-E.D", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Desigo PXC001-E.D", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Desigo PXC50-E.D", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "Desigo PXC100-E.D", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "Desigo PXC200-E.D", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "Desigo PXM30-1", "type": "B-OD", "typeLabel": "Operator Display" },
-        { "name": "Desigo RXB22.1", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Desigo RXC21.1", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "Desigo RXL21.1", "type": "B-LSC", "typeLabel": "Lighting Application Specific Controller" }
+        {
+          "name": "APOGEE PXC7.A and PXC4.A Automation Station",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BACnet Edge Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "BACnet MS/TP Point Pickup Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC 3 Speed Fan Coil Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC CO2 VAV Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Constant Volume Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Constant Volume Controller UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Dual Duct Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Dual Duct Controller UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Fan Coil Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Fan Coil Controller (long)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Fan Coil Controller (long) UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Fumehood Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Fumehood Controller UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Heat Pump Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Heat Pump Controller UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC I/O Expansion Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC I/O Expansion Controller UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with Damper Supply, Venturi Exhaust",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with Damper Supply, Venturi Exhaust UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with High Speed Damper",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with High Speed Damper UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with High Speed Venturi",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with High Speed Venturi UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with Low Speed Damper",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with Low Speed Damper UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with Low Speed Venturi UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC LCM - OAVS with Low-Speed Venturi",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC PRC - OAVS with Pressurization Control by Differential Flow Reset, BTU, Low Speed Damper",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC PRC - OAVS with Pressurization Control by Differential Flow Reset, BTU, Low Speed Damper UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC PRC - OAVS with Reheat and Radiation Control, Low Speed Damper",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC PRC - OAVS with Reheat and Radiation Control, Low Speed Damper UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Unit Vent Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC Unit Vent Controller UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV Actuator (GDE)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV Actuator (GDE) UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV Actuator (GLB)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV Actuator (GLB) UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV Controller (long)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV Controller (long) UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV with Chilled Beam & DCV",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV with Series Fan and 3-Stage Electric Heat Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet PTEC VAV with Series Fan and 3-Stage Electric Heat Controller UUKL",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet Terminal Box Controller (BTEC)",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BT300 Variable Frequency Drives",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Climatix",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Climatix C600",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Climatix C600, Climatix C600S",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Climatix ComExtension",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Compact actuating room automation station",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "DESIGO CC Workstation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "DESIGO INSIGHT",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "DESIGO OPTIC",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "DESIGO PX",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "DESIGO PX BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "DESIGO PX, Automationstation",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "DESIGO PXC001",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "DESIGO PXC3",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "DESIGO PXC4 and PXC5 Automation Station",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "DESIGO PXC7, PXC5 and PXC4 Automation Station",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "DXR2",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Desigo Automation PXC5.E24.A, PXC7.E400.A and PXC4.E16.A Automation Stations",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Desigo BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router"
+        },
+        {
+          "name": "Desigo BACnet Router PXG3.L",
+          "type": "B-GEN",
+          "typeLabel": "Generic"
+        },
+        {
+          "name": "Desigo CC",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Desigo CC Workstation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Desigo Control Point",
+          "type": "B-OD",
+          "typeLabel": "Operator Display"
+        },
+        {
+          "name": "Desigo DXR2 Automation Stations",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Desigo Optic",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "Desigo PX Automation Station",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Desigo PXC3 Automation Stations",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Desigo PXC3 and DXR2  Automation Stations",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Desigo PXC3 and DXR2 Automation Stations",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Desigo PXC7, PXC5 and PXC4 Automation Station",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "FIN BACnet Connector",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "FS20 Fire Detection System",
+          "type": "B-LSC",
+          "typeLabel": "Lighting Application Specific Controller"
+        },
+        {
+          "name": "HDMCM",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "IP Gateway KNX-BACnet N 143",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Intelligent Valve",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "KNX IoT to BACnet IP gateway",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "PN/BACnet LINK",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        },
+        {
+          "name": "PXC Compact Unitary Equipment Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "PXC Compact for BACnet IP Networks",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PXC Compact for BACnet IP and MS/TP Networks",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PXC Compact for BACnet MS/TP Networks",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PXC Modular for BACnet IP and MS/TP  Networks",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "PXC3.E",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "RDB160BN",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "RDB160BNU",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "RDY BACnet Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Room thermostat BACnet/Modbus",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SEM3",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "SINAMICS G120 Control Unit",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SINAMICS G120X USS",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "SINAMICS G120XA",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Siemens Room Condition Monitor",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Smart Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "TC Compact for BACnet IP and MS/TP Networks",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TC Compact for BACnet MS/TP Networks",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TC Modular for BACnet IP and MS/TP Networks",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "TXB3 Bus Interface Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VAV Compact Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Trane",
+      "name": "Signify",
       "models": [
-        { "name": "BCU Building Control Unit", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Tracer SC+ BACnet/IP", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Tracer TU Service Tool", "type": "B-OWS", "typeLabel": "Operator Workstation" },
-        { "name": "UC210 Unit Controller", "type": "B-ASC", "typeLabel": "Application Specific Controller" },
-        { "name": "UC400 Unit Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "UC600 Unit Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "UC800 Unit Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "Zone Sensor Module ZSM", "type": "B-SS", "typeLabel": "Smart Sensor" }
+        {
+          "name": "Philips Dynalite Ethernet Gateway – Supervisor",
+          "type": "B-GW",
+          "typeLabel": "Gateway"
+        }
       ]
     },
     {
-      "name": "Tridium",
+      "name": "Silvair",
       "models": [
-        { "name": "JACE 8000", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "JACE 6 (Niagara 4)", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Niagara Framework N4 Supervisor", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "Silvair BACnet GW",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "Veris Industries",
+      "name": "Socomec, Inc.",
       "models": [
-        { "name": "E51 Series Power Meter BACnet", "type": "B-SS", "typeLabel": "Smart Sensor" },
-        { "name": "H8035-H8036 Power Meter BACnet", "type": "B-SS", "typeLabel": "Smart Sensor" }
+        {
+          "name": "Diris MCM-48 | Diris MCM-16",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
       ]
     },
     {
-      "name": "Vertiv (Liebert)",
+      "name": "Software House (from Johnson Controls Inc. (JCI))",
       "models": [
-        { "name": "Liebert iCOM-S", "type": "B-BC", "typeLabel": "Building Controller" },
-        { "name": "Liebert Nform BACnet", "type": "B-OWS", "typeLabel": "Operator Workstation" }
+        {
+          "name": "C-CURE BMS",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
       ]
     },
     {
-      "name": "WAGO",
+      "name": "Sontex SA",
       "models": [
-        { "name": "WAGO 750-829 BACnet/IP Controller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "WAGO 750-830 BACnet MS/TP", "type": "B-AAC", "typeLabel": "Advanced Application Controller" }
+        {
+          "name": "SUPERCAL 5I/5S",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Supercal 531/449",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     },
     {
-      "name": "York (Johnson Controls)",
+      "name": "Strato Automation Inc.",
       "models": [
-        { "name": "YMCCHP Magnetic Bearing Chiller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "YNXLS Centrifugal Chiller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" },
-        { "name": "YZ Oil-Free Magnetic Chiller", "type": "B-AAC", "typeLabel": "Advanced Application Controller" }
+        {
+          "name": "BACplus-IP",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BACplus-MSTP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACwALL 324",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACxxxx-yyyy",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "BACzone 424",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "OPENSTAT",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "SungHan. Co., Ltd. & Laboratory",
+      "models": [
+        {
+          "name": "BEN-MMI-Management-AWS",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "BEN-MMI-Management-OWS",
+          "type": "B-OWS",
+          "typeLabel": "Operator Workstation"
+        },
+        {
+          "name": "SmartBEN Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "SmartBEN-BMI-BAC",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "SmartBEN-BMI-SEC",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "SmartBEN-EM-4N",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "Swegon Operations AB",
+      "models": [
+        {
+          "name": "GOLD IQnomic",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Gold IQlogic",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "SuperWISE",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "SysCom Automationstechnik GmbH",
+      "models": [
+        {
+          "name": "SB-BACnet",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "TCS Basys Controls",
+      "models": [
+        {
+          "name": "Advanced Air Handler Unit",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "UbiquiSTAT",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "TRIACTA Power Technologies Inc.",
+      "models": [
+        {
+          "name": "GATEWAY/GATEWAY-S",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "POWERHAWK",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "TRIATEK",
+      "models": [
+        {
+          "name": "xMS-165x family",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "TROX Air Conditioning Components (Suzhou) Co. Ltd.",
+      "models": [
+        {
+          "name": "TROXNETCOM AS-Interface Communication Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Thermokon Sensortechnik GmbH",
+      "models": [
+        {
+          "name": "Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "TongFang Technovator Int. (Beijing) Co., Ltd.",
+      "models": [
+        {
+          "name": "Techcon Neosys Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Toshiba Carrier Corporation",
+      "models": [
+        {
+          "name": "BN interface",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Trane USA, Inc.",
+      "models": [
+        {
+          "name": "Symbio",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Symbio™",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Symbio™ 800",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "TR200™ Series Variable Frequency Drives",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Tracer®",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Tracer® EnsembleTM",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Tracer™ UC210 Programmable Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Tracer™ UC400 Programmable Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Tracer™ UC600 Programmable Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "Trane BACnet Communication Interface (BCI2)",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Trane TR150",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Trend Control Systems",
+      "models": [
+        {
+          "name": "IQ4",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "IQVISION",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "IQX12",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "IQeco",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Trend RS50 & RD50 Indoor Air Quality Sensor",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Trend RV100 Wall Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Tridium, Inc",
+      "models": [
+        {
+          "name": "961 series BACnet Thermostat Driver",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "EDGE-10",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Edge 10",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "JACE 8000",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "JACE-8000",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "JACE-9000",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Niagara 4 Supervisor BACnet Advanced Workstation",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "Niagara AX Supervisor with BACnet B-AWS",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        },
+        {
+          "name": "VT9631D Series Driver",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VYKON IO",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "UV Partners, Inc",
+      "models": [
+        {
+          "name": "UV Angel Clean Air Active™",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Unitec Corporation",
+      "models": [
+        {
+          "name": "BACnet Gateway Series",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "VERIS Industries",
+      "models": [
+        {
+          "name": "Enercept Flex",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VERIS E71 Series Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Veris E50H2 DIN-Rail Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Veris E51H2 DIN-Rail Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Vacon Oy",
+      "models": [
+        {
+          "name": "VACON 100",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Vaisala Oyj",
+      "models": [
+        {
+          "name": "HMD60",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Origo10",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "XMW90",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        }
+      ]
+    },
+    {
+      "name": "Vector Controls GmbH",
+      "models": [
+        {
+          "name": "CS1-BAC-002",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "CS2-BAC-001",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Vertiv",
+      "models": [
+        {
+          "name": "Liebert® IntelliSlot® Unity Card",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "iCOM – High Definition",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Viessmann Holding International GmbH",
+      "models": [
+        {
+          "name": "Vitogate",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "WAGO GmbH & Co. KG",
+      "models": [
+        {
+          "name": "BACnet MS/TP-Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BACnet/IP-Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "BACnet/IP-Controller ECO",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Compact Controller 100",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Controller BACnet/IP",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Controller BACnet/IP ECO",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Controller PFC100",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Controller PFC200",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Controller PFC300",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Fieldbus Coupler BACnet/IP",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Touch Panel 600 | Edge Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Touch Panel 600 | Edge-Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        }
+      ]
+    },
+    {
+      "name": "WAREMA Renkhoff SE",
+      "models": [
+        {
+          "name": "BACnet 4M230.8I AP",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "WindowMaster International A/S",
+      "models": [
+        {
+          "name": "CompactSmoke™ Smoke Panel, Comfort MotorController",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "WSA 5MC BACnet-IP",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Xylem",
+      "models": [
+        {
+          "name": "AquaForce Pump Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "HYDROVAR",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "Hydrovar X",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        },
+        {
+          "name": "TechnoForce Pump Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Technologic Constant Speed Pump Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Technologic PPS Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Technologic Pump Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "ecocirc XL",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator"
+        }
+      ]
+    },
+    {
+      "name": "Yaskawa America, Inc.",
+      "models": [
+        {
+          "name": "AC Motor Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "BACnet Option Kit",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Commercial HVAC Drive",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "HVAC Matrix Drive",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "JOHB-SMP3 BACnet/IP Option",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "VFD Bypass",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "Zhejiang Mislin Technology Co., Ltd.",
+      "models": [
+        {
+          "name": "IoT/Smart Building Controller",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        }
+      ]
+    },
+    {
+      "name": "Zumtobel Lighting GmbH",
+      "models": [
+        {
+          "name": "LITECOM INF BACNET",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "bticino",
+      "models": [
+        {
+          "name": "UXOne",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "evon GmbH",
+      "models": [
+        {
+          "name": "evon XAMControl",
+          "type": "B-AWS",
+          "typeLabel": "Workstation"
+        }
+      ]
+    },
+    {
+      "name": "iSMA CONTROLLI S.p.A.",
+      "models": [
+        {
+          "name": "BACnet Modbus I/O Modules - COMPACT Series",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "MINI-Series",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "Master Application Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller"
+        },
+        {
+          "name": "Multiprotocol I/O modules: MIX-series, Max-series",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor"
+        },
+        {
+          "name": "iSMA-B-AAC20 Series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller"
+        },
+        {
+          "name": "iSMA-B-FCU Series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "nano EDGE ENGINE series",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
+      ]
+    },
+    {
+      "name": "tekmar Control Systems",
+      "models": [
+        {
+          "name": "BACnet Snow/Ice Sensor Interface 681",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Mixed Plant Boiler Stager",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        },
+        {
+          "name": "Snow Melting Control 680",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller"
+        }
       ]
     }
   ]
