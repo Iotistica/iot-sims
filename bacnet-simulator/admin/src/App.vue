@@ -9,6 +9,7 @@ import TemplatePickerModal from './components/TemplatePickerModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import type { Device, SimObject, Meta, Health } from './types'
 import { api } from './api'
+import { EditOutlined, DeleteOutlined, ApiOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
 
@@ -225,8 +226,12 @@ onUnmounted(() => {
               <div style="font-size:11px;color:#aaa">ID {{ d.device_instance }}</div>
             </div>
             <a-space :size="2">
-              <a-button type="text" size="small" title="Edit" @click.stop="openEditDevice(d)">✏</a-button>
-              <a-button type="text" size="small" danger title="Delete" @click.stop="deleteDevice(d)">✕</a-button>
+              <a-button type="text" size="small" title="Edit" @click.stop="openEditDevice(d)">
+                <template #icon><EditOutlined /></template>
+              </a-button>
+              <a-button type="text" size="small" danger title="Delete" @click.stop="deleteDevice(d)">
+                <template #icon><DeleteOutlined /></template>
+              </a-button>
             </a-space>
           </div>
         </a-layout-sider>
@@ -234,8 +239,8 @@ onUnmounted(() => {
         <!-- Content: objects -->
         <a-layout-content style="overflow:auto;padding:20px">
 
-          <div v-if="!selectedDevice" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px;color:#ccc">
-            <span style="font-size:52px">📡</span>
+          <div v-if="!selectedDevice" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px">
+            <ApiOutlined style="font-size:48px;color:#d9d9d9" />
             <span style="font-size:15px;color:#bbb">Select a device to manage its objects</span>
           </div>
 

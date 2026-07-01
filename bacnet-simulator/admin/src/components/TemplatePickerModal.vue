@@ -1,6 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, type Component } from 'vue'
 import { message } from 'ant-design-vue'
+import {
+  ControlOutlined,
+  FilterOutlined,
+  SyncOutlined,
+  ClusterOutlined,
+  FireOutlined,
+  DashboardOutlined,
+  ThunderboltOutlined,
+  BulbOutlined,
+} from '@ant-design/icons-vue'
 import { api } from '../api'
 
 const props = defineProps<{
@@ -24,7 +34,7 @@ interface Template {
   key: string
   label: string
   desc: string
-  icon: string
+  icon: Component
   objects: TplObject[]
 }
 
@@ -33,7 +43,7 @@ const TEMPLATES: Template[] = [
     key: 'ahu',
     label: 'Air Handling Unit',
     desc: 'Supply/return fans, temps, valves, static pressure, alarms',
-    icon: '🌬️',
+    icon: ControlOutlined,
     objects: [
       { object_type: 'binary-input',  object_instance:  1, name: 'SF-Run',              units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}' },
       { object_type: 'binary-input',  object_instance:  2, name: 'RF-Run',              units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}' },
@@ -56,7 +66,7 @@ const TEMPLATES: Template[] = [
     key: 'vav',
     label: 'VAV Box',
     desc: 'Zone temp, airflow, damper, reheat valve, CO₂, occupancy',
-    icon: '🔲',
+    icon: FilterOutlined,
     objects: [
       { object_type: 'analog-input',  object_instance: 1, name: 'Zone-Temp',      units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":22,"noise":0.3}' },
       { object_type: 'analog-value',  object_instance: 2, name: 'Zone-Setpoint',  units: 'degrees-celsius',       behavior: 'constant',    behavior_params: '{"value":22}' },
@@ -72,7 +82,7 @@ const TEMPLATES: Template[] = [
     key: 'fcu',
     label: 'Fan Coil Unit',
     desc: 'Room temp, setpoint, cooling/heating valves, fan speeds',
-    icon: '❄️',
+    icon: SyncOutlined,
     objects: [
       { object_type: 'analog-input',  object_instance: 1, name: 'Room-Temp',      units: 'degrees-celsius', behavior: 'sine',     behavior_params: '{"base":23,"amplitude":1,"period_hours":24}' },
       { object_type: 'analog-value',  object_instance: 2, name: 'Room-Setpoint',  units: 'degrees-celsius', behavior: 'constant', behavior_params: '{"value":22}' },
@@ -87,7 +97,7 @@ const TEMPLATES: Template[] = [
     key: 'chiller',
     label: 'Chiller Plant',
     desc: 'Dual chillers, condenser tower, CW loop flow & temps',
-    icon: '🧊',
+    icon: ClusterOutlined,
     objects: [
       { object_type: 'binary-input', object_instance:  1, name: 'CH-1-Run',              units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}' },
       { object_type: 'analog-input', object_instance:  2, name: 'CH-1-kW',               units: 'kilowatts',         behavior: 'random_walk', behavior_params: '{"value":212,"step":8,"min":80,"max":320}' },
@@ -110,7 +120,7 @@ const TEMPLATES: Template[] = [
     key: 'boiler',
     label: 'Hot Water Boiler',
     desc: 'Dual boilers, HW supply/return temps, pumps, gas flow',
-    icon: '🔥',
+    icon: FireOutlined,
     objects: [
       { object_type: 'binary-input', object_instance:  1, name: 'BLR-1-Run',        units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}' },
       { object_type: 'analog-input', object_instance:  2, name: 'BLR-1-Firing-Rate', units: 'percent',               behavior: 'noise',       behavior_params: '{"base":62,"noise":5}' },
@@ -129,7 +139,7 @@ const TEMPLATES: Template[] = [
     key: 'bms',
     label: 'BMS / Supervisor',
     desc: 'Building occupancy, alarms, energy, outside air conditions',
-    icon: '🏢',
+    icon: DashboardOutlined,
     objects: [
       { object_type: 'binary-value', object_instance: 1, name: 'Building-Occupied',    units: 'no-units',      behavior: 'manual',      behavior_params: '{"value":true}' },
       { object_type: 'analog-value', object_instance: 2, name: 'Active-Alarms',        units: 'no-units',      behavior: 'random_walk', behavior_params: '{"value":2,"step":1,"min":0,"max":8}' },
@@ -143,7 +153,7 @@ const TEMPLATES: Template[] = [
     key: 'meter',
     label: 'Electric Meter',
     desc: 'Active power, energy, voltage L1/L2, current, power factor',
-    icon: '⚡',
+    icon: ThunderboltOutlined,
     objects: [
       { object_type: 'analog-input', object_instance: 1, name: 'Active-Power-kW', units: 'kilowatts',     behavior: 'noise',       behavior_params: '{"base":45,"noise":3}' },
       { object_type: 'analog-input', object_instance: 2, name: 'Energy-kWh',      units: 'kilowatt-hours',behavior: 'random_walk', behavior_params: '{"value":1000,"step":0.05,"min":0,"max":999999}' },
@@ -157,7 +167,7 @@ const TEMPLATES: Template[] = [
     key: 'lighting',
     label: 'Lighting Controller',
     desc: '3-zone dimming levels, overrides, occupancy, setpoints',
-    icon: '💡',
+    icon: BulbOutlined,
     objects: [
       { object_type: 'analog-output', object_instance: 1, name: 'Zone-1-Level',         units: 'percent',  behavior: 'manual',   behavior_params: '{"value":100}' },
       { object_type: 'analog-output', object_instance: 2, name: 'Zone-2-Level',         units: 'percent',  behavior: 'manual',   behavior_params: '{"value":80}' },
@@ -263,7 +273,15 @@ async function apply() {
           color="blue"
           style="position:absolute;top:8px;right:8px;font-size:10px;line-height:16px;padding:0 5px"
         >Suggested</a-tag>
-        <div style="font-size:22px;margin-bottom:4px">{{ tpl.icon }}</div>
+        <component
+          :is="tpl.icon"
+          :style="{
+            fontSize: '22px',
+            color: selected === tpl.key ? '#1890ff' : suggestedKey === tpl.key ? '#4096ff' : '#8c8c8c',
+            marginBottom: '6px',
+            display: 'block',
+          }"
+        />
         <div style="font-weight:600;font-size:13px;margin-bottom:3px">{{ tpl.label }}</div>
         <div style="font-size:11px;color:#888;line-height:1.4">{{ tpl.desc }}</div>
         <div style="margin-top:6px;font-size:11px;color:#aaa">{{ tpl.objects.length }} objects</div>
