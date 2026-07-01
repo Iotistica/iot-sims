@@ -327,6 +327,8 @@ onUnmounted(() => {
     <TemplatePickerModal
       v-model:open="templateModalOpen"
       :device-id="selectedDevice?.id"
+      :vendor-name="selectedDevice?.vendor_name"
+      :model-name="selectedDevice?.model_name"
       @applied="loadObjects"
     />
 

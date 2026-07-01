@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { api } from '../api'
 
-const props = defineProps<{ open: boolean; deviceId: number | undefined }>()
+const props = defineProps<{
+  open: boolean
+  deviceId: number | undefined
+  vendorName?: string
+  modelName?: string
+}>()
 const emit  = defineEmits<{ 'update:open': [v: boolean]; applied: [] }>()
 
 interface TplObject {
@@ -170,6 +175,37 @@ const selected = ref<string | null>(null)
 const applying = ref(false)
 const progress = ref(0)
 
+// ── Smart suggestion based on vendor + model name ─────────────────────────────
+
+const suggestedKey = computed<string | null>(() => {
+  const text = `${props.vendorName ?? ''} ${props.modelName ?? ''}`.toLowerCase()
+  if (!text.trim()) return null
+
+  if (/\bvav\b|variable.air.vol/.test(text))                           return 'vav'
+  if (/fan.coil|\bfcu\b/.test(text))                                   return 'fcu'
+  if (/\bahu\b|air.handl/.test(text))                                  return 'ahu'
+  if (/chiller|cooling.plant/.test(text))                              return 'chiller'
+  if (/boiler|hot.water|heating.plant/.test(text))                     return 'boiler'
+  if (/\bmeter\b|wattnode|power.analyz|powerscout|acurev|acuvim/.test(text)) return 'meter'
+  if (/light|dimm|wavelinx|\bdali\b/.test(text))                       return 'lighting'
+  if (/supervisor|workstation|\bbms\b|scada|webctrl|orcaview|pcvue|savic|enteli.?web/.test(text)) return 'bms'
+  // vendor-specific hints
+  if (/dent.instr|badger.meter|accuenergy|carlo.gav|watt.?node/.test(text)) return 'meter'
+  if (/cooper.light|current.light|blue.ridge|bacmove|dali/.test(text)) return 'lighting'
+  if (/belimo|danfoss|armstrong|condair/.test(text))                   return 'ahu'
+  if (/delta.controls/.test(text) && /dvc|vav/.test(text))            return 'vav'
+  // profile-type keywords that appear in many model names
+  if (/\bb-bc\b|\bb-aac\b/.test(text))                                return 'bms'
+  if (/\bb-ss\b/.test(text))                                           return 'meter'
+
+  return null
+})
+
+// Auto-select suggestion when modal opens
+watch(() => props.open, (isOpen) => {
+  if (isOpen) selected.value = suggestedKey.value
+})
+
 function selectTemplate(key: string) {
   selected.value = selected.value === key ? null : key
 }
@@ -207,17 +243,26 @@ async function apply() {
     :footer="null"
     @cancel="emit('update:open', false)"
   >
+    <div v-if="suggestedKey && (vendorName || modelName)" style="margin-bottom:10px;font-size:12px;color:#1890ff">
+      Based on <strong>{{ vendorName }}{{ modelName ? ` — ${modelName}` : '' }}</strong>
+    </div>
+
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
       <div
         v-for="tpl in TEMPLATES"
         :key="tpl.key"
-        style="border:2px solid;border-radius:8px;padding:12px 14px;cursor:pointer;transition:all .15s"
+        style="border:2px solid;border-radius:8px;padding:12px 14px;cursor:pointer;transition:all .15s;position:relative"
         :style="{
-          borderColor: selected === tpl.key ? '#1890ff' : '#e8e8e8',
+          borderColor: selected === tpl.key ? '#1890ff' : suggestedKey === tpl.key ? '#91caff' : '#e8e8e8',
           background: selected === tpl.key ? '#e6f7ff' : 'white',
         }"
         @click="selectTemplate(tpl.key)"
       >
+        <a-tag
+          v-if="suggestedKey === tpl.key"
+          color="blue"
+          style="position:absolute;top:8px;right:8px;font-size:10px;line-height:16px;padding:0 5px"
+        >Suggested</a-tag>
         <div style="font-size:22px;margin-bottom:4px">{{ tpl.icon }}</div>
         <div style="font-weight:600;font-size:13px;margin-bottom:3px">{{ tpl.label }}</div>
         <div style="font-size:11px;color:#888;line-height:1.4">{{ tpl.desc }}</div>
