@@ -155,6 +155,7 @@ async function doSetValue() {
 // Table
 const BEHAVIOR_COLOR: Record<string, string> = {
   constant: 'default', sine: 'blue', noise: 'orange', random_walk: 'purple', manual: 'red',
+  schedule: 'cyan', ramp: 'green', fault: 'volcano',
 }
 
 const columns: TableColumnsType = [

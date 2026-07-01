@@ -60,7 +60,7 @@ VALID_OBJECT_TYPES = {
     "binary-input", "binary-output", "binary-value",
 }
 
-VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual"}
+VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault"}
 
 BACNET_UNITS = [
     "no-units", "degrees-celsius", "degrees-fahrenheit", "kelvin",
@@ -543,6 +543,93 @@ class ManualBehavior(Behavior):
         return self._value
 
 
+class ScheduleBehavior(Behavior):
+    """Returns different values based on time-of-day blocks (occupied/unoccupied scheduling)."""
+
+    @staticmethod
+    def _parse_time(t: str) -> float:
+        try:
+            h, m = t.split(":")
+            return int(h) + int(m) / 60.0
+        except Exception:
+            return 0.0
+
+    def __init__(self, params: dict):
+        self.default = float(params.get("default", 0))
+        raw_blocks = params.get("blocks", [])
+        self.blocks = sorted(
+            [{"start": self._parse_time(b.get("start", "00:00")), "value": float(b.get("value", 0))}
+             for b in raw_blocks if isinstance(b, dict)],
+            key=lambda b: b["start"],
+        )
+
+    def compute(self, state: SimState) -> float:
+        current = state.time_of_day % 24
+        value = self.default
+        for block in self.blocks:
+            if current >= block["start"]:
+                value = block["value"]
+            else:
+                break
+        return value
+
+
+class RampBehavior(Behavior):
+    """Linearly ramps from one value to another over a fixed duration, optionally repeating."""
+
+    def __init__(self, params: dict):
+        self.from_val = float(params.get("from", 0))
+        self.to_val = float(params.get("to", 100))
+        self.duration_seconds = float(params.get("duration_minutes", 60)) * 60
+        self.repeat = bool(params.get("repeat", True))
+
+    def compute(self, state: SimState) -> float:
+        if self.duration_seconds <= 0:
+            return self.to_val
+        if self.repeat:
+            t = state.elapsed_seconds % self.duration_seconds
+        else:
+            t = min(state.elapsed_seconds, self.duration_seconds)
+        frac = t / self.duration_seconds
+        return self.from_val + (self.to_val - self.from_val) * frac
+
+
+class FaultBehavior(Behavior):
+    """Wraps a base behavior and randomly injects fault conditions (spike, stuck, offline)."""
+
+    def __init__(self, params: dict):
+        self._base_behavior_name = params.get("base_behavior", "constant")
+        self._base_params = params.get("base_params", {"value": 0})
+        self._inner: Optional[Behavior] = None
+        self.fault_type = params.get("fault_type", "spike")
+        self.fault_value = float(params.get("fault_value", 999))
+        self.mtbf_minutes = float(params.get("mtbf_minutes", 60))
+        self.fault_duration_seconds = float(params.get("fault_duration_seconds", 30))
+        self._fault_active = False
+        self._fault_end_elapsed: float = -1.0
+
+    def compute(self, state: SimState) -> float:
+        if self._inner is None:
+            self._inner = make_behavior(self._base_behavior_name, json.dumps(self._base_params))
+
+        if self._fault_active and state.elapsed_seconds > self._fault_end_elapsed:
+            self._fault_active = False
+
+        if not self._fault_active:
+            prob_per_tick = 1.0 / max(1.0, self.mtbf_minutes * 60.0)
+            if random.random() < prob_per_tick:
+                self._fault_active = True
+                if self.fault_type == "spike":
+                    self._fault_end_elapsed = state.elapsed_seconds
+                else:
+                    self._fault_end_elapsed = state.elapsed_seconds + self.fault_duration_seconds
+
+        if self._fault_active:
+            return 0.0 if self.fault_type == "offline" else self.fault_value
+
+        return float(self._inner.compute(state))
+
+
 def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> Behavior:
     try:
         params = json.loads(params_json) if params_json else {}
@@ -558,6 +645,12 @@ def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> 
         return RandomWalkBehavior(params)
     if behavior == "manual":
         return ManualBehavior(params, manual_value)
+    if behavior == "schedule":
+        return ScheduleBehavior(params)
+    if behavior == "ramp":
+        return RampBehavior(params)
+    if behavior == "fault":
+        return FaultBehavior(params)
     return ConstantBehavior({"value": 0})
 
 

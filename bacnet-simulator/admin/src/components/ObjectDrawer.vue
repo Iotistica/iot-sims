@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type { SimObject, Meta } from '../types'
 
@@ -12,12 +13,15 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'update:open': [v: boolean]; saved: [] }>()
 
-const DEFAULT_PARAMS: Record<string, Record<string, number>> = {
+const DEFAULT_PARAMS: Record<string, any> = {
   constant:    { value: 0 },
   manual:      { value: 0 },
   sine:        { base: 20, amplitude: 5, period_hours: 24, phase_hours: 0 },
   noise:       { base: 0, noise: 1 },
   random_walk: { value: 50, step: 1, min: 0, max: 100 },
+  schedule:    { default: 18, blocks: [{ start: '07:00', value: 22 }, { start: '18:00', value: 18 }] },
+  ramp:        { from: 0, to: 100, duration_minutes: 60, repeat: true },
+  fault:       { base_behavior: 'constant', base_params: { value: 22 }, fault_type: 'spike', fault_value: 999, mtbf_minutes: 60, fault_duration_seconds: 30 },
 }
 
 const loading = ref(false)
@@ -29,7 +33,24 @@ const form = reactive({
   behavior: 'constant',
   enabled: true,
 })
-const params = ref<Record<string, number>>({ value: 0 })
+const params = ref<any>({ value: 0 })
+
+function addScheduleBlock() {
+  if (!Array.isArray(params.value.blocks)) params.value.blocks = []
+  params.value = { ...params.value, blocks: [...params.value.blocks, { start: '12:00', value: 0 }] }
+}
+function removeScheduleBlock(i: number) {
+  params.value = { ...params.value, blocks: params.value.blocks.filter((_: any, idx: number) => idx !== i) }
+}
+function onFaultBaseChange() {
+  const defaults: Record<string, any> = {
+    constant: { value: 22 },
+    sine: { base: 20, amplitude: 5, period_hours: 24, phase_hours: 0 },
+    noise: { base: 20, noise: 1 },
+    random_walk: { value: 50, step: 1, min: 0, max: 100 },
+  }
+  params.value = { ...params.value, base_params: defaults[params.value.base_behavior] ?? { value: 0 } }
+}
 
 watch(() => props.open, (v) => {
   if (!v) return
@@ -207,6 +228,159 @@ async function save() {
               </a-form-item>
             </a-col>
           </a-row>
+        </template>
+
+        <!-- schedule -->
+        <template v-else-if="form.behavior === 'schedule'">
+          <a-form-item label="Default value (before first block)" style="margin-bottom:10px">
+            <a-input-number v-model:value="params.default" style="width:100%" :step="1" />
+          </a-form-item>
+          <div style="font-size:11px;font-weight:600;color:#555;margin-bottom:6px">Time Blocks</div>
+          <div
+            v-for="(block, i) in params.blocks" :key="i"
+            style="display:flex;gap:8px;align-items:center;margin-bottom:6px"
+          >
+            <a-input v-model:value="block.start" placeholder="HH:MM" style="width:86px;font-family:monospace" />
+            <a-input-number v-model:value="block.value" :step="0.5" style="flex:1" placeholder="Value" />
+            <a-button type="text" size="small" danger @click="removeScheduleBlock(i)">
+              <template #icon><MinusCircleOutlined /></template>
+            </a-button>
+          </div>
+          <a-button size="small" block @click="addScheduleBlock" style="margin-top:2px">
+            <template #icon><PlusOutlined /></template>
+            Add Time Block
+          </a-button>
+          <div style="font-size:11px;color:#aaa;margin-top:6px">
+            Blocks fire at the given wall-clock time; value before the first block uses the default.
+          </div>
+        </template>
+
+        <!-- ramp -->
+        <template v-else-if="form.behavior === 'ramp'">
+          <a-row :gutter="12">
+            <a-col :span="12">
+              <a-form-item label="From">
+                <a-input-number v-model:value="params.from" style="width:100%" :step="1" />
+              </a-form-item>
+            </a-col>
+            <a-col :span="12">
+              <a-form-item label="To">
+                <a-input-number v-model:value="params.to" style="width:100%" :step="1" />
+              </a-form-item>
+            </a-col>
+          </a-row>
+          <a-row :gutter="12">
+            <a-col :span="14">
+              <a-form-item label="Duration (minutes)" style="margin-bottom:0">
+                <a-input-number v-model:value="params.duration_minutes" :min="0.1" :step="5" style="width:100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :span="10">
+              <a-form-item label="Repeat" style="margin-bottom:0">
+                <a-switch v-model:checked="params.repeat" style="margin-top:5px" />
+              </a-form-item>
+            </a-col>
+          </a-row>
+        </template>
+
+        <!-- fault -->
+        <template v-else-if="form.behavior === 'fault'">
+          <a-row :gutter="12" style="margin-bottom:2px">
+            <a-col :span="12">
+              <a-form-item label="Base Behavior">
+                <a-select v-model:value="params.base_behavior" @change="onFaultBaseChange">
+                  <a-select-option value="constant">constant</a-select-option>
+                  <a-select-option value="sine">sine</a-select-option>
+                  <a-select-option value="noise">noise</a-select-option>
+                  <a-select-option value="random_walk">random_walk</a-select-option>
+                </a-select>
+              </a-form-item>
+            </a-col>
+            <a-col :span="12">
+              <a-form-item label="Fault Type">
+                <a-select v-model:value="params.fault_type">
+                  <a-select-option value="spike">spike</a-select-option>
+                  <a-select-option value="stuck">stuck</a-select-option>
+                  <a-select-option value="offline">offline (→ 0)</a-select-option>
+                </a-select>
+              </a-form-item>
+            </a-col>
+          </a-row>
+
+          <div style="background:#f5f5f5;border-radius:4px;padding:10px;margin-bottom:10px">
+            <div style="font-size:11px;color:#888;margin-bottom:8px;font-weight:600">Base behavior params</div>
+            <template v-if="params.base_behavior === 'constant'">
+              <a-form-item label="Value" style="margin-bottom:0">
+                <a-input-number v-model:value="params.base_params.value" style="width:100%" :step="0.5" />
+              </a-form-item>
+            </template>
+            <template v-else-if="params.base_behavior === 'sine'">
+              <a-row :gutter="8">
+                <a-col :span="12">
+                  <a-form-item label="Base" style="margin-bottom:0">
+                    <a-input-number v-model:value="params.base_params.base" style="width:100%" :step="0.5" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="Amplitude" style="margin-bottom:0">
+                    <a-input-number v-model:value="params.base_params.amplitude" style="width:100%" :step="0.5" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+            </template>
+            <template v-else-if="params.base_behavior === 'noise'">
+              <a-row :gutter="8">
+                <a-col :span="12">
+                  <a-form-item label="Base" style="margin-bottom:0">
+                    <a-input-number v-model:value="params.base_params.base" style="width:100%" :step="0.5" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="12">
+                  <a-form-item label="Noise ±" style="margin-bottom:0">
+                    <a-input-number v-model:value="params.base_params.noise" :min="0" style="width:100%" :step="0.1" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+            </template>
+            <template v-else-if="params.base_behavior === 'random_walk'">
+              <a-row :gutter="8">
+                <a-col :span="8">
+                  <a-form-item label="Start" style="margin-bottom:0">
+                    <a-input-number v-model:value="params.base_params.value" style="width:100%" :step="1" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <a-form-item label="Min" style="margin-bottom:0">
+                    <a-input-number v-model:value="params.base_params.min" style="width:100%" :step="1" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <a-form-item label="Max" style="margin-bottom:0">
+                    <a-input-number v-model:value="params.base_params.max" style="width:100%" :step="1" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+            </template>
+          </div>
+
+          <a-row :gutter="12">
+            <a-col :span="12">
+              <a-form-item label="Fault Value" style="margin-bottom:0">
+                <a-input-number v-model:value="params.fault_value" style="width:100%" :step="1" />
+              </a-form-item>
+            </a-col>
+            <a-col :span="12">
+              <a-form-item label="MTBF (minutes)" style="margin-bottom:0">
+                <a-input-number v-model:value="params.mtbf_minutes" :min="0.1" :step="5" style="width:100%" />
+              </a-form-item>
+            </a-col>
+          </a-row>
+          <a-form-item v-if="params.fault_type !== 'spike'" label="Fault Duration (seconds)" style="margin-top:10px;margin-bottom:0">
+            <a-input-number v-model:value="params.fault_duration_seconds" :min="1" :step="5" style="width:100%" />
+          </a-form-item>
+          <div style="font-size:11px;color:#aaa;margin-top:6px">
+            spike = one bad reading; stuck = freeze at fault value; offline = drop to zero
+          </div>
         </template>
       </div>
     </a-form>
