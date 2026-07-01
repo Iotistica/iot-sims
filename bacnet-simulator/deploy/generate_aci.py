@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Generates aci-deploy.json for az container create --file."""
+"""Generates aci-deploy.json for az rest --method PUT (ARM REST API body).
+
+The apiVersion and container group name go in the URL, not the body, so this
+file contains only location + properties.  Using az rest instead of
+'az container create --file' is required to preserve UDP protocol on ports --
+the az container CLI command silently converts all ports to TCP.
+"""
 import json, os, sys
 
 required = ["ACI_NAME", "ACI_DNS_LABEL", "IMAGE", "STORAGE_KEY"]
@@ -9,8 +15,6 @@ if missing:
     sys.exit(1)
 
 config = {
-    "apiVersion": "2021-10-01",
-    "name": os.environ["ACI_NAME"],
     "location": "canadacentral",
     "properties": {
         "containers": [{
