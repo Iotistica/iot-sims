@@ -10,7 +10,7 @@ import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import type { Device, SimObject, Meta, Health } from './types'
 import { api } from './api'
-import { EditOutlined, DeleteOutlined, ApiOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
 
@@ -100,6 +100,38 @@ function selectDevice(d: Device) {
 function openAddDevice() { editingDevice.value = null; deviceDrawerOpen.value = true }
 function openEditDevice(d: Device) { editingDevice.value = d; deviceDrawerOpen.value = true }
 async function onDeviceSaved() { await loadDevices(); await loadHealth() }
+async function duplicateDevice(d: Device) {
+  const nextInstance = devices.value.length
+    ? Math.max(...devices.value.map(x => x.device_instance)) + 1
+    : d.device_instance + 1
+  try {
+    const created = await api.devices.create({
+      device_instance: nextInstance,
+      name:            `${d.name} Copy`,
+      description:     d.description,
+      vendor_name:     d.vendor_name,
+      model_name:      d.model_name,
+      enabled:         d.enabled,
+    })
+    const srcObjects = await api.objects.list(d.id)
+    for (const obj of srcObjects) {
+      await api.objects.create(created.id, {
+        object_type:     obj.object_type,
+        object_instance: obj.object_instance,
+        name:            obj.name,
+        units:           obj.units,
+        behavior:        obj.behavior,
+        behavior_params: obj.behavior_params,
+        enabled:         obj.enabled,
+      })
+    }
+    await loadDevices()
+    await loadHealth()
+    message.success(`Duplicated "${d.name}" with ${srcObjects.length} object${srcObjects.length !== 1 ? 's' : ''}`)
+  } catch (e: unknown) {
+    message.error((e as Error).message)
+  }
+}
 function deleteDevice(d: Device) {
   Modal.confirm({
     title: `Delete "${d.name}"?`,
@@ -252,6 +284,9 @@ onUnmounted(() => {
             <a-space :size="2">
               <a-button type="text" size="small" title="Edit" @click.stop="openEditDevice(d)">
                 <template #icon><EditOutlined /></template>
+              </a-button>
+              <a-button type="text" size="small" title="Duplicate" @click.stop="duplicateDevice(d)">
+                <template #icon><CopyOutlined /></template>
               </a-button>
               <a-button type="text" size="small" danger title="Delete" @click.stop="deleteDevice(d)">
                 <template #icon><DeleteOutlined /></template>
