@@ -6,6 +6,7 @@ import DeviceDrawer from './components/DeviceDrawer.vue'
 import ObjectDrawer from './components/ObjectDrawer.vue'
 import ProfilesDrawer from './components/ProfilesDrawer.vue'
 import TemplatePickerModal from './components/TemplatePickerModal.vue'
+import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import type { Device, SimObject, Meta, Health } from './types'
 import { api } from './api'
@@ -27,6 +28,7 @@ const objectDrawerOpen  = ref(false)
 const editingObject     = ref<SimObject | null>(null)
 const profilesDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
+const saveTemplateOpen     = ref(false)
 
 // Set-value modal
 const setValOpen    = ref(false)
@@ -255,6 +257,7 @@ onUnmounted(() => {
                 </div>
               </div>
               <a-space>
+                <a-button :disabled="!objects.length" @click="saveTemplateOpen = true">Save as Template</a-button>
                 <a-button @click="templateModalOpen = true">From Template</a-button>
                 <a-button type="primary" @click="openAddObject">+ Add Object</a-button>
               </a-space>
@@ -327,6 +330,13 @@ onUnmounted(() => {
     <ProfilesDrawer
       v-model:open="profilesDrawerOpen"
       @loaded="async () => { await loadDevices(); selectedDevice.value = null; objects.value = []; await loadHealth() }"
+    />
+
+    <!-- Save as template -->
+    <SaveTemplateModal
+      v-model:open="saveTemplateOpen"
+      :objects="objects"
+      :device-name="selectedDevice?.name"
     />
 
     <!-- Template picker -->

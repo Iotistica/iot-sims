@@ -10,6 +10,8 @@ import {
   DashboardOutlined,
   ThunderboltOutlined,
   BulbOutlined,
+  FolderOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons-vue'
 import { api } from '../api'
 
@@ -181,6 +183,36 @@ const TEMPLATES: Template[] = [
   },
 ]
 
+// ── User-saved templates (localStorage) ──────────────────────────────────────
+
+interface StoredTemplate {
+  key: string
+  label: string
+  desc: string
+  objects: TplObject[]
+  createdAt: string
+}
+
+const userTemplates = ref<StoredTemplate[]>([])
+
+function loadUserTemplates() {
+  try {
+    userTemplates.value = JSON.parse(localStorage.getItem('bacnet-sim-user-templates') || '[]')
+  } catch {
+    userTemplates.value = []
+  }
+}
+
+function deleteUserTemplate(key: string, e: MouseEvent) {
+  e.stopPropagation()
+  const updated = userTemplates.value.filter(t => t.key !== key)
+  localStorage.setItem('bacnet-sim-user-templates', JSON.stringify(updated))
+  userTemplates.value = updated
+  if (selected.value === key) selected.value = null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const selected = ref<string | null>(null)
 const applying = ref(false)
 const progress = ref(0)
@@ -211,9 +243,12 @@ const suggestedKey = computed<string | null>(() => {
   return null
 })
 
-// Auto-select suggestion when modal opens
+// Auto-select suggestion when modal opens; reload user templates
 watch(() => props.open, (isOpen) => {
-  if (isOpen) selected.value = suggestedKey.value
+  if (isOpen) {
+    loadUserTemplates()
+    selected.value = suggestedKey.value
+  }
 })
 
 function selectTemplate(key: string) {
@@ -222,7 +257,10 @@ function selectTemplate(key: string) {
 
 async function apply() {
   if (!selected.value || !props.deviceId) return
-  const tpl = TEMPLATES.find(t => t.key === selected.value)!
+  const tpl =
+    TEMPLATES.find(t => t.key === selected.value) ??
+    userTemplates.value.find(t => t.key === selected.value)
+  if (!tpl) return
   applying.value = true
   progress.value = 0
 
@@ -256,6 +294,47 @@ async function apply() {
     <div v-if="suggestedKey && (vendorName || modelName)" style="margin-bottom:10px;font-size:12px;color:#1890ff">
       Based on <strong>{{ vendorName }}{{ modelName ? ` — ${modelName}` : '' }}</strong>
     </div>
+
+    <!-- User-saved templates -->
+    <template v-if="userTemplates.length">
+      <div style="font-size:11px;font-weight:700;color:#8c8c8c;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">My Templates</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+        <div
+          v-for="tpl in userTemplates"
+          :key="tpl.key"
+          style="border:2px solid;border-radius:8px;padding:12px 14px;cursor:pointer;transition:all .15s;position:relative"
+          :style="{
+            borderColor: selected === tpl.key ? '#1890ff' : '#e8e8e8',
+            background: selected === tpl.key ? '#e6f7ff' : 'white',
+          }"
+          @click="selectTemplate(tpl.key)"
+        >
+          <a-button
+            type="text"
+            size="small"
+            danger
+            style="position:absolute;top:6px;right:6px;padding:0 4px;height:20px;font-size:12px"
+            title="Delete template"
+            @click="deleteUserTemplate(tpl.key, $event)"
+          >
+            <template #icon><DeleteOutlined style="font-size:11px" /></template>
+          </a-button>
+          <FolderOutlined
+            :style="{
+              fontSize: '22px',
+              color: selected === tpl.key ? '#1890ff' : '#8c8c8c',
+              marginBottom: '6px',
+              display: 'block',
+            }"
+          />
+          <div style="font-weight:600;font-size:13px;margin-bottom:3px;padding-right:20px">{{ tpl.label }}</div>
+          <div style="font-size:11px;color:#888;line-height:1.4">{{ tpl.desc || 'Custom template' }}</div>
+          <div style="margin-top:6px;font-size:11px;color:#aaa">{{ tpl.objects.length }} objects · {{ tpl.createdAt }}</div>
+        </div>
+      </div>
+      <a-divider style="margin:0 0 14px" />
+      <div style="font-size:11px;font-weight:700;color:#8c8c8c;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">Built-in Templates</div>
+    </template>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
       <div
