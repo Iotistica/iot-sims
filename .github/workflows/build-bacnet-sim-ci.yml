@@ -183,6 +183,10 @@ jobs:
         run: |
           IMAGE="iotistic/bacnet-simulator:${{ needs.version.outputs.package_version }}"
           echo "Deploying image: ${IMAGE}"
+          az container delete \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ vars.ACI_NAME }}" \
+            --yes 2>/dev/null || true
           az container create \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --name "${{ vars.ACI_NAME }}" \
