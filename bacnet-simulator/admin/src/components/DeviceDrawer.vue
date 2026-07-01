@@ -46,7 +46,7 @@ async function loadVendors() {
   if (vendors.value.length || vendorsLoading.value) return
   vendorsLoading.value = true
   try {
-    const res = await fetch('https://raw.githubusercontent.com/Iotistica/iot-sims/main/bacnet-simulator/bacnet-vendors.json')
+    const res = await fetch('/bacnet-vendors.json')
     if (res.ok) vendors.value = (await res.json()).vendors ?? []
   } catch { } finally {
     vendorsLoading.value = false

@@ -22,7 +22,7 @@ from typing import Any, Optional, Union
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
@@ -1038,6 +1038,14 @@ async def admin_root():
     if f.exists():
         return FileResponse(str(f), media_type="text/html")
     return {"message": "Admin not built. Run: cd admin && npm ci && npm run build"}
+
+
+@api.get("/bacnet-vendors.json", include_in_schema=False)
+async def bacnet_vendors():
+    f = ADMIN_DIST / "bacnet-vendors.json"
+    if f.exists():
+        return FileResponse(str(f), media_type="application/json")
+    return JSONResponse({"vendors": []})
 
 
 @api.get("/health")

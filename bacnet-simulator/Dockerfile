@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bacnet_simulator.py .
 COPY --from=ui-builder /ui/dist ./admin/dist
+COPY bacnet-vendors.json ./admin/dist/
 
 RUN mkdir -p /data
 
