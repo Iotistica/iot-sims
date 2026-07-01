@@ -36,6 +36,7 @@ export const api = {
   profiles: {
     list:    ()                                              => req<Profile[]>('/profiles'),
     save:    (name: string, description: string)            => req<Profile>('/profiles', { method: 'POST', body: JSON.stringify({ name, description }) }),
+    update:  (id: number, name: string, description: string) => req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description }) }),
     del:     (id: number)                                   => req<null>(`/profiles/${id}`, { method: 'DELETE' }),
     load:    (id: number)                                   => req<{ ok: boolean }>(`/profiles/${id}/load`, { method: 'POST' }),
     import_: (name: string, description: string, data: object) =>

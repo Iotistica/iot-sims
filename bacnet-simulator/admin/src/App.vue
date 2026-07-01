@@ -29,7 +29,17 @@ const editingObject     = ref<SimObject | null>(null)
 const profilesDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
 const saveTemplateOpen     = ref(false)
-const activeProfileName    = ref<string | null>(null)
+
+// Active profile state
+const activeProfileId   = ref<number | null>(null)
+const activeProfileName = ref<string | null>(null)
+const activeProfileDesc = ref<string>('')
+
+// Save-profile modal
+const saveModalOpen    = ref(false)
+const saveModalName    = ref('')
+const saveModalDesc    = ref('')
+const saveModalLoading = ref(false)
 
 // Set-value modal
 const setValOpen    = ref(false)
@@ -159,7 +169,9 @@ function newProfile() {
       await Promise.allSettled(devices.value.map(d => api.devices.del(d.id)))
       selectedDevice.value = null
       objects.value = []
+      activeProfileId.value = null
       activeProfileName.value = null
+      activeProfileDesc.value = ''
       await loadDevices()
       await loadHealth()
       message.success('Ready — add your first device')
@@ -167,8 +179,49 @@ function newProfile() {
   })
 }
 
-async function onProfileLoaded(name: string) {
+function openSave() {
+  if (activeProfileId.value !== null) {
+    // Overwrite existing profile directly — no dialog
+    Modal.confirm({
+      title: `Save to "${activeProfileName.value}"?`,
+      okText: 'Save',
+      async onOk() {
+        try {
+          await api.profiles.update(activeProfileId.value!, activeProfileName.value!, activeProfileDesc.value)
+          message.success(`"${activeProfileName.value}" saved`)
+        } catch (e: unknown) {
+          message.error((e as Error).message ?? 'Failed to save')
+        }
+      },
+    })
+  } else {
+    saveModalName.value = ''
+    saveModalDesc.value = ''
+    saveModalOpen.value = true
+  }
+}
+
+async function doSave() {
+  if (!saveModalName.value.trim()) return
+  saveModalLoading.value = true
+  try {
+    const profile = await api.profiles.save(saveModalName.value.trim(), saveModalDesc.value.trim())
+    activeProfileId.value = profile.id
+    activeProfileName.value = profile.name
+    activeProfileDesc.value = profile.description
+    saveModalOpen.value = false
+    message.success(`"${profile.name}" saved`)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to save')
+  } finally {
+    saveModalLoading.value = false
+  }
+}
+
+async function onProfileLoaded(id: number, name: string, desc: string) {
+  activeProfileId.value = id
   activeProfileName.value = name
+  activeProfileDesc.value = desc
   await loadDevices()
   selectedDevice.value = null
   objects.value = []
@@ -281,9 +334,10 @@ onUnmounted(() => {
         <a-tag v-if="activeProfileName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProfileName }}</a-tag>
         <a-button size="small" @click="newProfile">
           <template #icon><FileAddOutlined /></template>
-          New Profile
+          New
         </a-button>
-        <a-button size="small" @click="profilesDrawerOpen = true">Profiles</a-button>
+        <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
+        <a-button size="small" @click="profilesDrawerOpen = true">Open</a-button>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
       </a-layout-header>
 
@@ -438,6 +492,25 @@ onUnmounted(() => {
       :model-name="selectedDevice?.model_name"
       @applied="loadObjects"
     />
+
+    <!-- Save profile modal -->
+    <a-modal
+      v-model:open="saveModalOpen"
+      title="Save Profile"
+      ok-text="Save"
+      :confirm-loading="saveModalLoading"
+      :ok-button-props="{ disabled: !saveModalName.trim() }"
+      @ok="doSave"
+    >
+      <a-form layout="vertical" style="margin-top:8px">
+        <a-form-item label="Profile Name" required>
+          <a-input v-model:value="saveModalName" placeholder="My Profile" @pressEnter="doSave" />
+        </a-form-item>
+        <a-form-item label="Description">
+          <a-input v-model:value="saveModalDesc" placeholder="Optional description" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
 
     <!-- Set value modal -->
     <a-modal

@@ -428,6 +428,24 @@ class Database:
                 (cur.lastrowid,),
             ).fetchone())
 
+    def update_profile(self, profile_id: int, name: str, description: str) -> bool:
+        with self._conn() as conn:
+            devices = [dict(r) for r in conn.execute(
+                "SELECT * FROM devices ORDER BY device_instance"
+            )]
+            for dev in devices:
+                dev["objects"] = [dict(r) for r in conn.execute(
+                    "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance",
+                    (dev["id"],),
+                )]
+            data = json.dumps({"devices": devices})
+            cur = conn.execute(
+                "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
+                (name, description, len(devices), data, profile_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
     def load_profile(self, profile_id: int) -> bool:
         with self._conn() as conn:
             row = conn.execute("SELECT data FROM profiles WHERE id=?", (profile_id,)).fetchone()
@@ -1142,6 +1160,11 @@ class ProfileCreate(BaseModel):
     description: str = Field("", max_length=500)
 
 
+class ProfileUpdate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+
+
 class ProfileImport(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
@@ -1389,6 +1412,14 @@ async def list_profiles():
 @api.post("/profiles", status_code=201)
 async def save_profile(body: ProfileCreate):
     return await asyncio.to_thread(db.save_profile, body.name, body.description)
+
+
+@api.put("/profiles/{profile_id}")
+async def update_profile(profile_id: int, body: ProfileUpdate):
+    ok = await asyncio.to_thread(db.update_profile, profile_id, body.name, body.description)
+    if not ok:
+        raise HTTPException(404, "Profile not found")
+    return {"ok": True}
 
 
 @api.delete("/profiles/{profile_id}", status_code=204)
