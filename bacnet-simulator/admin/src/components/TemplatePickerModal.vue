@@ -287,7 +287,7 @@ async function apply() {
   <a-modal
     :open="open"
     title="Load Object Template"
-    width="640"
+    :width="720"
     :footer="null"
     @cancel="emit('update:open', false)"
   >
