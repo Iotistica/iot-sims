@@ -1,4 +1,4 @@
-import type { Device, SimObject, Meta, Health, Profile, LogEntry } from './types'
+import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint } from './types'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -32,6 +32,8 @@ export const api = {
     del:      (did: number, oid: number)           => req<null>(`/devices/${did}/objects/${oid}`, { method: 'DELETE' }),
     setValue: (did: number, oid: number, value: unknown) =>
       req(`/devices/${did}/objects/${oid}/value`, { method: 'POST', body: JSON.stringify({ value }) }),
+    history: (did: number, oid: number) =>
+      req<HistoryPoint[]>(`/devices/${did}/objects/${oid}/history`),
   },
 
   profiles: {

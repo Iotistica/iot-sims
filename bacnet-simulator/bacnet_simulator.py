@@ -870,6 +870,8 @@ class SimEngine:
         self._current_values: dict = {}  # for API
         # object DB id → last logged value (for change detection)
         self._prev_values: dict[int, Any] = {}
+        # object DB id → rolling 1-hour history (720 ticks × 5 s), never persisted
+        self._history: dict[int, deque] = {}
 
     async def start(self) -> None:
         devices = await asyncio.to_thread(self.db.get_devices)
@@ -1069,6 +1071,10 @@ class SimEngine:
                     _log_event(dev["id"], "info", msg)
             self._prev_values[obj_id] = val
 
+            # Append to rolling history (1 h, never persisted)
+            hist = self._history.setdefault(obj_id, deque(maxlen=720))
+            hist.append((time.time(), 1.0 if val is True else 0.0 if val is False else float(val)))
+
             did = dev["device_instance"]
             if did not in snapshot:
                 snapshot[did] = {"device_instance": did, "name": dev["name"], "objects": []}
@@ -1095,6 +1101,7 @@ class SimEngine:
                     pass
             self._objects.clear()
             self._prev_values.clear()
+            self._history.clear()
             self._current_values = {}
             # Explicitly close the bacpypes3 socket before dropping the reference.
             # BinaryOutputObject↔PriorityArray form a circular reference that delays
@@ -1498,6 +1505,15 @@ async def set_object_value(device_id: int, obj_id: int, body: SetValueRequest):
     val_str = str(body.value) + (f" {obj['units']}" if obj.get("units") and obj["units"] != "no-units" else "")
     _log_event(device_id, "info", f"Manual override: {obj['name']} → {val_str}")
     return {"ok": True}
+
+
+@api.get("/devices/{device_id}/objects/{obj_id}/history")
+async def get_object_history(device_id: int, obj_id: int):
+    obj = await asyncio.to_thread(db.get_object, obj_id)
+    if not obj or obj["device_id"] != device_id:
+        raise HTTPException(404, "Object not found")
+    hist = engine._history.get(obj_id, deque())
+    return [{"ts": ts, "value": v} for ts, v in hist]
 
 
 # ── Profiles ──

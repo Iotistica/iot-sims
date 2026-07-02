@@ -47,6 +47,11 @@ export interface LogEntry {
   message: string
 }
 
+export interface HistoryPoint {
+  ts: number
+  value: number
+}
+
 export interface DraftObject {
   _id: string
   object_type: string

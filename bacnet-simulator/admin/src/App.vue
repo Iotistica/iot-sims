@@ -9,9 +9,9 @@ import TemplatePickerModal from './components/TemplatePickerModal.vue'
 import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
-import type { Device, SimObject, Meta, Health } from './types'
+import type { Device, SimObject, Meta, Health, HistoryPoint } from './types'
 import { api } from './api'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
 
@@ -267,6 +267,66 @@ function deleteObject(obj: SimObject) {
   })
 }
 
+// History chart
+const histModalOpen   = ref(false)
+const histObj         = ref<SimObject | null>(null)
+const histData        = ref<HistoryPoint[]>([])
+const histLoading     = ref(false)
+
+async function openHistory(obj: SimObject) {
+  if (!selectedDevice.value) return
+  histObj.value = obj
+  histData.value = []
+  histLoading.value = true
+  histModalOpen.value = true
+  try {
+    histData.value = await api.objects.history(selectedDevice.value.id, obj.id)
+  } catch { /* swallow */ } finally {
+    histLoading.value = false
+  }
+}
+
+const CHART_W = 600
+const CHART_H = 160
+const CHART_PAD = { top: 10, right: 8, bottom: 4, left: 8 }
+
+function histSvgPoints(data: HistoryPoint[]): string {
+  if (data.length < 2) return ''
+  const vals = data.map(p => p.value)
+  const tss  = data.map(p => p.ts)
+  let minV = Math.min(...vals), maxV = Math.max(...vals)
+  if (minV === maxV) { minV -= 1; maxV += 1 }
+  const minT = tss[0], maxT = tss[tss.length - 1]
+  const w = CHART_W - CHART_PAD.left - CHART_PAD.right
+  const h = CHART_H - CHART_PAD.top  - CHART_PAD.bottom
+  return data.map(p => {
+    const x = CHART_PAD.left + ((p.ts - minT) / (maxT - minT)) * w
+    const y = CHART_PAD.top  + (1 - (p.value - minV) / (maxV - minV)) * h
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+}
+
+function histStats(data: HistoryPoint[]) {
+  if (!data.length) return { min: 0, max: 0, avg: 0, current: 0 }
+  const vals = data.map(p => p.value)
+  const min = Math.min(...vals), max = Math.max(...vals)
+  const avg = vals.reduce((a, b) => a + b, 0) / vals.length
+  return { min, max, avg, current: vals[vals.length - 1] }
+}
+
+function histFmt(v: number, obj: SimObject | null): string {
+  if (!obj) return v.toFixed(2)
+  const isBinary = obj.object_type.startsWith('binary')
+  if (isBinary) return v >= 0.5 ? 'ON' : 'OFF'
+  return v.toFixed(2)
+}
+
+function histAgeLabel(data: HistoryPoint[]): string {
+  if (!data.length) return ''
+  const age = Math.round((Date.now() / 1000 - data[0].ts) / 60)
+  return age < 1 ? '< 1 min ago' : `${age} min ago`
+}
+
 // Set value
 function openSetValue(obj: SimObject) {
   setValObj.value = obj
@@ -301,7 +361,7 @@ const columns: TableColumnsType = [
   { title: 'Units',      dataIndex: 'units',           key: 'units',    width: 150 },
   { title: 'Live Value', key: 'value',                 width: 110 },
   { title: 'On',         key: 'enabled',               width: 50  },
-  { title: '',           key: 'actions',               width: 175 },
+  { title: '',           key: 'actions',               width: 200 },
 ]
 
 // Lifecycle
@@ -445,6 +505,9 @@ onUnmounted(() => {
                       style="color:#fa8c16"
                       @click="openSetValue(record as SimObject)"
                     >Set</a-button>
+                    <a-button type="link" size="small" style="color:#722ed1" @click="openHistory(record as SimObject)">
+                      <template #icon><LineChartOutlined /></template>
+                    </a-button>
                     <a-button type="link" size="small" danger @click="deleteObject(record as SimObject)">Del</a-button>
                   </a-space>
                 </template>
@@ -532,6 +595,81 @@ onUnmounted(() => {
           @pressEnter="doSetValue"
         />
       </div>
+    </a-modal>
+
+    <!-- History chart modal -->
+    <a-modal
+      v-model:open="histModalOpen"
+      :title="histObj ? `${histObj.name} — History` : 'History'"
+      :footer="null"
+      width="680px"
+      destroy-on-close
+    >
+      <div v-if="histLoading" style="text-align:center;padding:40px 0">
+        <a-spin />
+      </div>
+      <template v-else-if="histObj">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <a-tag :color="BEHAVIOR_COLOR[histObj.behavior]">{{ histObj.behavior }}</a-tag>
+          <span style="font-size:12px;color:#aaa">{{ histObj.units === 'no-units' ? '' : histObj.units }}</span>
+          <span style="font-size:12px;color:#bbb;margin-left:auto">{{ histData.length }} samples</span>
+        </div>
+
+        <div v-if="histData.length < 2" style="text-align:center;padding:40px 0;color:#bbb;font-size:13px">
+          Not enough data yet — check back after a few ticks (5 s each)
+        </div>
+        <template v-else>
+          <!-- Chart -->
+          <div style="border:1px solid #f0f0f0;border-radius:4px;background:#fafafa;overflow:hidden">
+            <svg
+              :viewBox="`0 0 ${CHART_W} ${CHART_H}`"
+              style="width:100%;display:block"
+              preserveAspectRatio="none"
+            >
+              <!-- Midline grid -->
+              <line
+                :x1="CHART_PAD.left" :y1="CHART_H / 2"
+                :x2="CHART_W - CHART_PAD.right" :y2="CHART_H / 2"
+                stroke="#e8e8e8" stroke-width="1"
+              />
+              <!-- Data line -->
+              <polyline
+                :points="histSvgPoints(histData)"
+                fill="none"
+                stroke="#1890ff"
+                stroke-width="1.5"
+                stroke-linejoin="round"
+              />
+              <!-- Fill area under line -->
+              <polyline
+                :points="`${CHART_PAD.left},${CHART_H - CHART_PAD.bottom} ${histSvgPoints(histData)} ${CHART_W - CHART_PAD.right},${CHART_H - CHART_PAD.bottom}`"
+                fill="rgba(24,144,255,0.08)"
+                stroke="none"
+              />
+            </svg>
+          </div>
+
+          <!-- Time labels -->
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#bbb;margin-top:4px;padding:0 2px">
+            <span>{{ histAgeLabel(histData) }}</span>
+            <span>now</span>
+          </div>
+
+          <!-- Stats row -->
+          <div style="display:flex;gap:0;margin-top:14px;border:1px solid #f0f0f0;border-radius:4px;overflow:hidden">
+            <div v-for="(stat, label) in { Min: histStats(histData).min, Max: histStats(histData).max, Avg: histStats(histData).avg, Current: histStats(histData).current }"
+              :key="label"
+              style="flex:1;text-align:center;padding:10px 0;border-right:1px solid #f0f0f0"
+              :style="label === 'Current' ? 'border-right:none' : ''"
+            >
+              <div style="font-size:11px;color:#aaa;margin-bottom:2px">{{ label }}</div>
+              <div style="font-size:14px;font-weight:600;font-family:monospace;color:#1890ff">
+                {{ histFmt(stat, histObj) }}
+              </div>
+            </div>
+          </div>
+        </template>
+      </template>
     </a-modal>
 
   </a-config-provider>
