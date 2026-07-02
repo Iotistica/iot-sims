@@ -1096,10 +1096,25 @@ class SimEngine:
             self._objects.clear()
             self._prev_values.clear()
             self._current_values = {}
-            # bacpypes3 doesn't expose a clean shutdown so we just clear our state
             self.app = None
         await self.start()
         log.info("Reload complete")
+
+    async def stop(self) -> None:
+        """Cleanly shut down the BACnet stack."""
+        if self.app:
+            for (bacnet_obj, _) in list(self._objects.values()):
+                try:
+                    self.app.delete_object(bacnet_obj)
+                except Exception:
+                    pass
+            self._objects.clear()
+            try:
+                await self.app.close()
+            except Exception:
+                pass
+            self.app = None
+        log.info("BACnet stack stopped")
 
     async def add_object_hot(self, device_instance: int, obj_row: dict) -> None:
         """Hot-add a single object to the running BACnet app without full reload."""
@@ -1270,10 +1285,16 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(db.seed_default)
     engine = SimEngine(db)
     await engine.start()
-    asyncio.create_task(tick_loop())
+    tick_task = asyncio.create_task(tick_loop())
     log.info("BACnet Simulator API ready on port %d", SIM_API_PORT)
     yield
     log.info("Shutting down")
+    tick_task.cancel()
+    try:
+        await tick_task
+    except asyncio.CancelledError:
+        pass
+    await engine.stop()
 
 
 # ─── FastAPI app ──────────────────────────────────────────────────────────────
