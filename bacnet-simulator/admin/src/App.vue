@@ -287,8 +287,8 @@ async function openHistory(obj: SimObject) {
 }
 
 const CHART_W = 600
-const CHART_H = 160
-const CHART_PAD = { top: 10, right: 8, bottom: 4, left: 8 }
+const CHART_H = 192
+const CHART_PAD = { top: 16, right: 12, bottom: 30, left: 52 }
 
 function histSvgPoints(data: HistoryPoint[]): string {
   if (data.length < 2) return ''
@@ -321,10 +321,33 @@ function histFmt(v: number, obj: SimObject | null): string {
   return v.toFixed(2)
 }
 
-function histAgeLabel(data: HistoryPoint[]): string {
-  if (!data.length) return ''
-  const age = Math.round((Date.now() / 1000 - data[0].ts) / 60)
-  return age < 1 ? '< 1 min ago' : `${age} min ago`
+function histYLabels(data: HistoryPoint[], obj: SimObject | null) {
+  if (data.length < 2) return []
+  const vals = data.map(p => p.value)
+  let minV = Math.min(...vals), maxV = Math.max(...vals)
+  if (minV === maxV) { minV -= 1; maxV += 1 }
+  const h = CHART_H - CHART_PAD.top - CHART_PAD.bottom
+  return [
+    { y: CHART_PAD.top,           v: maxV },
+    { y: CHART_PAD.top + h / 2,   v: (minV + maxV) / 2 },
+    { y: CHART_PAD.top + h,       v: minV },
+  ].map(t => ({ y: t.y, label: histFmt(t.v, obj) }))
+}
+
+function histXLabels(data: HistoryPoint[]) {
+  if (data.length < 2) return []
+  const tss = data.map(p => p.ts)
+  const minT = tss[0], maxT = tss[tss.length - 1]
+  const w = CHART_W - CHART_PAD.left - CHART_PAD.right
+  const now = Date.now() / 1000
+  const N = 5
+  return Array.from({ length: N }, (_, i) => {
+    const frac = i / (N - 1)
+    const ts   = minT + frac * (maxT - minT)
+    const x    = CHART_PAD.left + frac * w
+    const ageMin = Math.round((now - ts) / 60)
+    return { x, label: ageMin < 1 ? 'now' : `-${ageMin}m` }
+  })
 }
 
 // Set value
@@ -621,16 +644,48 @@ onUnmounted(() => {
         <template v-else>
           <!-- Chart -->
           <div style="border:1px solid #f0f0f0;border-radius:4px;background:#fafafa;overflow:hidden">
-            <svg
-              :viewBox="`0 0 ${CHART_W} ${CHART_H}`"
-              style="width:100%;display:block"
-              preserveAspectRatio="none"
-            >
-              <!-- Midline grid -->
+            <svg :viewBox="`0 0 ${CHART_W} ${CHART_H}`" style="width:100%;display:block">
+
+              <!-- Y-axis grid lines + labels -->
+              <template v-for="tick in histYLabels(histData, histObj)" :key="tick.y">
+                <line
+                  :x1="CHART_PAD.left" :y1="tick.y"
+                  :x2="CHART_W - CHART_PAD.right" :y2="tick.y"
+                  stroke="#efefef" stroke-width="1"
+                />
+                <text
+                  :x="CHART_PAD.left - 6" :y="tick.y"
+                  text-anchor="end" dominant-baseline="middle"
+                  font-size="11" fill="#bbb" font-family="monospace"
+                >{{ tick.label }}</text>
+              </template>
+
+              <!-- X-axis baseline -->
               <line
-                :x1="CHART_PAD.left" :y1="CHART_H / 2"
-                :x2="CHART_W - CHART_PAD.right" :y2="CHART_H / 2"
-                stroke="#e8e8e8" stroke-width="1"
+                :x1="CHART_PAD.left" :y1="CHART_H - CHART_PAD.bottom"
+                :x2="CHART_W - CHART_PAD.right" :y2="CHART_H - CHART_PAD.bottom"
+                stroke="#e0e0e0" stroke-width="1"
+              />
+
+              <!-- X-axis ticks + labels -->
+              <template v-for="tick in histXLabels(histData)" :key="tick.x">
+                <line
+                  :x1="tick.x" :y1="CHART_H - CHART_PAD.bottom"
+                  :x2="tick.x" :y2="CHART_H - CHART_PAD.bottom + 5"
+                  stroke="#d0d0d0" stroke-width="1"
+                />
+                <text
+                  :x="tick.x" :y="CHART_H - CHART_PAD.bottom + 17"
+                  text-anchor="middle"
+                  font-size="11" fill="#bbb" font-family="sans-serif"
+                >{{ tick.label }}</text>
+              </template>
+
+              <!-- Fill area under line -->
+              <polyline
+                :points="`${CHART_PAD.left},${CHART_H - CHART_PAD.bottom} ${histSvgPoints(histData)} ${CHART_W - CHART_PAD.right},${CHART_H - CHART_PAD.bottom}`"
+                fill="rgba(24,144,255,0.08)"
+                stroke="none"
               />
               <!-- Data line -->
               <polyline
@@ -640,19 +695,7 @@ onUnmounted(() => {
                 stroke-width="1.5"
                 stroke-linejoin="round"
               />
-              <!-- Fill area under line -->
-              <polyline
-                :points="`${CHART_PAD.left},${CHART_H - CHART_PAD.bottom} ${histSvgPoints(histData)} ${CHART_W - CHART_PAD.right},${CHART_H - CHART_PAD.bottom}`"
-                fill="rgba(24,144,255,0.08)"
-                stroke="none"
-              />
             </svg>
-          </div>
-
-          <!-- Time labels -->
-          <div style="display:flex;justify-content:space-between;font-size:11px;color:#bbb;margin-top:4px;padding:0 2px">
-            <span>{{ histAgeLabel(histData) }}</span>
-            <span>now</span>
           </div>
 
           <!-- Stats row -->
