@@ -45,6 +45,19 @@ logging.basicConfig(
 )
 log = logging.getLogger("bacnet-sim")
 
+
+class SimBinaryOutput(BinaryValueObject):
+    """BinaryValueObject subclass that registers as BACnet type 'binary-output'.
+
+    bacpypes3's BinaryOutputObject is commandable (priority-array) which prevents
+    direct present-value reads via ReadProperty — the value is only accessible via
+    the commandable mechanism, not a simple attribute read.  For simulation we only
+    need the object to be readable, so we use BinaryValueObject internals (which
+    respond correctly to ReadProperty) while keeping the binary-output object type
+    in the BACnet identifier so the agent endpoint config requires no changes.
+    """
+    objectType = "binary-output"
+
 _debug = 0
 _log = ModuleLogger(globals())
 
@@ -993,16 +1006,15 @@ class SimEngine:
                 units=units,
             )
         elif otype == "binary-output":
-            # BinaryOutputObject is a bacpypes3 commandable type — its present-value is
-            # priority-array-derived so setting presentValue= in the constructor raises
-            # (silently aborting add_object during reload).  Set relinquishDefault instead:
-            # bacpypes3 returns relinquishDefault when no priority-array command is active,
-            # so ReadProperty(present-value) works correctly without a real command write.
+            # Use SimBinaryOutput (BinaryValueObject subclass with objectType="binary-output")
+            # so the BACnet identifier stays binary-output,N (agent config unchanged) while
+            # present-value is a simple readable attribute — BinaryOutputObject's commandable
+            # priority-array blocks ReadProperty responses in bacpypes3.
             active = bool(val) if not isinstance(val, bool) else val
-            bacnet_obj = BinaryOutputObject(
+            bacnet_obj = SimBinaryOutput(
                 objectIdentifier=f"{otype},{phys}",
                 objectName=obj_name,
-                relinquishDefault=BinaryPV("active" if active else "inactive"),
+                presentValue=BinaryPV("active" if active else "inactive"),
             )
         else:
             active = bool(val) if not isinstance(val, bool) else val
@@ -1018,10 +1030,8 @@ class SimEngine:
         if otype in ("analog-input", "analog-output", "analog-value"):
             bacnet_obj.presentValue = Real(float(val))
         elif otype == "binary-output":
-            # Commandable object: update via relinquishDefault so ReadProperty returns
-            # the correct value when no priority-array command is active.
             active = bool(val) if not isinstance(val, bool) else val
-            bacnet_obj.relinquishDefault = BinaryPV("active" if active else "inactive")
+            bacnet_obj.presentValue = BinaryPV("active" if active else "inactive")
         else:
             active = bool(val) if not isinstance(val, bool) else val
             bacnet_obj.presentValue = BinaryPV("active" if active else "inactive")
