@@ -992,6 +992,18 @@ class SimEngine:
                 presentValue=Real(float(val)),
                 units=units,
             )
+        elif otype == "binary-output":
+            # BinaryOutputObject is a bacpypes3 commandable type — its present-value is
+            # priority-array-derived so setting presentValue= in the constructor raises
+            # (silently aborting add_object during reload).  Set relinquishDefault instead:
+            # bacpypes3 returns relinquishDefault when no priority-array command is active,
+            # so ReadProperty(present-value) works correctly without a real command write.
+            active = bool(val) if not isinstance(val, bool) else val
+            bacnet_obj = BinaryOutputObject(
+                objectIdentifier=f"{otype},{phys}",
+                objectName=obj_name,
+                relinquishDefault=BinaryPV("active" if active else "inactive"),
+            )
         else:
             active = bool(val) if not isinstance(val, bool) else val
             cls = _BINARY_CLS.get(otype, BinaryInputObject)
@@ -1005,6 +1017,11 @@ class SimEngine:
     def _update_value(self, bacnet_obj: Any, otype: str, val: Any) -> None:
         if otype in ("analog-input", "analog-output", "analog-value"):
             bacnet_obj.presentValue = Real(float(val))
+        elif otype == "binary-output":
+            # Commandable object: update via relinquishDefault so ReadProperty returns
+            # the correct value when no priority-array command is active.
+            active = bool(val) if not isinstance(val, bool) else val
+            bacnet_obj.relinquishDefault = BinaryPV("active" if active else "inactive")
         else:
             active = bool(val) if not isinstance(val, bool) else val
             bacnet_obj.presentValue = BinaryPV("active" if active else "inactive")
