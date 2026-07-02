@@ -995,18 +995,18 @@ class SimEngine:
                 units=units,
             )
         elif otype == "binary-output":
-            # BinaryOutputObject is commandable: Commandable.__setattr__ for presentValue
-            # writes to priorityArray[15], but during __init__ the priority array isn't
-            # created yet — passing presentValue= in kwargs raises AttributeError.
-            # Create without presentValue, then set it after construction when the
-            # priority array is initialised; this triggers recalculating() which sets
-            # the actual presentValue so ReadProperty responses work correctly.
+            # Pass presentValue= in the constructor so Commandable.__init__ can set
+            # relinquishDefault from it (line 87 in bacpypes3/local/cmd.py).
+            # _Object.__init__ sets it directly via super().__setattr__, bypassing
+            # Commandable.__setattr__, so priorityArray is not accessed before it exists.
+            # The tick loop later writes via Commandable.__setattr__ → priorityArray[15]
+            # → recalculating() which keeps presentValue up-to-date for ReadProperty.
             active = bool(val) if not isinstance(val, bool) else val
             bacnet_obj = BinaryOutputObject(
                 objectIdentifier=f"{otype},{phys}",
                 objectName=obj_name,
+                presentValue=BinaryPV("active" if active else "inactive"),
             )
-            bacnet_obj.presentValue = BinaryPV("active" if active else "inactive")
         else:
             active = bool(val) if not isinstance(val, bool) else val
             cls = _BINARY_CLS.get(otype, BinaryInputObject)
@@ -1096,6 +1096,13 @@ class SimEngine:
             self._objects.clear()
             self._prev_values.clear()
             self._current_values = {}
+            # Explicitly close the bacpypes3 socket before dropping the reference.
+            # BinaryOutputObject↔PriorityArray form a circular reference that delays
+            # GC, keeping the UDP socket bound to port 47808 and preventing re-bind.
+            try:
+                await self.app.close()
+            except Exception:
+                pass
             self.app = None
         await self.start()
         log.info("Reload complete")
