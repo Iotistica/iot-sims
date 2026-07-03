@@ -1045,13 +1045,18 @@ class SimEngine:
             dev = dev_map.get(obj_row["device_id"])
             if not dev:
                 continue
-            # Rebuild behavior if it changed
+            # Rebuild behavior if it changed, carrying stateful internals across ticks
             new_b = make_behavior(obj_row["behavior"], obj_row["behavior_params"], obj_row.get("manual_value"))
             if isinstance(new_b, ManualBehavior) and isinstance(behavior, ManualBehavior):
-                # Carry state for manual
                 new_b.set(behavior._value)
             elif obj_row.get("manual_value") is not None and isinstance(new_b, ManualBehavior):
                 new_b.set(obj_row["manual_value"])
+            if isinstance(new_b, FaultBehavior) and isinstance(behavior, FaultBehavior):
+                new_b._fault_active = behavior._fault_active
+                new_b._fault_end_elapsed = behavior._fault_end_elapsed
+                new_b._inner = behavior._inner
+            if isinstance(new_b, RandomWalkBehavior) and isinstance(behavior, RandomWalkBehavior):
+                new_b._value = behavior._value
             self._objects[obj_id] = (bacnet_obj, new_b)
             val = new_b.compute(self.state)
             self._update_value(bacnet_obj, obj_row["object_type"], val)
