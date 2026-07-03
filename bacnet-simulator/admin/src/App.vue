@@ -345,8 +345,13 @@ function histXLabels(data: HistoryPoint[]) {
     const frac = i / (N - 1)
     const ts   = minT + frac * (maxT - minT)
     const x    = CHART_PAD.left + frac * w
-    const ageMin = Math.round((now - ts) / 60)
-    return { x, label: ageMin < 1 ? 'now' : `-${ageMin}m` }
+    const age  = now - ts
+    let label: string
+    if (age < 10)        label = 'now'
+    else if (age < 120)  label = `-${Math.round(age)}s`
+    else if (age < 3600) label = `-${Math.round(age / 60)}m`
+    else                 label = `-${Math.round(age / 3600)}h`
+    return { x, label }
   })
 }
 
