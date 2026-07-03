@@ -44,6 +44,8 @@ export interface Profile {
 export interface LogEntry {
   ts: number
   level: 'info' | 'warn' | 'error'
+  device_id?: number
+  device_name?: string
   message: string
 }
 

@@ -142,20 +142,11 @@ async function save() {
         <a-input v-model:value="form.name" placeholder="Supply Temp" />
       </a-form-item>
 
-      <a-row :gutter="12">
-        <a-col :span="14">
-          <a-form-item label="Units">
-            <a-select v-model:value="form.units" show-search>
-              <a-select-option v-for="u in meta.units" :key="u" :value="u">{{ u }}</a-select-option>
-            </a-select>
-          </a-form-item>
-        </a-col>
-        <a-col :span="10">
-          <a-form-item label="Enabled">
-            <a-switch v-model:checked="form.enabled" style="margin-top:5px" />
-          </a-form-item>
-        </a-col>
-      </a-row>
+      <a-form-item label="Units">
+        <a-select v-model:value="form.units" show-search>
+          <a-select-option v-for="u in meta.units" :key="u" :value="u">{{ u }}</a-select-option>
+        </a-select>
+      </a-form-item>
 
       <a-form-item label="Behavior">
         <a-select v-model:value="form.behavior">
@@ -403,6 +394,10 @@ async function save() {
           </div>
         </template>
       </div>
+
+      <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
+        <a-switch v-model:checked="form.enabled" />
+      </a-form-item>
     </a-form>
 
     <template #footer>

@@ -16,6 +16,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => req<Health>('/health'),
   meta:   () => req<Meta>('/meta'),
+  logs:   (limit = 200) => req<LogEntry[]>(`/logs?limit=${limit}`),
 
   devices: {
     list:   ()                              => req<Device[]>('/devices'),

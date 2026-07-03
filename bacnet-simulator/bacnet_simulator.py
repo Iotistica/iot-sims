@@ -1245,13 +1245,23 @@ ws_clients: list[WebSocket] = []
 
 # ─── Per-device event log ─────────────────────────────────────────────────────
 _device_logs: dict[int, deque] = {}
+_global_log: deque = deque(maxlen=1000)
+_device_names: dict[int, str] = {}
 _MAX_LOG = 300
 
 
 def _log_event(device_id: int, level: str, message: str) -> None:
+    entry = {
+        "ts": time.time(),
+        "level": level,
+        "device_id": device_id,
+        "device_name": _device_names.get(device_id, f"#{device_id}"),
+        "message": message,
+    }
     if device_id not in _device_logs:
         _device_logs[device_id] = deque(maxlen=_MAX_LOG)
-    _device_logs[device_id].append({"ts": time.time(), "level": level, "message": message})
+    _device_logs[device_id].append(entry)
+    _global_log.append(entry)
 
 
 # ─── WebSocket broadcaster ────────────────────────────────────────────────────
@@ -1297,6 +1307,8 @@ async def lifespan(app: FastAPI):
     db = Database(DB_PATH)
     await asyncio.to_thread(db.setup)
     await asyncio.to_thread(db.seed_default)
+    for d in db.get_devices():
+        _device_names[d["id"]] = d["name"]
     engine = SimEngine(db)
     await engine.start()
     tick_task = asyncio.create_task(tick_loop())
@@ -1386,6 +1398,7 @@ async def create_device(body: DeviceCreate):
         device = await asyncio.to_thread(db.create_device, body.model_dump())
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Device instance {body.device_instance} already exists")
+    _device_names[device["id"]] = device["name"]
     _log_event(device["id"], "info", f"Device created: {device['name']} (instance {device['device_instance']})")
     asyncio.create_task(engine.reload())
     return device
@@ -1408,6 +1421,7 @@ async def update_device(device_id: int, body: DeviceUpdate):
         updated = await asyncio.to_thread(db.update_device, device_id, body.model_dump())
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Device instance {body.device_instance} already exists")
+    _device_names[device_id] = body.name
     enabled_changed = d["enabled"] != body.enabled
     if enabled_changed:
         _log_event(device_id, "info", f"Device {'enabled' if body.enabled else 'disabled'}")
@@ -1492,6 +1506,12 @@ async def delete_object(device_id: int, obj_id: int):
 @api.get("/devices/{device_id}/logs")
 async def get_device_logs(device_id: int, limit: int = 100):
     entries = list(_device_logs.get(device_id, []))
+    return entries[-limit:]
+
+
+@api.get("/logs")
+async def get_all_logs(limit: int = 200):
+    entries = list(_global_log)
     return entries[-limit:]
 
 

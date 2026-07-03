@@ -539,7 +539,7 @@ onUnmounted(() => {
           </template>
 
         </div>
-        <DeviceLogPanel :device-id="selectedDevice?.id ?? null" />
+        <DeviceLogPanel />
         </a-layout-content>
       </a-layout>
     </a-layout>
