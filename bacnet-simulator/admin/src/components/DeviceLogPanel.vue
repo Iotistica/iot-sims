@@ -26,13 +26,51 @@ function fmtTime(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+// ── Resize handle ─────────────────────────────────────────────────────────────
+
+const panelHeight = ref(200)
+const MIN_HEIGHT = 80
+const MAX_HEIGHT = 800
+
+let dragStartY = 0
+let dragStartHeight = 0
+
+function onDragStart(e: MouseEvent) {
+  if (collapsed.value) return
+  dragStartY = e.clientY
+  dragStartHeight = panelHeight.value
+  document.addEventListener('mousemove', onDragMove)
+  document.addEventListener('mouseup', onDragEnd)
+  e.preventDefault()
+}
+
+function onDragMove(e: MouseEvent) {
+  const delta = dragStartY - e.clientY
+  panelHeight.value = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, dragStartHeight + delta))
+}
+
+function onDragEnd() {
+  document.removeEventListener('mousemove', onDragMove)
+  document.removeEventListener('mouseup', onDragEnd)
+}
+
 fetchLogs()
 const timer = setInterval(fetchLogs, 5000)
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => {
+  clearInterval(timer)
+  document.removeEventListener('mousemove', onDragMove)
+  document.removeEventListener('mouseup', onDragEnd)
+})
 </script>
 
 <template>
-  <div :class="['log-panel', { 'log-panel--collapsed': collapsed }]">
+  <div
+    :class="['log-panel', { 'log-panel--collapsed': collapsed }]"
+    :style="collapsed ? undefined : { height: panelHeight + 'px' }"
+  >
+    <div class="drag-handle" @mousedown="onDragStart">
+      <div class="drag-grip" />
+    </div>
     <div class="log-header" @click="collapsed = !collapsed">
       <span class="log-title">Activity Log</span>
       <div style="display:flex;align-items:center;gap:4px" @click.stop>
@@ -60,16 +98,34 @@ onUnmounted(() => clearInterval(timer))
 .log-panel {
   display: flex;
   flex-direction: column;
-  height: 200px;
   background: #0d1117;
   border-top: 1px solid #30363d;
   font-family: 'Consolas', 'Menlo', monospace;
   font-size: 12px;
   flex-shrink: 0;
-  transition: height 0.15s ease;
 }
 .log-panel--collapsed {
-  height: 32px;
+  height: 32px !important;
+}
+.drag-handle {
+  height: 6px;
+  background: #161b22;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.drag-handle:hover .drag-grip,
+.drag-handle:active .drag-grip {
+  background: #58a6ff;
+}
+.drag-grip {
+  width: 32px;
+  height: 2px;
+  border-radius: 1px;
+  background: #30363d;
+  transition: background 0.15s;
 }
 .log-header {
   display: flex;
