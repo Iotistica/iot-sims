@@ -869,7 +869,7 @@ class SimEngine:
         self._reload_event = asyncio.Event()
         self._current_values: dict = {}  # for API
         # object DB id → last logged value (for change detection)
-        self._prev_values: dict[int, Any] = {}
+        self._prev_values: dict[int, Any] = {}  # kept for history only
         # object DB id → rolling 1-hour history (720 ticks × 5 s), never persisted
         self._history: dict[int, deque] = {}
 
@@ -1056,19 +1056,6 @@ class SimEngine:
             val = new_b.compute(self.state)
             self._update_value(bacnet_obj, obj_row["object_type"], val)
 
-            # Log value changes
-            prev = self._prev_values.get(obj_id)
-            if prev is not None:
-                changed = (isinstance(val, bool) and val != prev) or \
-                          (isinstance(val, float) and abs(val - prev) >= 0.01)
-                if changed:
-                    units = obj_row.get("units", "")
-                    unit_str = f" {units}" if units and units != "no-units" else ""
-                    if isinstance(val, bool):
-                        msg = f"{obj_row['name']}: {'ON' if prev else 'OFF'} → {'ON' if val else 'OFF'}"
-                    else:
-                        msg = f"{obj_row['name']}: {prev:.2f} → {val:.2f}{unit_str}"
-                    _log_event(dev["id"], "info", msg)
             self._prev_values[obj_id] = val
 
             # Append to rolling history (1 h, never persisted)
