@@ -1060,7 +1060,7 @@ class SimEngine:
             prev = self._prev_values.get(obj_id)
             if prev is not None:
                 changed = (isinstance(val, bool) and val != prev) or \
-                          (isinstance(val, float) and abs(val - prev) >= 0.1)
+                          (isinstance(val, float) and abs(val - prev) >= 0.01)
                 if changed:
                     units = obj_row.get("units", "")
                     unit_str = f" {units}" if units and units != "no-units" else ""
