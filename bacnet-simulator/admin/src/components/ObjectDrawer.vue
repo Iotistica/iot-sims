@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
@@ -58,8 +58,20 @@ function onFaultBaseChange() {
   params.value = { ...params.value, base_params: defaults[params.value.base_behavior] ?? { value: 0 } }
 }
 
-watch(() => props.open, (v) => {
-  if (!v) return
+// Guard: prevents the behavior watcher from resetting params during a programmatic load.
+let skipBehaviorReset = false
+
+watch(() => form.behavior, (b) => {
+  if (skipBehaviorReset) return
+  params.value = { ...(DEFAULT_PARAMS[b] ?? { value: 0 }) }
+})
+
+// Watch both open and object so the form reinitialises whenever either changes —
+// this handles the case where the user clicks Edit on a second object while the
+// drawer is already open (open stays true, object prop changes).
+watch([() => props.open, () => props.object, () => props.draftObject], ([open]) => {
+  if (!open) return
+  skipBehaviorReset = true
   const src = props.draftMode ? props.draftObject : props.object
   if (src) {
     Object.assign(form, {
@@ -81,10 +93,7 @@ watch(() => props.open, (v) => {
     })
     params.value = { value: 0 }
   }
-})
-
-watch(() => form.behavior, (b) => {
-  params.value = { ...(DEFAULT_PARAMS[b] ?? { value: 0 }) }
+  nextTick(() => { skipBehaviorReset = false })
 })
 
 async function save() {
