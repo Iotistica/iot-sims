@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-05",
+  "updated": "2026-07-12",
   "source": "BACnet International BTL Database",
   "url": "https://www.bacnetinternational.net/btl/",
   "vendors": [
@@ -2702,7 +2702,7 @@
           "name": "GMLink IP controller | GMLink IO controller",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/gree electric appliances inc of zhuhai/BTL_Listing_31286_GREEELECTRIC_GMLinkIPController.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/gree electric appliances inc of zhuhai/BTL_Listing_31260_GREEELECTRIC_GMLinkIPController.pdf"
         }
       ]
     },
@@ -2792,24 +2792,6 @@
           "type": "B-BC",
           "typeLabel": "Building Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/hdc i controls inc./BTL_Listing_30282_HDCiContro_FronnixBAC.pdf"
-        },
-        {
-          "name": "Fronnix Controller - IDC702",
-          "type": "B-BC",
-          "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/hdc i controls inc./BTL_Listing_23884_I-Controls_IDC702.pdf"
-        },
-        {
-          "name": "iBRX1 Controller (Fronnix BACnet Master Controller)",
-          "type": "B-BC",
-          "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/hdc i controls inc./BTL_Listing_23766_iControls_iBRX1.pdf"
-        },
-        {
-          "name": "iCos",
-          "type": "B-AWS",
-          "typeLabel": "Workstation",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/hdc i controls inc./BTL_Listing_24198_I-Controls_iCos4.pdf"
         }
       ]
     },
@@ -4062,17 +4044,6 @@
           "type": "B-BC",
           "typeLabel": "Building Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/loytec electronics gmbh/BTL_Listing_31464_LOYTEC_LIPBACnetRouter.pdf"
-        }
-      ]
-    },
-    {
-      "name": "LS Electric, Automation Solution",
-      "models": [
-        {
-          "name": "BACnet/IP Driver",
-          "type": "B-ASC",
-          "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/ls electric, automation solution/BTL_Listing_31408_LSElectric_BACnetIPDriver.pdf"
         }
       ]
     },
