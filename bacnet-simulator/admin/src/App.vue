@@ -266,6 +266,23 @@ function deleteObject(obj: SimObject) {
     },
   })
 }
+async function toggleObjectEnabled(obj: SimObject) {
+  const nextEnabled = obj.enabled ? 0 : 1
+  try {
+    await api.objects.update(selectedDevice.value!.id, obj.id, {
+      object_type:     obj.object_type,
+      object_instance: obj.object_instance,
+      name:            obj.name,
+      units:           obj.units,
+      behavior:        obj.behavior,
+      behavior_params: obj.behavior_params,
+      enabled:         nextEnabled,
+    })
+    obj.enabled = nextEnabled
+  } catch (e) {
+    message.error((e as Error).message || 'Failed to toggle object')
+  }
+}
 
 // History chart
 const histModalOpen   = ref(false)
@@ -521,7 +538,11 @@ onUnmounted(() => {
                   </span>
                 </template>
                 <template v-else-if="column.key === 'enabled'">
-                  <a-badge :status="(record as SimObject).enabled ? 'success' : 'default'" />
+                  <a-switch
+                    size="small"
+                    :checked="!!(record as SimObject).enabled"
+                    @change="toggleObjectEnabled(record as SimObject)"
+                  />
                 </template>
                 <template v-else-if="column.key === 'actions'">
                   <a-space :size="2">
