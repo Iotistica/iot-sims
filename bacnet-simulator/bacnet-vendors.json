@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-12",
+  "updated": "2026-07-19",
   "source": "BACnet International BTL Database",
   "url": "https://www.bacnetinternational.net/btl/",
   "vendors": [
@@ -606,6 +606,12 @@
           "type": "B-AAC",
           "typeLabel": "Advanced Application Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/automated logic corporation/BTL_Listing_25124_AutomatedLogic_PSM.pdf"
+        },
+        {
+          "name": "Automated Logic® TS8 Wi-Fi Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/automated logic corporation/BTL_Listing_31606_AutomatedLogic_TS8-WSPF.pdf"
         },
         {
           "name": "Configurable BACnet Thermostat",
@@ -1807,16 +1813,16 @@
       "name": "Crestron Electronics, Inc.",
       "models": [
         {
+          "name": "4-Series Control Systems",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/crestron electronics, inc./BTL_Listing_31604_CrestronElectronics_4-SeriesControlSystem.pdf"
+        },
+        {
           "name": "Crestron 3-Series Control Systems",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/crestron electronics, inc./BTL_Listing_30523_CrestronElectronics_Crestron3Series.pdf"
-        },
-        {
-          "name": "Crestron 4-Series Control System",
-          "type": "B-ASC",
-          "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/crestron electronics, inc./BTL_Listing_30669_Crestron_C4Series.pdf"
         }
       ]
     },
@@ -2321,6 +2327,12 @@
           "pics_url": "https://www.bacnetinternational.net/btl/listings/ebtron, inc./BTL_Listing_31488_EBTRON_HTS108.pdf"
         },
         {
+          "name": "Hybrid Series Ethernet Output Airflow and Temperature Measuring Device",
+          "type": "B-SS",
+          "typeLabel": "Smart Sensor",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/ebtron, inc./BTL_Listing_31602_EBTRON_HTM108.pdf"
+        },
+        {
           "name": "Hybrid Series RS-485 Output Airflow and Temperature Measuring Device",
           "type": "B-SS",
           "typeLabel": "Smart Sensor",
@@ -2564,7 +2576,7 @@
           "name": "Smart Actuator",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/fr. sauter ag/BTL_Listing_30942_SAUTER_SmartActuator.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/fr. sauter ag/BTL_Listing_31601_FrSauter_SmartActuator.pdf"
         },
         {
           "name": "VAV Kompaktregler BACnet M",
@@ -2781,17 +2793,6 @@
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/grundfos management as/BTL_Listing_30996_Grundfos_MIXIT.pdf"
-        }
-      ]
-    },
-    {
-      "name": "HDC I CONTROLS INC.",
-      "models": [
-        {
-          "name": "Fronnix BACnet Controller",
-          "type": "B-BC",
-          "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/hdc i controls inc./BTL_Listing_30282_HDCiContro_FronnixBAC.pdf"
         }
       ]
     },
@@ -4123,6 +4124,17 @@
       ]
     },
     {
+      "name": "Lovato Electric SpA",
+      "models": [
+        {
+          "name": "Power analyzers",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/lovato electric spa/BTL_Listing_31603_LovatoElectric_Poweranlyzer.pdf"
+        }
+      ]
+    },
+    {
       "name": "Loxone Electronics GmbH",
       "models": [
         {
@@ -4298,16 +4310,16 @@
           "pics_url": "https://www.bacnetinternational.net/btl/listings/matrix icontrol sdn. bhd./BTL_Listing_31542__MatrixiControl_MGPIO30PPro.pdf"
         },
         {
-          "name": "MIC-J8000",
+          "name": "MIC J9000",
           "type": "B-BC",
           "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/matrix icontrol sdn. bhd./BTL_Listing_31050_MatrixiControl_MIC-J8000.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/matrix icontrol sdn. bhd./BTL_Listing_31597_MatrixiControl_MICJ9000.pdf"
         },
         {
           "name": "MIC-S-N4",
           "type": "B-AWS",
           "typeLabel": "Workstation",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/matrix icontrol sdn. bhd./BTL_Listing_31049_MatrixiControl_MIC-S-N4.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/matrix icontrol sdn. bhd./BTL_Listing_31596_MatrixiControl_MICSN4.pdf"
         }
       ]
     },
@@ -5456,7 +5468,8 @@
         {
           "name": "b.IoT Modular Controller",
           "type": "B-ASC",
-          "typeLabel": "Application Specific Controller"
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/samsung electronics co., ltd./BTL_Listing_25154_Samsung_SDDC-8446.pdf"
         },
         {
           "name": "b.IoT Server",
@@ -5482,6 +5495,12 @@
       "name": "Schneider Electric",
       "models": [
         {
+          "name": "ATH2xx / ATH6xx",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/schneider electric/BTL_Listing_31598_SchneiderElectric_ATH_IP.pdf"
+        },
+        {
           "name": "ATV212",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
@@ -5491,7 +5510,7 @@
           "name": "Altivar Process",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/schneider electric/BTL_Listing_31299_SchneiderElectric_AltivarProcess.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/schneider electric/BTL_Listing_31299-1_SchneiderElectric_AltivarProcess.pdf"
         },
         {
           "name": "Andover Continuum b3xxx Series |  System Controller, Terminal Controller",
@@ -6216,7 +6235,7 @@
           "name": "BACnet Terminal Box Controller (BTEC)",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/siemens/BTL_Listing_30688_Siemens_BTEC.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/siemens/BTL_Listing_31605_Siemens_BTEC.pdf"
         },
         {
           "name": "BT300 Variable Frequency Drives",
@@ -6913,6 +6932,12 @@
           "type": "B-BC",
           "typeLabel": "Building Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/trend control systems/BTL_Listing_30260_TrendContr_IQ4.pdf"
+        },
+        {
+          "name": "IQ5",
+          "type": "B-BC",
+          "typeLabel": "Building Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/trend control systems/BTL_Listing_31600_TrendControls_IQ5.pdf"
         },
         {
           "name": "IQVISION",
