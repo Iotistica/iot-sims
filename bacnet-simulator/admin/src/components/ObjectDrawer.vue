@@ -390,7 +390,11 @@ async function save() {
               </a-form-item>
             </a-col>
             <a-col :span="12">
-              <a-form-item label="MTBF (minutes)" style="margin-bottom:0">
+              <a-form-item
+                label="MTBF (minutes)"
+                style="margin-bottom:0"
+                tooltip="Mean Time Between Failures — the average number of minutes between fault injections. Each is random (not fixed-interval), so actual gaps vary; lower values mean more frequent faults."
+              >
                 <a-input-number v-model:value="params.mtbf_minutes" :min="0.1" :step="5" style="width:100%" />
               </a-form-item>
             </a-col>

@@ -502,6 +502,8 @@ class Database:
 
 # ─── Behaviors ────────────────────────────────────────────────────────────────
 
+TICK_SECONDS = 5.0  # cadence of the engine tick loop; see tick_loop()/tick()
+
 @dataclass
 class SimState:
     time_of_day: float = 12.0
@@ -647,7 +649,9 @@ class FaultBehavior(Behavior):
             self._fault_active = False
 
         if not self._fault_active:
-            prob_per_tick = 1.0 / max(1.0, self.mtbf_minutes * 60.0)
+            # Ticks occur every TICK_SECONDS, not every second, so scale the
+            # per-tick probability accordingly to make mtbf_minutes accurate.
+            prob_per_tick = TICK_SECONDS / max(1.0, self.mtbf_minutes * 60.0)
             if random.random() < prob_per_tick:
                 self._fault_active = True
                 if self.fault_type == "spike":
@@ -1031,8 +1035,8 @@ class SimEngine:
 
     async def tick(self) -> None:
         """Advance sim state and update all object values."""
-        self.state.elapsed_seconds += 5
-        self.state.time_of_day = (self.state.time_of_day + 5 / 3600) % 24
+        self.state.elapsed_seconds += TICK_SECONDS
+        self.state.time_of_day = (self.state.time_of_day + TICK_SECONDS / 3600) % 24
 
         snapshot: dict[int, dict] = {}
         devices = await asyncio.to_thread(self.db.get_devices)
@@ -1276,7 +1280,7 @@ async def broadcast_state() -> None:
 
 async def tick_loop() -> None:
     while True:
-        await asyncio.sleep(5)
+        await asyncio.sleep(TICK_SECONDS)
         try:
             await engine.tick()
             await broadcast_state()
