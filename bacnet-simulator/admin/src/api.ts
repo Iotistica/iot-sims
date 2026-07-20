@@ -18,6 +18,12 @@ export const api = {
   meta:   () => req<Meta>('/meta'),
   logs:   (limit = 200) => req<LogEntry[]>(`/logs?limit=${limit}`),
 
+  sim: {
+    start: () => req<{ sim_running: boolean }>('/sim/start', { method: 'POST' }),
+    pause: () => req<{ sim_running: boolean }>('/sim/pause', { method: 'POST' }),
+    stop:  () => req<{ sim_running: boolean; elapsed_seconds: number }>('/sim/stop', { method: 'POST' }),
+  },
+
   devices: {
     list:   ()                              => req<Device[]>('/devices'),
     create: (b: Omit<Device, 'id'>)        => req<Device>('/devices', { method: 'POST', body: JSON.stringify(b) }),

@@ -11,11 +11,12 @@ import IotisticaLogo from './components/IotisticaLogo.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import type { Device, SimObject, Meta, Health, HistoryPoint } from './types'
 import { api } from './api'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
 
-const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0 })
+const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_running: true, elapsed_seconds: 0 })
+const simActionLoading = ref(false)
 const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [] })
 const devices = ref<Device[]>([])
 const selectedDevice = ref<Device | null>(null)
@@ -85,6 +86,25 @@ function fmtVal(obj: SimObject): string {
 // Loaders
 async function loadHealth() {
   try { health.value = await api.health() } catch { /* swallow */ }
+}
+
+async function simStart() {
+  simActionLoading.value = true
+  try { await api.sim.start(); await loadHealth() }
+  catch (e) { message.error((e as Error).message) }
+  finally { simActionLoading.value = false }
+}
+async function simPause() {
+  simActionLoading.value = true
+  try { await api.sim.pause(); await loadHealth() }
+  catch (e) { message.error((e as Error).message) }
+  finally { simActionLoading.value = false }
+}
+async function simStop() {
+  simActionLoading.value = true
+  try { await api.sim.stop(); await loadHealth() }
+  catch (e) { message.error((e as Error).message) }
+  finally { simActionLoading.value = false }
 }
 async function loadMeta() {
   try { meta.value = await api.meta() } catch { /* swallow */ }
@@ -436,6 +456,34 @@ onUnmounted(() => {
           {{ health.bacnet_running ? '● running' : '○ stopped' }}
         </span>
         <span style="color:#555;font-size:12px">· {{ health.devices }} device(s)</span>
+
+        <div style="display:flex;align-items:center;gap:2px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
+          <a-tooltip title="Start simulation clock">
+            <a-button
+              size="small" type="text" :disabled="health.sim_running" :loading="simActionLoading"
+              @click="simStart"
+            >
+              <template #icon><PlayCircleOutlined :style="{ color: health.sim_running ? '#555' : '#52c41a' }" /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="Pause simulation clock (freezes values in place)">
+            <a-button
+              size="small" type="text" :disabled="!health.sim_running" :loading="simActionLoading"
+              @click="simPause"
+            >
+              <template #icon><PauseCircleOutlined :style="{ color: !health.sim_running ? '#555' : '#faad14' }" /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="Stop simulation clock and rewind to t=0">
+            <a-button size="small" type="text" :loading="simActionLoading" @click="simStop">
+              <template #icon><StopOutlined :style="{ color: '#ff4d4f' }" /></template>
+            </a-button>
+          </a-tooltip>
+          <span style="color:#555;font-size:11px;margin-left:2px">
+            {{ health.sim_running ? 'clock running' : 'clock paused' }}
+          </span>
+        </div>
+
         <div style="flex:1" />
         <a-tag v-if="activeProfileName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProfileName }}</a-tag>
         <a-button size="small" @click="newProfile">

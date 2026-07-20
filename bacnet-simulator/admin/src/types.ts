@@ -31,6 +31,8 @@ export interface Health {
   status: string
   bacnet_running: boolean
   devices: number
+  sim_running: boolean
+  elapsed_seconds: number
 }
 
 export interface Profile {

@@ -876,6 +876,27 @@ class SimEngine:
         self._prev_values: dict[int, Any] = {}  # kept for history only
         # object DB id → rolling 1-hour history (720 ticks × 5 s), never persisted
         self._history: dict[int, deque] = {}
+        # simulation clock: whether tick() advances time / recomputes values.
+        # Independent of self.app (the BACnet stack) — objects stay reachable
+        # and hold their last value while paused/stopped.
+        self.running: bool = True
+
+    def pause(self) -> None:
+        self.running = False
+
+    def resume(self) -> None:
+        self.running = True
+
+    def reset(self) -> None:
+        """Stop the clock and rewind simulated time/history back to the start."""
+        self.running = False
+        self.state.elapsed_seconds = 0.0
+        self.state.time_of_day = 12.0
+        self._history.clear()
+        for _, behavior in self._objects.values():
+            if isinstance(behavior, FaultBehavior):
+                behavior._fault_active = False
+                behavior._fault_end_elapsed = -1.0
 
     async def start(self) -> None:
         devices = await asyncio.to_thread(self.db.get_devices)
@@ -1035,6 +1056,9 @@ class SimEngine:
 
     async def tick(self) -> None:
         """Advance sim state and update all object values."""
+        if not self.running:
+            return
+
         self.state.elapsed_seconds += TICK_SECONDS
         self.state.time_of_day = (self.state.time_of_day + TICK_SECONDS / 3600) % 24
 
@@ -1369,7 +1393,27 @@ async def health():
         "status": "ok",
         "devices": len(devices),
         "bacnet_running": engine.app is not None,
+        "sim_running": engine.running,
+        "elapsed_seconds": engine.state.elapsed_seconds,
     }
+
+
+@api.post("/sim/start")
+async def sim_start():
+    engine.resume()
+    return {"sim_running": engine.running}
+
+
+@api.post("/sim/pause")
+async def sim_pause():
+    engine.pause()
+    return {"sim_running": engine.running}
+
+
+@api.post("/sim/stop")
+async def sim_stop():
+    engine.reset()
+    return {"sim_running": engine.running, "elapsed_seconds": engine.state.elapsed_seconds}
 
 
 @api.get("/meta")
