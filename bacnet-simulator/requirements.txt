@@ -3,6 +3,8 @@ fastapi==0.115.6
 uvicorn==0.32.1
 websockets==13.1
 pydantic==2.10.3
+bcrypt==4.2.1
+pyjwt==2.10.1
 
 # scrape-btl.py dependencies
 requests>=2.31

@@ -77,3 +77,15 @@ export interface DraftDevice {
   enabled: boolean
   objects: DraftObject[]
 }
+
+export interface User {
+  id: number
+  username: string
+  created_at: string
+  last_login_at: string | null
+}
+
+export interface AuthResponse {
+  access_token: string
+  user: User
+}

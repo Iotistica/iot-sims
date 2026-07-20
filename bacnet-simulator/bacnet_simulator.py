@@ -10,6 +10,7 @@ import json
 import math
 import os
 import random
+import secrets
 import socket
 import sqlite3
 import time
@@ -17,11 +18,13 @@ from abc import ABC, abstractmethod
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import bcrypt
+import jwt
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -72,6 +75,30 @@ BACNET_UNITS = [
     "pascals", "kilopascals", "bars", "cubic-meters-per-hour",
     "revolutions-per-minute", "meters-per-second",
 ]
+
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
+_JWT_SECRET_FILE = DATA_DIR / ".jwt_secret"
+_jwt_secret_cache: Optional[str] = None
+
+
+def _get_jwt_secret() -> str:
+    """Resolve the JWT signing secret: env override, else a persisted random
+    value in DATA_DIR so tokens survive process restarts."""
+    global _jwt_secret_cache
+    if _jwt_secret_cache is not None:
+        return _jwt_secret_cache
+    env_secret = os.environ.get("JWT_SECRET")
+    if env_secret:
+        _jwt_secret_cache = env_secret
+        return _jwt_secret_cache
+    _JWT_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if _JWT_SECRET_FILE.exists():
+        _jwt_secret_cache = _JWT_SECRET_FILE.read_text().strip()
+    else:
+        _jwt_secret_cache = secrets.token_hex(32)
+        _JWT_SECRET_FILE.write_text(_jwt_secret_cache)
+    return _jwt_secret_cache
 
 
 # ─── Database ─────────────────────────────────────────────────────────────────
@@ -124,6 +151,14 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     device_count INTEGER NOT NULL DEFAULT 0,
                     data TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    last_login_at TEXT
                 );
             """)
         log.info("Database ready at %s", self.path)
@@ -498,6 +533,131 @@ class Database:
             cur = conn.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    # ── Users ─────────────────────────────────────────────────────────────────
+
+    def count_users(self) -> int:
+        with self._conn() as conn:
+            return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    def list_users(self) -> list[dict]:
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT id, username, created_at, last_login_at FROM users ORDER BY created_at"
+            )]
+
+    def get_user(self, user_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            return dict(r) if r else None
+
+    def get_user_by_username(self, username: str) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+            return dict(r) if r else None
+
+    def create_user(self, username: str, password_hash: str) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?,?)",
+                (username, password_hash),
+            )
+            conn.commit()
+            return dict(conn.execute(
+                "SELECT id, username, created_at, last_login_at FROM users WHERE id=?",
+                (cur.lastrowid,),
+            ).fetchone())
+
+    def update_user_password(self, user_id: int, password_hash: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def touch_last_login(self, user_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE users SET last_login_at=datetime('now') WHERE id=?", (user_id,)
+            )
+            conn.commit()
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+# db/engine are set as module globals during app startup (see lifespan()) —
+# by the time any request handler runs they're guaranteed to be assigned.
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        return False
+
+
+def create_access_token(user_id: int, username: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user_id),
+        "username": username,
+        "iat": now,
+        "exp": now + timedelta(hours=JWT_EXPIRE_HOURS),
+    }
+    return jwt.encode(payload, _get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def decode_access_token(token: str) -> Optional[dict]:
+    try:
+        return jwt.decode(token, _get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        return None
+
+
+def user_from_token(token: str) -> Optional[dict]:
+    """Decode a token and re-fetch the user row, so a deleted user's old
+    token stops working immediately rather than staying valid until expiry."""
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, ValueError):
+        return None
+    user = db.get_user(user_id)
+    if not user:
+        return None
+    return {"id": user["id"], "username": user["username"]}
+
+
+def get_current_user(request: Request) -> dict:
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = user_from_token(auth_header[7:].strip())
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return user
+
+
+# Path prefixes reachable without a valid session — the login/setup flow
+# itself, and the static admin SPA shell (the SPA then blocks on its own
+# login screen until it has a token to call the real API with).
+_PUBLIC_PATH_PREFIXES = ("/auth/", "/assets/")
+_PUBLIC_PATHS = {"/", "/favicon.svg", "/bacnet-vendors.json"}
+
+
+def _is_public_path(path: str) -> bool:
+    return path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PATH_PREFIXES)
 
 
 # ─── Behaviors ────────────────────────────────────────────────────────────────
@@ -1257,6 +1417,15 @@ class ProfileImport(BaseModel):
     data: dict
 
 
+class Credentials(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=8, max_length=200)
+
+
+class PasswordReset(BaseModel):
+    password: str = Field(..., min_length=8, max_length=200)
+
+
 # ─── Globals (shared between FastAPI and engine) ──────────────────────────────
 
 db: Database = None  # type: ignore
@@ -1354,6 +1523,18 @@ api.add_middleware(
 )
 
 
+@api.middleware("http")
+async def auth_gate(request: Request, call_next):
+    """Require a valid bearer token for everything except the login/setup
+    flow and the static admin SPA shell (see _is_public_path)."""
+    if request.method == "OPTIONS" or _is_public_path(request.url.path):
+        return await call_next(request)
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer ") or not user_from_token(auth_header[7:].strip()):
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    return await call_next(request)
+
+
 ADMIN_DIST = Path(__file__).parent / "admin" / "dist"
 ADMIN_PUBLIC = Path(__file__).parent / "admin" / "public"
 
@@ -1384,6 +1565,69 @@ async def bacnet_vendors():
     if f.exists():
         return FileResponse(str(f), media_type="application/json")
     return JSONResponse({"vendors": []})
+
+
+@api.get("/auth/setup-required")
+async def auth_setup_required():
+    count = await asyncio.to_thread(db.count_users)
+    return {"setup_required": count == 0}
+
+
+@api.post("/auth/setup", status_code=201)
+async def auth_setup(body: Credentials):
+    count = await asyncio.to_thread(db.count_users)
+    if count > 0:
+        raise HTTPException(status_code=409, detail="Setup already completed")
+    password_hash = hash_password(body.password)
+    user = await asyncio.to_thread(db.create_user, body.username, password_hash)
+    token = create_access_token(user["id"], user["username"])
+    return {"access_token": token, "user": user}
+
+
+@api.post("/auth/login")
+async def auth_login(body: Credentials):
+    user = await asyncio.to_thread(db.get_user_by_username, body.username)
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    await asyncio.to_thread(db.touch_last_login, user["id"])
+    token = create_access_token(user["id"], user["username"])
+    return {"access_token": token, "user": {"id": user["id"], "username": user["username"]}}
+
+
+@api.get("/auth/me")
+async def auth_me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+
+@api.get("/users")
+async def list_users():
+    return await asyncio.to_thread(db.list_users)
+
+
+@api.post("/users", status_code=201)
+async def create_user(body: Credentials):
+    if await asyncio.to_thread(db.get_user_by_username, body.username):
+        raise HTTPException(status_code=409, detail="Username already exists")
+    password_hash = hash_password(body.password)
+    return await asyncio.to_thread(db.create_user, body.username, password_hash)
+
+
+@api.post("/users/{user_id}/password")
+async def reset_user_password(user_id: int, body: PasswordReset):
+    if not await asyncio.to_thread(db.get_user, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    password_hash = hash_password(body.password)
+    await asyncio.to_thread(db.update_user_password, user_id, password_hash)
+    return {"ok": True}
+
+
+@api.delete("/users/{user_id}", status_code=204)
+async def delete_user(user_id: int):
+    if not await asyncio.to_thread(db.get_user, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    if await asyncio.to_thread(db.count_users) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the last remaining user")
+    await asyncio.to_thread(db.delete_user, user_id)
 
 
 @api.get("/health")
@@ -1648,6 +1892,12 @@ async def reload():
 
 @api.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    # Browsers can't set custom headers on the WS handshake, so the token
+    # travels as a query param instead of Authorization: Bearer.
+    token = websocket.query_params.get("token", "")
+    if not await asyncio.to_thread(user_from_token, token):
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     ws_clients.append(websocket)
     try:

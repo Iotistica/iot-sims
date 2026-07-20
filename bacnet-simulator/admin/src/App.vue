@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
@@ -9,9 +9,12 @@ import TemplatePickerModal from './components/TemplatePickerModal.vue'
 import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
+import LoginView from './components/LoginView.vue'
+import UsersDrawer from './components/UsersDrawer.vue'
 import type { Device, SimObject, Meta, Health, HistoryPoint } from './types'
 import { api } from './api'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined } from '@ant-design/icons-vue'
+import { authToken, currentUser, logout } from './auth'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
 
@@ -31,6 +34,7 @@ const editingObject     = ref<SimObject | null>(null)
 const profilesDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
 const saveTemplateOpen     = ref(false)
+const usersDrawerOpen      = ref(false)
 
 // Active profile state
 const activeProfileId   = ref<number | null>(null)
@@ -55,14 +59,16 @@ let wsTimer: ReturnType<typeof setTimeout> | null = null
 
 function wsConnect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  ws = new WebSocket(`${proto}//${location.host}/ws`)
+  ws = new WebSocket(`${proto}//${location.host}/ws?token=${encodeURIComponent(authToken.value ?? '')}`)
   ws.onmessage = (e) => {
     const data = JSON.parse(e.data) as { devices?: { objects?: { id: number; value: number | boolean }[] }[] }
     const map: Record<number, number | boolean> = {}
     data.devices?.forEach(d => d.objects?.forEach(o => { map[o.id] = o.value }))
     liveValues.value = map
   }
-  ws.onclose = () => { wsTimer = setTimeout(wsConnect, 3000) }
+  // Only keep retrying while still logged in — an expired/cleared token would
+  // otherwise reconnect forever against a server that immediately closes it.
+  ws.onclose = () => { if (authToken.value) wsTimer = setTimeout(wsConnect, 3000) }
   ws.onerror = () => ws?.close()
 }
 
@@ -429,23 +435,55 @@ const columns: TableColumnsType = [
   { title: '',           key: 'actions',               width: 200 },
 ]
 
-// Lifecycle
+// Lifecycle — gated behind auth: protected endpoints 401 until logged in
 let healthTimer: ReturnType<typeof setInterval>
-onMounted(async () => {
+
+async function startApp() {
   await Promise.all([loadMeta(), loadDevices(), loadHealth()])
   wsConnect()
   healthTimer = setInterval(loadHealth, 10_000)
+}
+
+function stopApp() {
+  clearInterval(healthTimer)
+  if (wsTimer) { clearTimeout(wsTimer); wsTimer = null }
+  ws?.close()
+  ws = null
+}
+
+async function onAuthenticated() {
+  await startApp()
+}
+
+function doLogout() {
+  logout()
+  message.success('Signed out')
+}
+
+// If a session expires mid-use, api.ts clears authToken — stop polling/ws
+// so the app doesn't keep hammering protected endpoints behind the login screen.
+watch(authToken, (token) => { if (!token) stopApp() })
+
+onMounted(async () => {
+  if (authToken.value) {
+    try {
+      currentUser.value = await api.auth.me()
+      await startApp()
+    } catch {
+      // api.ts already cleared the (invalid/expired) token on the 401; the
+      // template's v-if="!authToken" will fall back to the login screen.
+    }
+  }
 })
 onUnmounted(() => {
-  clearInterval(healthTimer)
-  if (wsTimer) clearTimeout(wsTimer)
-  ws?.close()
+  stopApp()
 })
 </script>
 
 <template>
   <a-config-provider :theme="{ token: { colorPrimary: '#1890ff', borderRadius: 4 } }">
-    <a-layout style="height:100vh">
+    <LoginView v-if="!authToken" @authenticated="onAuthenticated" />
+    <a-layout v-else style="height:100vh">
 
       <!-- Header -->
       <a-layout-header style="display:flex;align-items:center;gap:12px;padding:0 20px;height:48px;line-height:48px;background:#0a0a0a;border-bottom:1px solid rgba(255,255,255,0.08)">
@@ -493,6 +531,22 @@ onUnmounted(() => {
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
         <a-button size="small" @click="profilesDrawerOpen = true">Open</a-button>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
+
+        <div style="display:flex;align-items:center;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
+          <span style="color:rgba(255,255,255,0.5);font-size:12px">
+            <UserOutlined /> {{ currentUser?.username }}
+          </span>
+          <a-tooltip title="Manage users">
+            <a-button size="small" type="text" @click="usersDrawerOpen = true">
+              <template #icon><TeamOutlined :style="{ color: 'rgba(255,255,255,0.5)' }" /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="Sign out">
+            <a-button size="small" type="text" @click="doLogout">
+              <template #icon><LogoutOutlined :style="{ color: 'rgba(255,255,255,0.5)' }" /></template>
+            </a-button>
+          </a-tooltip>
+        </div>
       </a-layout-header>
 
       <a-layout>
@@ -640,6 +694,9 @@ onUnmounted(() => {
       v-model:open="profilesDrawerOpen"
       @loaded="onProfileLoaded"
     />
+
+    <!-- Users drawer -->
+    <UsersDrawer v-model:open="usersDrawerOpen" />
 
     <!-- Save as template -->
     <SaveTemplateModal

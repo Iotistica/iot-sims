@@ -1,11 +1,12 @@
-import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint } from './types'
+import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse } from './types'
+import { authToken, logout } from './auth'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (authToken.value) headers['Authorization'] = `Bearer ${authToken.value}`
+  const res = await fetch(path, { headers, ...init })
   if (!res.ok) {
+    if (res.status === 401) logout()
     const e = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error((e as { detail?: string }).detail || res.statusText)
   }
@@ -17,6 +18,24 @@ export const api = {
   health: () => req<Health>('/health'),
   meta:   () => req<Meta>('/meta'),
   logs:   (limit = 200) => req<LogEntry[]>(`/logs?limit=${limit}`),
+
+  auth: {
+    setupRequired: () => req<{ setup_required: boolean }>('/auth/setup-required'),
+    setup: (username: string, password: string) =>
+      req<AuthResponse>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
+    login: (username: string, password: string) =>
+      req<AuthResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+    me: () => req<User>('/auth/me'),
+  },
+
+  users: {
+    list:          ()                         => req<User[]>('/users'),
+    create:        (username: string, password: string) =>
+      req<User>('/users', { method: 'POST', body: JSON.stringify({ username, password }) }),
+    resetPassword: (id: number, password: string) =>
+      req<{ ok: boolean }>(`/users/${id}/password`, { method: 'POST', body: JSON.stringify({ password }) }),
+    del:           (id: number)               => req<null>(`/users/${id}`, { method: 'DELETE' }),
+  },
 
   sim: {
     start: () => req<{ sim_running: boolean }>('/sim/start', { method: 'POST' }),
