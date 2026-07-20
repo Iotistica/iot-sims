@@ -18,8 +18,10 @@ import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutline
 
 const apiPort = window.location.port || '47900'
 
-const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_running: true, elapsed_seconds: 0 })
+const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
 const simActionLoading = ref(false)
+const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a', paused: '#faad14', stopped: '#ff4d4f' }
+const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'clock running', paused: 'clock paused', stopped: 'clock stopped' }
 const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [] })
 const devices = ref<Device[]>([])
 const selectedDevice = ref<Device | null>(null)
@@ -498,27 +500,30 @@ onUnmounted(() => {
         <div style="display:flex;align-items:center;gap:2px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
           <a-tooltip title="Start simulation clock">
             <a-button
-              size="small" type="text" :disabled="health.sim_running" :loading="simActionLoading"
+              size="small" type="text" :disabled="health.sim_state === 'running'" :loading="simActionLoading"
               @click="simStart"
             >
-              <template #icon><PlayCircleOutlined :style="{ color: health.sim_running ? '#555' : '#52c41a' }" /></template>
+              <template #icon><PlayCircleOutlined :style="{ color: health.sim_state === 'running' ? '#555' : '#52c41a' }" /></template>
             </a-button>
           </a-tooltip>
           <a-tooltip title="Pause simulation clock (freezes values in place)">
             <a-button
-              size="small" type="text" :disabled="!health.sim_running" :loading="simActionLoading"
+              size="small" type="text" :disabled="health.sim_state !== 'running'" :loading="simActionLoading"
               @click="simPause"
             >
-              <template #icon><PauseCircleOutlined :style="{ color: !health.sim_running ? '#555' : '#faad14' }" /></template>
+              <template #icon><PauseCircleOutlined :style="{ color: health.sim_state !== 'running' ? '#555' : '#faad14' }" /></template>
             </a-button>
           </a-tooltip>
           <a-tooltip title="Stop simulation clock and rewind to t=0">
-            <a-button size="small" type="text" :loading="simActionLoading" @click="simStop">
-              <template #icon><StopOutlined :style="{ color: '#ff4d4f' }" /></template>
+            <a-button
+              size="small" type="text" :disabled="health.sim_state === 'stopped'" :loading="simActionLoading"
+              @click="simStop"
+            >
+              <template #icon><StopOutlined :style="{ color: health.sim_state === 'stopped' ? '#555' : '#ff4d4f' }" /></template>
             </a-button>
           </a-tooltip>
-          <span style="color:#555;font-size:11px;margin-left:2px">
-            {{ health.sim_running ? 'clock running' : 'clock paused' }}
+          <span :style="{ fontSize:'11px', marginLeft:'2px', color: SIM_STATE_COLOR[health.sim_state] }">
+            {{ SIM_STATE_LABEL[health.sim_state] }}
           </span>
         </div>
 

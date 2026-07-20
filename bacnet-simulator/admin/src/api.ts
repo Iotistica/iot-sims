@@ -38,9 +38,9 @@ export const api = {
   },
 
   sim: {
-    start: () => req<{ sim_running: boolean }>('/sim/start', { method: 'POST' }),
-    pause: () => req<{ sim_running: boolean }>('/sim/pause', { method: 'POST' }),
-    stop:  () => req<{ sim_running: boolean; elapsed_seconds: number }>('/sim/stop', { method: 'POST' }),
+    start: () => req<{ sim_state: Health['sim_state'] }>('/sim/start', { method: 'POST' }),
+    pause: () => req<{ sim_state: Health['sim_state'] }>('/sim/pause', { method: 'POST' }),
+    stop:  () => req<{ sim_state: Health['sim_state']; elapsed_seconds: number }>('/sim/stop', { method: 'POST' }),
   },
 
   devices: {

@@ -1039,17 +1039,23 @@ class SimEngine:
         # simulation clock: whether tick() advances time / recomputes values.
         # Independent of self.app (the BACnet stack) — objects stay reachable
         # and hold their last value while paused/stopped.
-        self.running: bool = True
+        # One of "running" / "paused" / "stopped" — "paused" freezes values in
+        # place, "stopped" additionally rewinds elapsed time/history to zero.
+        # Starts running on process boot (historical default, pre-dates these
+        # controls); loading/switching a profile explicitly stops it instead
+        # (see load_profile()) so a freshly loaded profile doesn't silently
+        # start ticking.
+        self.clock_state: str = "running"
 
     def pause(self) -> None:
-        self.running = False
+        self.clock_state = "paused"
 
     def resume(self) -> None:
-        self.running = True
+        self.clock_state = "running"
 
     def reset(self) -> None:
         """Stop the clock and rewind simulated time/history back to the start."""
-        self.running = False
+        self.clock_state = "stopped"
         self.state.elapsed_seconds = 0.0
         self.state.time_of_day = 12.0
         self._history.clear()
@@ -1216,7 +1222,7 @@ class SimEngine:
 
     async def tick(self) -> None:
         """Advance sim state and update all object values."""
-        if not self.running:
+        if self.clock_state != "running":
             return
 
         self.state.elapsed_seconds += TICK_SECONDS
@@ -1637,7 +1643,7 @@ async def health():
         "status": "ok",
         "devices": len(devices),
         "bacnet_running": engine.app is not None,
-        "sim_running": engine.running,
+        "sim_state": engine.clock_state,
         "elapsed_seconds": engine.state.elapsed_seconds,
     }
 
@@ -1645,19 +1651,19 @@ async def health():
 @api.post("/sim/start")
 async def sim_start():
     engine.resume()
-    return {"sim_running": engine.running}
+    return {"sim_state": engine.clock_state}
 
 
 @api.post("/sim/pause")
 async def sim_pause():
     engine.pause()
-    return {"sim_running": engine.running}
+    return {"sim_state": engine.clock_state}
 
 
 @api.post("/sim/stop")
 async def sim_stop():
     engine.reset()
-    return {"sim_running": engine.running, "elapsed_seconds": engine.state.elapsed_seconds}
+    return {"sim_state": engine.clock_state, "elapsed_seconds": engine.state.elapsed_seconds}
 
 
 @api.get("/meta")
@@ -1853,6 +1859,8 @@ async def load_profile(profile_id: int):
     if not ok:
         raise HTTPException(404, "Profile not found")
     asyncio.create_task(engine.reload())
+    # A freshly loaded profile starts paused — the user presses Start when ready.
+    engine.reset()
     return {"ok": True}
 
 

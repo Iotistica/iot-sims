@@ -31,7 +31,7 @@ export interface Health {
   status: string
   bacnet_running: boolean
   devices: number
-  sim_running: boolean
+  sim_state: 'running' | 'paused' | 'stopped'
   elapsed_seconds: number
 }
 
