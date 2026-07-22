@@ -8,7 +8,18 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     if (res.status === 401) logout()
     const e = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error((e as { detail?: string }).detail || res.statusText)
+    const detail = (e as { detail?: unknown }).detail
+    let message: string
+    if (typeof detail === 'string') {
+      message = detail
+    } else if (Array.isArray(detail)) {
+      // FastAPI/Pydantic validation errors: detail is a list of
+      // { loc, msg, type } objects, not a string.
+      message = detail.map((d) => (d as { msg?: string })?.msg).filter(Boolean).join('; ')
+    } else {
+      message = ''
+    }
+    throw new Error(message || res.statusText)
   }
   if (res.status === 204) return null as T
   return res.json() as Promise<T>
