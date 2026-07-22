@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { DownloadOutlined, DeleteOutlined } from '@ant-design/icons-vue'
+import { DownloadOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import type { Profile } from '../types'
 import { api } from '../api'
+import ImportProfileModal from './ImportProfileModal.vue'
 
 const emit = defineEmits<{
   'update:open': [val: boolean]
@@ -14,6 +15,7 @@ const props = defineProps<{ open: boolean }>()
 
 const profiles = ref<Profile[]>([])
 const loading = ref(false)
+const importOpen = ref(false)
 
 async function load() {
   loading.value = true
@@ -82,6 +84,13 @@ watch(() => props.open, (isOpen) => {
     width="460"
     @close="emit('update:open', false)"
   >
+    <template #extra>
+      <a-button size="small" @click="importOpen = true">
+        <template #icon><UploadOutlined /></template>
+        Import
+      </a-button>
+    </template>
+
     <a-spin :spinning="loading">
       <div v-if="!profiles.length && !loading" style="text-align:center;color:#bbb;padding:60px 0;font-size:14px">
         No profiles saved yet
@@ -118,4 +127,6 @@ watch(() => props.open, (isOpen) => {
       <a-button @click="emit('update:open', false)">Close</a-button>
     </template>
   </a-drawer>
+
+  <ImportProfileModal v-model:open="importOpen" @imported="load" />
 </template>
