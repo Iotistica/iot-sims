@@ -1,0 +1,534 @@
+{
+  "devices": [
+    {
+      "device_instance": 4001,
+      "name": "RTU-1",
+      "description": "Rooftop unit 1 \u2013 zone A spot conditioning",
+      "vendor_name": "Carrier Corporation",
+      "model_name": "RTU Open",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "SF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "Comp-1-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 3,
+          "name": "Comp-2-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "Space-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 18.0, \"noise\": 0.6}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 5,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 6,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 15.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "OAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 12.0, \"amplitude\": 8.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 8,
+          "name": "Economizer-Position",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 30.0, \"amplitude\": 20.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 4002,
+      "name": "RTU-2",
+      "description": "Rooftop unit 2 \u2013 zone B spot conditioning",
+      "vendor_name": "Carrier Corporation",
+      "model_name": "RTU Open",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "SF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "Comp-1-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 3,
+          "name": "Comp-2-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "Space-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 18.0, \"noise\": 0.6}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 5,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 6,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 15.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "OAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 12.0, \"amplitude\": 8.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 8,
+          "name": "Economizer-Position",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 30.0, \"amplitude\": 20.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 4003,
+      "name": "RTU-3",
+      "description": "Rooftop unit 3 \u2013 zone C spot conditioning",
+      "vendor_name": "Carrier Corporation",
+      "model_name": "RTU Open",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "SF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "Comp-1-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 3,
+          "name": "Comp-2-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "Space-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 18.0, \"noise\": 0.6}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 5,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 6,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 15.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "OAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 12.0, \"amplitude\": 8.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 8,
+          "name": "Economizer-Position",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 30.0, \"amplitude\": 20.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 4004,
+      "name": "Dock-Systems",
+      "description": "Loading dock \u2013 door position sensors and heaters, 4 bays",
+      "vendor_name": "Reliable Controls Corporation",
+      "model_name": "MACH-ProSys",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "Dock-1-Door-Open",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 2,
+          "name": "Dock-1-Heater-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"05:00\", \"value\": 1}, {\"start\": \"09:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 3,
+          "name": "Dock-2-Door-Open",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 4,
+          "name": "Dock-2-Heater-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"05:00\", \"value\": 1}, {\"start\": \"09:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 5,
+          "name": "Dock-3-Door-Open",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 6,
+          "name": "Dock-3-Heater-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"05:00\", \"value\": 1}, {\"start\": \"09:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 7,
+          "name": "Dock-4-Door-Open",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 8,
+          "name": "Dock-4-Heater-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"05:00\", \"value\": 1}, {\"start\": \"09:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 4005,
+      "name": "Exhaust-Fans",
+      "description": "Warehouse exhaust / makeup-air fan drives \u2013 2 units",
+      "vendor_name": "Danfoss Drives A/S",
+      "model_name": "VLT HVAC Drive FC 102",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-output",
+          "object_instance": 1,
+          "name": "Fan-1-Speed",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 60.0, \"amplitude\": 25.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "Fan-1-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 3,
+          "name": "Fan-1-kW",
+          "units": "kilowatts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 9.5, \"noise\": 1.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 4,
+          "name": "Fan-2-Speed",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 55.0, \"amplitude\": 22.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 5,
+          "name": "Fan-2-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "Fan-2-kW",
+          "units": "kilowatts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 8.8, \"noise\": 1.0}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 4006,
+      "name": "HighBay-Lighting",
+      "description": "Wireless high-bay LED lighting \u2014 occupancy-based, 4 aisles",
+      "vendor_name": "Lutron Electronic Co., Inc.",
+      "model_name": "Vive Wireless Gateway",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "Total-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 6.5, \"step\": 0.3, \"min\": 1.0, \"max\": 14.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "Zone-1-Occupancy",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 15, \"fault_duration_seconds\": 480}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 3,
+          "name": "Zone-1-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 1, \"blocks\": [{\"start\": \"06:00\", \"value\": 1}, {\"start\": \"22:00\", \"value\": 1}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 4,
+          "name": "Zone-2-Occupancy",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 15, \"fault_duration_seconds\": 480}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 5,
+          "name": "Zone-2-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 1, \"blocks\": [{\"start\": \"06:00\", \"value\": 1}, {\"start\": \"22:00\", \"value\": 1}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 6,
+          "name": "Zone-3-Occupancy",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 15, \"fault_duration_seconds\": 480}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 7,
+          "name": "Zone-3-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 1, \"blocks\": [{\"start\": \"06:00\", \"value\": 1}, {\"start\": \"22:00\", \"value\": 1}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 8,
+          "name": "Zone-4-Occupancy",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 15, \"fault_duration_seconds\": 480}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 9,
+          "name": "Zone-4-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 1, \"blocks\": [{\"start\": \"06:00\", \"value\": 1}, {\"start\": \"22:00\", \"value\": 1}]}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    }
+  ]
+}

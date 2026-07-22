@@ -1,0 +1,2204 @@
+{
+  "devices": [
+    {
+      "device_instance": 3001,
+      "name": "Chiller-Plant",
+      "description": "Central plant \u2013 2 duty + 1 standby centrifugal chillers, cooling towers",
+      "vendor_name": "Johnson Controls",
+      "model_name": "YK Centrifugal Chiller",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "CH-1-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 2,
+          "name": "CH-1-kW",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 380, \"step\": 12, \"min\": 150, \"max\": 550}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 3,
+          "name": "CH-1-COP",
+          "units": "no-units",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 6.1, \"noise\": 0.2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 4,
+          "name": "CH-2-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "CH-2-kW",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 365, \"step\": 12, \"min\": 150, \"max\": 550}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "CH-2-COP",
+          "units": "no-units",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 5.9, \"noise\": 0.2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 7,
+          "name": "CH-3-Standby",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "CW-Supply-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 6.0, \"noise\": 0.2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 9,
+          "name": "CW-Return-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 12.5, \"noise\": 0.2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 10,
+          "name": "CT-Fan-1-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 11,
+          "name": "CT-Fan-2-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 12,
+          "name": "CT-Fan-3-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 13,
+          "name": "CT-Leaving-Water-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 29.0, \"noise\": 0.5}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3002,
+      "name": "HW-Plant",
+      "description": "Central hot-water plant \u2013 3 condensing boilers",
+      "vendor_name": "Automated Logic Corporation",
+      "model_name": "PlantCTRL",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "BLR-1-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "BLR-2-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 3,
+          "name": "BLR-3-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "HW-Supply-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 71.0, \"noise\": 0.8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "HW-Return-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 58.0, \"noise\": 0.8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "Gas-Flow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 60, \"step\": 4, \"min\": 15, \"max\": 120}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3003,
+      "name": "AHU-Low",
+      "description": "Serves floors 1-4 (low rise)",
+      "vendor_name": "Siemens Building Technologies",
+      "model_name": "PXC-BACnet",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "SF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "RF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 3,
+          "name": "SF-Speed",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "RF-Speed",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 70.0, \"amplitude\": 12.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "SAT",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 13.0, \"noise\": 0.4}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "RAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 22.0, \"amplitude\": 2.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "MAT",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 16.0, \"noise\": 0.8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "OAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 12.0, \"amplitude\": 8.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 9,
+          "name": "OAD-Position",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 26.0, \"amplitude\": 16.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 10,
+          "name": "CC-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 52.0, \"amplitude\": 24.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 11,
+          "name": "HC-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 11.0, \"amplitude\": 9.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 12,
+          "name": "SA-Flow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 12500, \"noise\": 300}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 13,
+          "name": "SA-Static-Pressure",
+          "units": "pascals",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 400, \"noise\": 15}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 14,
+          "name": "Filter-DP-Alarm",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3004,
+      "name": "AHU-Mid",
+      "description": "Serves floors 5-8 (mid rise)",
+      "vendor_name": "Siemens Building Technologies",
+      "model_name": "PXC-BACnet",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "SF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "RF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 3,
+          "name": "SF-Speed",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 70.0, \"amplitude\": 15.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "RF-Speed",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 65.0, \"amplitude\": 12.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "SAT",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 13.5, \"noise\": 0.4}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "RAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 22.0, \"amplitude\": 2.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "MAT",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 16.0, \"noise\": 0.8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "OAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 12.0, \"amplitude\": 8.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 9,
+          "name": "OAD-Position",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 26.0, \"amplitude\": 16.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 10,
+          "name": "CC-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 52.0, \"amplitude\": 24.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 11,
+          "name": "HC-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 11.0, \"amplitude\": 9.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 12,
+          "name": "SA-Flow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 12500, \"noise\": 300}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 13,
+          "name": "SA-Static-Pressure",
+          "units": "pascals",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 400, \"noise\": 15}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 14,
+          "name": "Filter-DP-Alarm",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3005,
+      "name": "AHU-High",
+      "description": "Serves floors 9-12 (high rise)",
+      "vendor_name": "Siemens Building Technologies",
+      "model_name": "PXC-BACnet",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "SF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "RF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 3,
+          "name": "SF-Speed",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 65.0, \"amplitude\": 15.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "RF-Speed",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 60.0, \"amplitude\": 12.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "SAT",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 14.0, \"noise\": 0.4}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "RAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 22.0, \"amplitude\": 2.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "MAT",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 16.0, \"noise\": 0.8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "OAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 12.0, \"amplitude\": 8.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 9,
+          "name": "OAD-Position",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 26.0, \"amplitude\": 16.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 10,
+          "name": "CC-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 52.0, \"amplitude\": 24.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 11,
+          "name": "HC-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 11.0, \"amplitude\": 9.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 12,
+          "name": "SA-Flow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 12500, \"noise\": 300}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 13,
+          "name": "SA-Static-Pressure",
+          "units": "pascals",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 400, \"noise\": 15}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 14,
+          "name": "Filter-DP-Alarm",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3101,
+      "name": "VAV-3101",
+      "description": "Zone controller \u2013 instance 3101",
+      "vendor_name": "Distech Controls, Inc.",
+      "model_name": "ECY-VAV",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "Zone-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 21.5, \"noise\": 0.3}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 2,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 23.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 4,
+          "name": "Damper-Cmd",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 68, \"amplitude\": 14.0, \"period_hours\": 8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-Airflow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 360, \"noise\": 20}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 6,
+          "name": "Reheat-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 12.0, \"amplitude\": 10.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 7,
+          "name": "Occupancy",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Zone-CO2",
+          "units": "parts-per-million",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 650, \"step\": 30, \"min\": 400, \"max\": 1200}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3102,
+      "name": "VAV-3102",
+      "description": "Zone controller \u2013 instance 3102",
+      "vendor_name": "Distech Controls, Inc.",
+      "model_name": "ECY-VAV",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "Zone-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 22.0, \"noise\": 0.3}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 2,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 23.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 4,
+          "name": "Damper-Cmd",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 70, \"amplitude\": 14.0, \"period_hours\": 8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-Airflow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 340, \"noise\": 20}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 6,
+          "name": "Reheat-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 10.0, \"amplitude\": 10.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 7,
+          "name": "Occupancy",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Zone-CO2",
+          "units": "parts-per-million",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 650, \"step\": 30, \"min\": 400, \"max\": 1200}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3201,
+      "name": "VAV-3201",
+      "description": "Zone controller \u2013 instance 3201",
+      "vendor_name": "Distech Controls, Inc.",
+      "model_name": "ECY-VAV",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "Zone-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 21.8, \"noise\": 0.3}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 2,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 23.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 4,
+          "name": "Damper-Cmd",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 66, \"amplitude\": 14.0, \"period_hours\": 8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-Airflow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 380, \"noise\": 20}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 6,
+          "name": "Reheat-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 13.0, \"amplitude\": 10.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 7,
+          "name": "Occupancy",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Zone-CO2",
+          "units": "parts-per-million",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 650, \"step\": 30, \"min\": 400, \"max\": 1200}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3202,
+      "name": "VAV-3202",
+      "description": "Zone controller \u2013 instance 3202",
+      "vendor_name": "Distech Controls, Inc.",
+      "model_name": "ECY-VAV",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "Zone-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 22.2, \"noise\": 0.3}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 2,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 23.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 4,
+          "name": "Damper-Cmd",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 71, \"amplitude\": 14.0, \"period_hours\": 8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-Airflow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 355, \"noise\": 20}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 6,
+          "name": "Reheat-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 11.0, \"amplitude\": 10.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 7,
+          "name": "Occupancy",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Zone-CO2",
+          "units": "parts-per-million",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 650, \"step\": 30, \"min\": 400, \"max\": 1200}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3301,
+      "name": "VAV-3301",
+      "description": "Zone controller \u2013 instance 3301",
+      "vendor_name": "Distech Controls, Inc.",
+      "model_name": "ECY-VAV",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "Zone-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 21.0, \"noise\": 0.3}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 2,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 22.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 4,
+          "name": "Damper-Cmd",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 62, \"amplitude\": 14.0, \"period_hours\": 8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-Airflow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 330, \"noise\": 20}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 6,
+          "name": "Reheat-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 15.0, \"amplitude\": 10.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 7,
+          "name": "Occupancy",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Zone-CO2",
+          "units": "parts-per-million",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 650, \"step\": 30, \"min\": 400, \"max\": 1200}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3302,
+      "name": "VAV-3302",
+      "description": "Zone controller \u2013 instance 3302",
+      "vendor_name": "Distech Controls, Inc.",
+      "model_name": "ECY-VAV",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "Zone-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 21.5, \"noise\": 0.3}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 2,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 23.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 4,
+          "name": "Damper-Cmd",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 65, \"amplitude\": 14.0, \"period_hours\": 8}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-Airflow",
+          "units": "cubic-feet-per-minute",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 310, \"noise\": 20}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 6,
+          "name": "Reheat-Valve",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 14.0, \"amplitude\": 10.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 7,
+          "name": "Occupancy",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Zone-CO2",
+          "units": "parts-per-million",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 650, \"step\": 30, \"min\": 400, \"max\": 1200}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3401,
+      "name": "DALI-GW-Low",
+      "description": "Floors 1-4 lighting",
+      "vendor_name": "LOYTEC electronics GmbH",
+      "model_name": "L-DALI/8",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-value",
+          "object_instance": 1,
+          "name": "Emergency-Test-OK",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": true}, \"fault_type\": \"stuck\", \"fault_value\": 0, \"mtbf_minutes\": 10080, \"fault_duration_seconds\": 600}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 2,
+          "name": "Zone-A-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"19:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Zone-A-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 4,
+          "name": "Zone-A-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-A-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 6,
+          "name": "Zone-A-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "Zone-A-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 8,
+          "name": "Zone-B-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"19:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 9,
+          "name": "Zone-B-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 10,
+          "name": "Zone-B-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 11,
+          "name": "Zone-B-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 12,
+          "name": "Zone-B-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 13,
+          "name": "Zone-B-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 14,
+          "name": "Zone-C-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"19:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 15,
+          "name": "Zone-C-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 16,
+          "name": "Zone-C-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 17,
+          "name": "Zone-C-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 18,
+          "name": "Zone-C-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 19,
+          "name": "Zone-C-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3402,
+      "name": "DALI-GW-Mid",
+      "description": "Floors 5-8 lighting",
+      "vendor_name": "LOYTEC electronics GmbH",
+      "model_name": "L-DALI/8",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-value",
+          "object_instance": 1,
+          "name": "Emergency-Test-OK",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": true}, \"fault_type\": \"stuck\", \"fault_value\": 0, \"mtbf_minutes\": 10080, \"fault_duration_seconds\": 600}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 2,
+          "name": "Zone-A-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"19:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Zone-A-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 4,
+          "name": "Zone-A-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-A-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 6,
+          "name": "Zone-A-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "Zone-A-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 8,
+          "name": "Zone-B-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"19:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 9,
+          "name": "Zone-B-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 10,
+          "name": "Zone-B-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 11,
+          "name": "Zone-B-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 12,
+          "name": "Zone-B-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 13,
+          "name": "Zone-B-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 14,
+          "name": "Zone-C-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"19:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 15,
+          "name": "Zone-C-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 16,
+          "name": "Zone-C-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 17,
+          "name": "Zone-C-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 18,
+          "name": "Zone-C-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 19,
+          "name": "Zone-C-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3403,
+      "name": "DALI-GW-High",
+      "description": "Floors 9-12 lighting",
+      "vendor_name": "LOYTEC electronics GmbH",
+      "model_name": "L-DALI/8",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-value",
+          "object_instance": 1,
+          "name": "Emergency-Test-OK",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": true}, \"fault_type\": \"stuck\", \"fault_value\": 0, \"mtbf_minutes\": 10080, \"fault_duration_seconds\": 600}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 2,
+          "name": "Zone-A-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"06:30\", \"value\": 1}, {\"start\": \"20:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 3,
+          "name": "Zone-A-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 4,
+          "name": "Zone-A-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Zone-A-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 6,
+          "name": "Zone-A-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "Zone-A-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 8,
+          "name": "Zone-B-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"06:30\", \"value\": 1}, {\"start\": \"20:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 9,
+          "name": "Zone-B-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 10,
+          "name": "Zone-B-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 11,
+          "name": "Zone-B-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 12,
+          "name": "Zone-B-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 13,
+          "name": "Zone-B-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 14,
+          "name": "Zone-C-Lights-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"06:30\", \"value\": 1}, {\"start\": \"20:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 15,
+          "name": "Zone-C-Dim-Level",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 75.0, \"amplitude\": 15.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 16,
+          "name": "Zone-C-Scene",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 2}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 17,
+          "name": "Zone-C-Daylight",
+          "units": "luxes",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 250.0, \"amplitude\": 240.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 18,
+          "name": "Zone-C-Lamp-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 4320, \"fault_duration_seconds\": 1800}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 19,
+          "name": "Zone-C-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 2.4, \"step\": 0.15, \"min\": 0.2, \"max\": 4.5}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3501,
+      "name": "Meter-Main",
+      "description": "Main switchgear power meter",
+      "vendor_name": "Schneider Electric",
+      "model_name": "PowerLogic PM8000",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "kW-Total",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 180, \"step\": 10, \"min\": 40, \"max\": 420}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 2,
+          "name": "kWh-Total",
+          "units": "kilowatt-hours",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 12000, \"step\": 40, \"min\": 0, \"max\": 500000}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 3,
+          "name": "Voltage-L1",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "Voltage-L2",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Voltage-L3",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "Current-L1",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 210.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "Current-L2",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 205.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Current-L3",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 215.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 9,
+          "name": "Power-Factor",
+          "units": "no-units",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 0.94, \"noise\": 0.02}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3502,
+      "name": "Meter-Floor-4",
+      "description": "Floor 4 sub-metering panel",
+      "vendor_name": "Schneider Electric",
+      "model_name": "PowerLogic PM8000",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "kW-Total",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 180, \"step\": 10, \"min\": 40, \"max\": 420}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 2,
+          "name": "kWh-Total",
+          "units": "kilowatt-hours",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 12000, \"step\": 40, \"min\": 0, \"max\": 500000}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 3,
+          "name": "Voltage-L1",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "Voltage-L2",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Voltage-L3",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "Current-L1",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 210.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "Current-L2",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 205.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Current-L3",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 215.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 9,
+          "name": "Power-Factor",
+          "units": "no-units",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 0.94, \"noise\": 0.02}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3503,
+      "name": "Meter-Floor-8",
+      "description": "Floor 8 sub-metering panel",
+      "vendor_name": "Schneider Electric",
+      "model_name": "PowerLogic PM8000",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "name": "kW-Total",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 180, \"step\": 10, \"min\": 40, \"max\": 420}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 2,
+          "name": "kWh-Total",
+          "units": "kilowatt-hours",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 12000, \"step\": 40, \"min\": 0, \"max\": 500000}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 3,
+          "name": "Voltage-L1",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "Voltage-L2",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Voltage-L3",
+          "units": "volts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 347.0, \"noise\": 1.5}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 6,
+          "name": "Current-L1",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 210.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "Current-L2",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 205.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 8,
+          "name": "Current-L3",
+          "units": "amperes",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 215.0, \"noise\": 8.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 9,
+          "name": "Power-Factor",
+          "units": "no-units",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 0.94, \"noise\": 0.02}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3601,
+      "name": "VFD-CWP-1",
+      "description": "Condenser water pump 1 drive",
+      "vendor_name": "ABB, Inc.",
+      "model_name": "ACH580",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-output",
+          "object_instance": 1,
+          "name": "Speed-Pct",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 65.0, \"amplitude\": 20.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 2,
+          "name": "Output-kW",
+          "units": "kilowatts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 18.0, \"noise\": 2.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 3,
+          "name": "Run-Status",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 4,
+          "name": "Drive-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 20160, \"fault_duration_seconds\": 900}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 3602,
+      "name": "VFD-CHWP-1",
+      "description": "Chilled water pump 1 drive",
+      "vendor_name": "ABB, Inc.",
+      "model_name": "ACH580",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "analog-output",
+          "object_instance": 1,
+          "name": "Speed-Pct",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 65.0, \"amplitude\": 20.0, \"period_hours\": 12}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 2,
+          "name": "Output-kW",
+          "units": "kilowatts",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 18.0, \"noise\": 2.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 3,
+          "name": "Run-Status",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 4,
+          "name": "Drive-Fault",
+          "units": "no-units",
+          "behavior": "fault",
+          "behavior_params": "{\"base_behavior\": \"constant\", \"base_params\": {\"value\": false}, \"fault_type\": \"stuck\", \"fault_value\": 1, \"mtbf_minutes\": 20160, \"fault_duration_seconds\": 900}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    }
+  ]
+}

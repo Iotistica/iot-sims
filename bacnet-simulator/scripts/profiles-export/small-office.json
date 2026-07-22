@@ -1,0 +1,174 @@
+{
+  "devices": [
+    {
+      "device_instance": 2001,
+      "name": "RTU-1",
+      "description": "Single packaged rooftop unit serving the whole space",
+      "vendor_name": "Reliable Controls Corporation",
+      "model_name": "MACH-ProWeb",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-input",
+          "object_instance": 1,
+          "name": "SF-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 2,
+          "name": "Comp-1-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": true}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 3,
+          "name": "Comp-2-Run",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 4,
+          "name": "Space-Temp",
+          "units": "degrees-celsius",
+          "behavior": "noise",
+          "behavior_params": "{\"base\": 22.0, \"noise\": 0.4}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 5,
+          "name": "Cooling-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 23.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-value",
+          "object_instance": 6,
+          "name": "Heating-SP",
+          "units": "degrees-celsius",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": 20.0}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 7,
+          "name": "OAT",
+          "units": "degrees-celsius",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 12.0, \"amplitude\": 8.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-output",
+          "object_instance": 8,
+          "name": "Economizer-Position",
+          "units": "percent",
+          "behavior": "sine",
+          "behavior_params": "{\"base\": 22.0, \"amplitude\": 18.0, \"period_hours\": 24}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 9,
+          "name": "Space-CO2",
+          "units": "parts-per-million",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 550, \"step\": 25, \"min\": 400, \"max\": 1000}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-input",
+          "object_instance": 10,
+          "name": "Filter-Alarm",
+          "units": "no-units",
+          "behavior": "manual",
+          "behavior_params": "{\"value\": false}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    },
+    {
+      "device_instance": 2002,
+      "name": "Lighting-Panel-1",
+      "description": "BACnet-integrated lighting relay panel \u2014 4 circuits",
+      "vendor_name": "WAGO GmbH & Co. KG",
+      "model_name": "750-889 PFC200",
+      "enabled": 1,
+      "objects": [
+        {
+          "object_type": "binary-value",
+          "object_instance": 1,
+          "name": "Circuit-1-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"18:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 2,
+          "name": "Circuit-2-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"18:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 3,
+          "name": "Circuit-3-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"07:00\", \"value\": 1}, {\"start\": \"18:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "binary-value",
+          "object_instance": 4,
+          "name": "Circuit-4-On",
+          "units": "no-units",
+          "behavior": "schedule",
+          "behavior_params": "{\"default\": 0, \"blocks\": [{\"start\": \"08:00\", \"value\": 1}, {\"start\": \"17:00\", \"value\": 0}]}",
+          "enabled": 1,
+          "manual_value": null
+        },
+        {
+          "object_type": "analog-input",
+          "object_instance": 5,
+          "name": "Lighting-Power",
+          "units": "kilowatts",
+          "behavior": "random_walk",
+          "behavior_params": "{\"value\": 1.1, \"step\": 0.1, \"min\": 0.0, \"max\": 2.2}",
+          "enabled": 1,
+          "manual_value": null
+        }
+      ]
+    }
+  ]
+}
