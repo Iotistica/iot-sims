@@ -73,7 +73,7 @@ BACNET_UNITS = [
     "percent", "parts-per-million", "kilowatts", "watts", "kilowatt-hours",
     "amperes", "volts", "cubic-feet-per-minute", "liters-per-second",
     "pascals", "kilopascals", "bars", "cubic-meters-per-hour",
-    "revolutions-per-minute", "meters-per-second",
+    "revolutions-per-minute", "meters-per-second", "luxes",
 ]
 
 JWT_ALGORITHM = "HS256"
@@ -181,11 +181,24 @@ class Database:
         1302  VAV-L3-02          Siemens RXB29.1             (floor 3 zone B – server room)
         1401  VAV-L4-01          Siemens RXB29.1             (floor 4 zone A – open plan)
         1402  VAV-L4-02          Siemens RXB29.1             (floor 4 zone B – board room)
+        1501  DALI-GW-L1         LOYTEC L-DALI/4             (floor 1 lighting – zones A/B)
+        1502  DALI-GW-L2         LOYTEC L-DALI/4             (floor 2 lighting – zones A/B)
+        1503  DALI-GW-L3         LOYTEC L-DALI/4             (floor 3 lighting – zones A/B)
+        1504  DALI-GW-L4         LOYTEC L-DALI/4             (floor 4 lighting – zones A/B)
+
+        DALI is its own low-level addressed bus for lamp ballasts/drivers
+        (IEC 62386) — it isn't BACnet. What actually shows up on the BMS
+        network is a DALI-to-BACnet gateway (LOYTEC L-DALI, WAGO, Helvar,
+        Lutron Quantum, etc.) that bridges each DALI group/zone to a handful
+        of BACnet points: dim level, on/off, scene, daylight sensor, and lamp/
+        emergency-lighting fault status. Modeled here as one gateway per
+        floor aggregating 2 zones, matching the VAV zone layout above.
         """
         HONEYWELL = "Honeywell International"
         JCI       = "Johnson Controls"
         SIEMENS   = "Siemens Building Technologies"
         TRANE     = "Trane Technologies"
+        LOYTEC    = "LOYTEC electronics GmbH"
 
         with self._conn() as conn:
             if conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] > 0:
@@ -209,6 +222,10 @@ class Database:
                     (1302, "VAV-L3-02",    "Floor 3 VAV – Zone B server room",                             SIEMENS,   "RXB29.1"),
                     (1401, "VAV-L4-01",    "Floor 4 VAV – Zone A open-plan",                               SIEMENS,   "RXB29.1"),
                     (1402, "VAV-L4-02",    "Floor 4 VAV – Zone B board room",                              SIEMENS,   "RXB29.1"),
+                    (1501, "DALI-GW-L1",   "Floor 1 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4"),
+                    (1502, "DALI-GW-L2",   "Floor 2 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4"),
+                    (1503, "DALI-GW-L3",   "Floor 3 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4"),
+                    (1504, "DALI-GW-L4",   "Floor 4 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4"),
                 ],
             )
 
@@ -332,13 +349,59 @@ class Database:
                     (vd, "analog-input",  8, "Zone-CO2",          "parts-per-million","random_walk",f'{{"value":650,"step":30,"min":400,"max":1200}}'),
                 ]
 
+            # ── DALI-to-BACnet lighting gateways ─────────────────────────────
+            # (instance, on_time, off_time) — occupied-hours schedule per floor.
+            # Each gateway aggregates 2 zones (A/B), matching the VAV layout.
+            dali_cfg = [
+                (1501, "07:00", "19:00"),   # Floor 1
+                (1502, "07:00", "19:00"),   # Floor 2
+                (1503, "06:30", "20:00"),   # Floor 3 – executive suites, longer hours
+                (1504, "07:00", "19:30"),   # Floor 4
+            ]
+            for (inst, on_time, off_time) in dali_cfg:
+                gw = did(inst)
+                objects += [
+                    # Device-wide DALI Type-1 emergency lighting self-test status
+                    (gw, "binary-value", 1, "Emergency-Test-OK", "no-units", "fault", json.dumps({
+                        "base_behavior": "constant", "base_params": {"value": True},
+                        "fault_type": "stuck", "fault_value": 0,
+                        "mtbf_minutes": 10080, "fault_duration_seconds": 600,
+                    })),
+                ]
+                next_inst = 2
+                for zone in ("A", "B"):
+                    objects += [
+                        (gw, "binary-value", next_inst,     f"Zone-{zone}-Lights-On",  "no-units", "schedule", json.dumps({
+                            "default": 0,
+                            "blocks": [{"start": on_time, "value": 1}, {"start": off_time, "value": 0}],
+                        })),
+                        (gw, "analog-value", next_inst + 1, f"Zone-{zone}-Dim-Level",  "percent",  "sine",     json.dumps({
+                            "base": 75.0, "amplitude": 15.0, "period_hours": 24,
+                        })),
+                        (gw, "analog-value", next_inst + 2, f"Zone-{zone}-Scene",      "no-units", "manual",   json.dumps({
+                            "value": 2,   # 1=Off 2=Occupied 3=Evening 4=Cleaning 5=Emergency
+                        })),
+                        (gw, "analog-input", next_inst + 3, f"Zone-{zone}-Daylight",   "luxes",    "sine",     json.dumps({
+                            "base": 250.0, "amplitude": 240.0, "period_hours": 24,
+                        })),
+                        (gw, "binary-input", next_inst + 4, f"Zone-{zone}-Lamp-Fault", "no-units", "fault",    json.dumps({
+                            "base_behavior": "constant", "base_params": {"value": False},
+                            "fault_type": "stuck", "fault_value": 1,
+                            "mtbf_minutes": 4320, "fault_duration_seconds": 1800,
+                        })),
+                        (gw, "analog-input", next_inst + 5, f"Zone-{zone}-Power",      "kilowatts","random_walk", json.dumps({
+                            "value": 2.4, "step": 0.15, "min": 0.2, "max": 4.5,
+                        })),
+                    ]
+                    next_inst += 6
+
             conn.executemany(
                 "INSERT OR IGNORE INTO objects "
                 "(device_id, object_type, object_instance, name, units, behavior, behavior_params) "
                 "VALUES (?,?,?,?,?,?,?)",
                 objects,
             )
-        log.info("Seeded 4-storey office tower: Honeywell/Trane/JCI/Siemens – 13 devices, %d objects", len(objects))
+        log.info("Seeded 4-storey office tower: Honeywell/Trane/JCI/Siemens/LOYTEC – 17 devices, %d objects", len(objects))
 
     def get_devices(self) -> list[dict]:
         with self._conn() as conn:
