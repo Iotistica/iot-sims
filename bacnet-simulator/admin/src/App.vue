@@ -208,6 +208,12 @@ function newProfile() {
   })
 }
 
+function openSaveAs() {
+  saveModalName.value = activeProfileName.value ? `${activeProfileName.value} (copy)` : ''
+  saveModalDesc.value = activeProfileDesc.value
+  saveModalOpen.value = true
+}
+
 function openSave() {
   if (activeProfileId.value !== null) {
     // Overwrite existing profile directly — no dialog
@@ -534,6 +540,7 @@ onUnmounted(() => {
           New
         </a-button>
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
+        <a-button v-if="activeProfileId !== null" size="small" @click="openSaveAs">Save As</a-button>
         <a-button size="small" @click="profilesDrawerOpen = true">Open</a-button>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
 
