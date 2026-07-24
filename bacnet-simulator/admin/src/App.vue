@@ -498,10 +498,7 @@ onUnmounted(() => {
         <IotisticaLogo :size="24" />
         <span style="color:rgba(255,255,255,0.85);font-size:15px;font-weight:600;letter-spacing:.3px">Iotistica</span>
         <span style="color:rgba(255,255,255,0.25);font-size:13px;font-weight:400">BACnet Simulator</span>
-        <span :style="{ fontSize:'12px', color: health.bacnet_running ? '#52c41a' : '#ff4d4f', marginLeft: '8px' }">
-          {{ health.bacnet_running ? '● running' : '○ stopped' }}
-        </span>
-        <span style="color:#555;font-size:12px">· {{ health.devices }} device(s)</span>
+        <span style="color:#555;font-size:12px;margin-left:8px">{{ health.devices }} device(s)</span>
 
         <div style="display:flex;align-items:center;gap:2px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
           <a-tooltip title="Start simulation clock">
