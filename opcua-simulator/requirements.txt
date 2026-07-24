@@ -1,0 +1,6 @@
+asyncua==2.0.1
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+pydantic==2.13.4
+pyjwt==2.13.0
+bcrypt==5.0.0

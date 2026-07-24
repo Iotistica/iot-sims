@@ -1,255 +1,122 @@
 """
-OPC UA node creation and management
+OPC UA node creation and live CRUD — Device (folder) -> Tag (variable)
+hierarchy, driven by the SQLite-backed devices/tags tables (lib/db.py)
+instead of static profile JSON.
+
+Live add/delete after the server has started is confirmed safe (verified
+against an already-connected, subscribed client via a throwaway spike before
+this module was written) — asyncua's Node.delete() and add_variable() both
+work correctly post-startup.
 """
 import logging
-import uuid as uuid_module
-from typing import Dict, List
+from typing import Dict, Optional
+
 from asyncua import Server, ua
-from .types import Device
-from .models import get_model
-from .profiles import DeviceProfile
+
+from .types import LiveDevice, LiveTag
 
 logger = logging.getLogger(__name__)
 
-# Fixed namespace for deterministic per-device UUID generation (uuid5)
-_DEVICE_UUID_NAMESPACE = uuid_module.UUID('b5a7b3c9-d1e2-4f3a-8960-c0d1e2f34567')
+NS_URI = "http://iotistica.com/opcua-simulator"
+
+_VARIANT_TYPES = {
+    "Boolean": ua.VariantType.Boolean,
+    "Double": ua.VariantType.Double,
+    "Int32": ua.VariantType.Int32,
+    "String": ua.VariantType.String,
+}
+
+_DEFAULT_VALUES = {
+    "Boolean": False,
+    "Double": 0.0,
+    "Int32": 0,
+    "String": "",
+}
 
 
 class NodeManager:
-    """Manages OPC UA node creation and organization"""
-    
+    """Creates/deletes OPC UA nodes for devices and tags, keyed by DB id."""
+
     def __init__(self, server: Server):
         self.server = server
-        self.devices: List[Device] = []
-        self._devices_by_key: Dict[str, Device] = {}
-        
-    async def create_example_node(self):
-        """Create simple test variable with string NodeID"""
+        self.idx = 2  # placeholder until register_namespace() runs
+        self._devices: Dict[int, LiveDevice] = {}
+        self._tags: Dict[int, LiveTag] = {}
+
+    async def register_namespace(self) -> int:
+        self.idx = await self.server.register_namespace(NS_URI)
+        return self.idx
+
+    # ── Devices ──────────────────────────────────────────────────────────────
+
+    async def create_device(self, device_row: dict) -> LiveDevice:
+        key = device_row["key"]
         objects = self.server.nodes.objects
-        my_variable_nodeid = ua.NodeId("MyVariable", 2)  # ns=2;s=MyVariable
-        
-        # Check if example node already exists (handles Flask debug mode reloads)
-        try:
-            my_variable = self.server.get_node(my_variable_nodeid)
-            await my_variable.read_browse_name()
-            logger.debug("Example node already exists, skipping creation")
-        except Exception:
-            # Node doesn't exist, create it
-            my_variable = await objects.add_variable(my_variable_nodeid, "MyVariable", 42.0)
-            await my_variable.set_writable()
-        
-        # Set Description attribute (for discovery and unit extraction)
-        try:
-            await my_variable.write_attribute(ua.AttributeIds.Description, ua.DataValue(ua.LocalizedText("Example oscillating variable")))
-        except Exception as e:
-            logger.debug(f"Could not set description: {e}")
-        
-        # Create device object for example node
-        example_device = Device(
-            node=my_variable,
-            device_type='example',
-            model_type='oscillating',
-            index=0,
-            name='MyVariable',
-            folder='root',
-            unit=''
+        folder = await objects.add_folder(ua.NodeId(key, self.idx), device_row["name"])
+        uuid_var = await folder.add_variable(
+            ua.NodeId(f"{key}/DeviceUUID", self.idx), "DeviceUUID", key
         )
-        
-        self.devices.append(example_device)
-        self._devices_by_key['example'] = example_device
-        
-        logger.info("Created example node: ns=2;s=MyVariable")
-        
-    async def create_from_profile(self, profile: DeviceProfile):
-        """Create nodes from device profile definition"""
-        objects = self.server.nodes.objects
-        
-        # Create main folder (check if exists first)
-        main_folder_nodeid = ua.NodeId(profile.name, 2)
-        try:
-            main_folder = self.server.get_node(main_folder_nodeid)
-            await main_folder.read_browse_name()
-            logger.info(f"Main folder '{profile.name}' already exists")
-        except Exception:
-            main_folder = await objects.add_folder(main_folder_nodeid, profile.name)
-            logger.info(f"Created main folder: {profile.name}")
-        
-        folders_created = {}
-        total_nodes = 0
-        
-        for device_group in profile.devices:
-            folder_name = device_group['folder']
-            model_type = device_group['model']
-            prefix = device_group['prefix']
-            count = device_group['count']
-            unit = device_group.get('unit', '')
-            
-            # Build folder hierarchy (supports: folder -> subfolder -> zone -> devices)
-            current_folder = main_folder
-            folder_path = []
-            
-            # Level 1: Main folder (required)
-            if folder_name not in folders_created:
-                try:
-                    folder = await main_folder.add_folder(2, folder_name)
-                    folders_created[folder_name] = folder
-                    logger.debug(f"  Created folder: {folder_name}")
-                except Exception as e:
-                    # Folder already exists, get it
-                    folder_nodeid = ua.NodeId(folder_name, 2)
-                    folder = self.server.get_node(folder_nodeid)
-                    folders_created[folder_name] = folder
-                    logger.debug(f"  Folder '{folder_name}' already exists")
-            else:
-                folder = folders_created[folder_name]
-            
-            current_folder = folder
-            folder_path.append(folder_name)
-            
-            # Level 2: Subfolder (optional)
-            if 'subfolder' in device_group:
-                subfolder_name = device_group['subfolder']
-                subfolder_key = f"{folder_name}/{subfolder_name}"
-                
-                if subfolder_key not in folders_created:
-                    try:
-                        subfolder = await current_folder.add_folder(2, subfolder_name)
-                        folders_created[subfolder_key] = subfolder
-                        logger.debug(f"    Created subfolder: {subfolder_name}")
-                    except Exception:
-                        subfolder_nodeid = ua.NodeId(subfolder_name, 2)
-                        subfolder = self.server.get_node(subfolder_nodeid)
-                        folders_created[subfolder_key] = subfolder
-                        logger.debug(f"    Subfolder '{subfolder_name}' already exists")
-                else:
-                    subfolder = folders_created[subfolder_key]
-                
-                current_folder = subfolder
-                folder_path.append(subfolder_name)
-            
-            # Level 3: Zone (optional)
-            if 'zone' in device_group:
-                zone_name = device_group['zone']
-                zone_key = f"{'/'.join(folder_path)}/{zone_name}"
-                
-                if zone_key not in folders_created:
-                    try:
-                        zone_folder = await current_folder.add_folder(2, zone_name)
-                        folders_created[zone_key] = zone_folder
-                        logger.debug(f"      Created zone: {zone_name}")
-                    except Exception:
-                        zone_nodeid = ua.NodeId(zone_name, 2)
-                        zone_folder = self.server.get_node(zone_nodeid)
-                        folders_created[zone_key] = zone_folder
-                        logger.debug(f"      Zone '{zone_name}' already exists")
-                else:
-                    zone_folder = folders_created[zone_key]
-                
-                current_folder = zone_folder
-                folder_path.append(zone_name)
-            
-            # Get device config for this group
-            device_config = device_group.get('config', {})
-            
-            # Get model instance to extract default min/max
-            model = get_model(model_type, device_config)
-            
-            # Extract min/max from config or model
-            min_value = device_config.get('min_value', getattr(model, 'min_value', None))
-            max_value = device_config.get('max_value', getattr(model, 'max_value', None))
-            
-            # Create device nodes — each device is an object folder with DeviceUUID + value child
-            for i in range(count):
-                node_name = f"{prefix}{i+1}"
-                # NodeID for the device object: ns=2;s=Temperature/Device1
-                node_id_string = f"{folder_path[-1]}/{node_name}"
-                device_obj_id = ua.NodeId(node_id_string, 2)
-                
-                # Create (or reuse) the device object folder
-                try:
-                    device_obj = self.server.get_node(device_obj_id)
-                    await device_obj.read_browse_name()
-                    logger.debug(f"Device object {node_id_string} already exists, skipping creation")
-                except Exception:
-                    device_obj = await current_folder.add_folder(device_obj_id, node_name)
-                
-                # Set custom DisplayName on device folder if specified in the profile.
-                # The agent reads this attribute from the parent folder to build per-sensor
-                # display names (device_name field in readings).
-                custom_display_name = device_group.get('displayName')
-                if custom_display_name:
-                    try:
-                        await device_obj.write_attribute(
-                            ua.AttributeIds.DisplayName,
-                            ua.DataValue(ua.LocalizedText(custom_display_name))
-                        )
-                    except Exception as e:
-                        logger.debug(f"Could not set DisplayName for {node_name}: {e}")
-                
-                # Generate a stable per-device UUID from profile name + full path + device name
-                unique_key = f"{profile.name}/{'/'.join(folder_path)}/{node_name}"
-                device_uuid = str(uuid_module.uuid5(_DEVICE_UUID_NAMESPACE, unique_key))
-                
-                # DeviceUUID variable inside the device folder
-                uuid_var_id = ua.NodeId(f"{node_id_string}/DeviceUUID", 2)
-                try:
-                    uuid_var = self.server.get_node(uuid_var_id)
-                    await uuid_var.read_browse_name()
-                    logger.debug(f"DeviceUUID node for {node_id_string} already exists")
-                except Exception:
-                    await device_obj.add_variable(uuid_var_id, "DeviceUUID", device_uuid)
-                    logger.debug(f"Created DeviceUUID for {node_id_string}: {device_uuid}")
-                
-                # Value variable inside the device folder, named after the sensor type
-                value_var_id = ua.NodeId(f"{node_id_string}/{model_type}", 2)
-                try:
-                    value_var = self.server.get_node(value_var_id)
-                    await value_var.read_browse_name()
-                    logger.debug(f"Value node for {node_id_string} already exists, skipping creation")
-                except Exception:
-                    value_var = await device_obj.add_variable(value_var_id, model_type, 0.0)
-                    await value_var.set_writable()
-                
-                # Set Description on the value variable
-                try:
-                    if unit:
-                        description = f"{device_group.get('description', model_type.replace('_', ' ').title())} in {unit}"
-                    else:
-                        description = device_group.get('description', model_type.replace('_', ' ').title())
-                    await value_var.write_attribute(ua.AttributeIds.Description, ua.DataValue(ua.LocalizedText(description)))
-                except Exception as e:
-                    logger.debug(f"Could not set description for {node_name}: {e}")
-                
-                # Device struct points at the value variable; ValueUpdater writes to device.node
-                device = Device(
-                    node=value_var,
-                    device_type=model_type,
-                    model_type=model_type,
-                    index=i,
-                    name=node_name,
-                    folder='/'.join(folder_path),
-                    unit=unit,
-                    min_value=min_value,
-                    max_value=max_value,
-                    config=device_config,
-                    uuid=device_uuid
+        await uuid_var.set_writable(False)
+        live = LiveDevice(device_id=device_row["id"], key=key, folder_node=folder, uuid_node=uuid_var)
+        self._devices[device_row["id"]] = live
+        return live
+
+    async def delete_device(self, device_id: int) -> None:
+        live = self._devices.pop(device_id, None)
+        if not live:
+            return
+        # Recursive delete removes DeviceUUID + every tag variable under this folder in one call.
+        await live.folder_node.delete(delete_references=True, recursive=True)
+        for tag_id in [tid for tid, t in self._tags.items() if t.device_id == device_id]:
+            self._tags.pop(tag_id, None)
+
+    def get_device(self, device_id: int) -> Optional[LiveDevice]:
+        return self._devices.get(device_id)
+
+    def get_all_devices(self) -> list[LiveDevice]:
+        return list(self._devices.values())
+
+    # ── Tags ─────────────────────────────────────────────────────────────────
+
+    async def create_tag(self, device_id: int, tag_row: dict, behavior) -> LiveTag:
+        live_device = self._devices.get(device_id)
+        if not live_device:
+            raise ValueError(f"Device {device_id} has no live node — create the device first")
+
+        data_type = tag_row["data_type"]
+        node_id = ua.NodeId(f"{live_device.key}/{tag_row['name']}", self.idx)
+        var = await live_device.folder_node.add_variable(
+            node_id, tag_row["name"], _DEFAULT_VALUES[data_type],
+            varianttype=_VARIANT_TYPES[data_type],
+        )
+        if tag_row.get("writable"):
+            await var.set_writable()
+        if tag_row.get("unit"):
+            try:
+                await var.write_attribute(
+                    ua.AttributeIds.Description, ua.DataValue(ua.LocalizedText(tag_row["unit"]))
                 )
-                
-                self.devices.append(device)
-                self._devices_by_key[device.key] = device
-                total_nodes += 1
-        
-        logger.info(f"Created {total_nodes} device nodes from profile '{profile.name}'")
-        return total_nodes
-    
-    def get_device(self, key: str) -> Device:
-        """Get device by key"""
-        return self._devices_by_key.get(key)
-    
-    def get_all_devices(self) -> List[Device]:
-        """Get all managed devices"""
-        return self.devices
-    
-    def get_device_count(self) -> int:
-        """Get total number of managed devices"""
-        return len(self.devices)
+            except Exception as e:
+                logger.debug("Could not set unit description for %s: %s", tag_row["name"], e)
+
+        live_tag = LiveTag(
+            tag_id=tag_row["id"], device_id=device_id, node=var, name=tag_row["name"],
+            data_type=data_type, unit=tag_row.get("unit", ""), behavior=behavior,
+        )
+        self._tags[tag_row["id"]] = live_tag
+        return live_tag
+
+    async def delete_tag(self, tag_id: int) -> None:
+        live = self._tags.pop(tag_id, None)
+        if not live:
+            return
+        await live.node.delete(delete_references=True)
+
+    def get_tag(self, tag_id: int) -> Optional[LiveTag]:
+        return self._tags.get(tag_id)
+
+    def get_tags_for_device(self, device_id: int) -> list[LiveTag]:
+        return [t for t in self._tags.values() if t.device_id == device_id]
+
+    def get_all_tags(self) -> list[LiveTag]:
+        return list(self._tags.values())

@@ -1,3 +1,12 @@
+# Stage 1: build the Vue admin
+FROM node:20-slim AS ui-builder
+WORKDIR /ui
+COPY admin/package*.json ./
+RUN npm ci
+COPY admin/ ./
+RUN npm run build
+
+# Stage 2: Python runtime
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -16,19 +25,25 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip and install dependencies
+# Install dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir asyncua==1.0.6 flask==3.0.0 flask-cors==4.0.0
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy simulator files (build context is sensors/opcua-simulator)
 COPY opcua_simulator.py .
-COPY web_gui.py .
 COPY lib/ ./lib/
-COPY profiles/ ./profiles/
-COPY templates/ ./templates/
+COPY --from=ui-builder /ui/dist ./admin/dist
 
-# Expose OPC UA port and web GUI port
-EXPOSE 4840 5001
+RUN mkdir -p /data
 
-# Run simulator
+# OPC UA endpoint + the management REST/WS API (same port serves the admin UI)
+EXPOSE 4840/tcp
+EXPOSE 47901/tcp
+
+ENV DATA_DIR=/data
+ENV SIM_API_PORT=47901
+ENV OPCUA_PORT=4840
+
+# Run simulator (single process: OPC UA server + REST/WS management API + admin UI)
 CMD ["python", "-u", "opcua_simulator.py"]

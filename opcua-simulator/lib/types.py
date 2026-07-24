@@ -1,39 +1,32 @@
 """
-Type definitions for OPC UA simulator
+Type definitions for the OPC UA simulator's live Device -> Tag hierarchy.
+
+LiveDevice = one OPC UA folder node (+ its DeviceUUID child) — mirrors a row
+in the `devices` SQLite table (see lib/db.py).
+LiveTag = one OPC UA variable node + its running Behavior instance — mirrors
+a row in the `tags` table, owned by a LiveDevice.
+
+Kept distinct from the DB row dicts on purpose: these hold live asyncua Node
+references and in-memory Behavior state that don't belong in SQLite.
 """
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
-class Device:
-    """
-    Structured device metadata - eliminates fragile string parsing
-    
-    Replaces this fragile pattern:
-        parts = key.rsplit('_', 1)
-        device_type = parts[0]
-        index = int(parts[1])
-    
-    With this clean pattern:
-        for device in self.devices:
-            value = device.model.generate(elapsed, device.index)
-            await device.node.write_value(value)
-    """
-    node: Any                        # ua.Node - using Any to avoid circular import
-    device_type: str                 # "temperature", "pressure", etc.
-    model_type: str                  # Same as device_type (for clarity)
-    index: int                       # 0, 1, 2, etc. (device instance number)
-    name: str                        # "Device_1", "Motor_3", etc.
-    folder: str                      # "Temperature", "Vibration", etc.
-    unit: str = ""                   # "°C", "mbar", "L/min", etc.
-    min_value: Optional[float] = None  # Minimum value constraint
-    max_value: Optional[float] = None  # Maximum value constraint
-    config: dict = None              # Device-specific config from profile JSON
-    uuid: str = ""                   # Per-device UUID (deterministic, generated at startup via uuid5)
-    model: Any = None                # Cached model instance (set by ValueUpdater)
-    
-    @property
-    def key(self) -> str:
-        """Unique key for this device"""
-        return f"{self.device_type}_{self.index}"
+class LiveDevice:
+    device_id: int
+    key: str                # stable slug used to build this device's NodeIds
+    folder_node: Any        # ua.Node - the device's folder/object node
+    uuid_node: Any          # ua.Node - the DeviceUUID child variable
+
+
+@dataclass
+class LiveTag:
+    tag_id: int
+    device_id: int
+    node: Any                # ua.Node - the value variable
+    name: str
+    data_type: str            # "Boolean" | "Double" | "Int32" | "String"
+    unit: str = ""
+    behavior: Any = None      # live lib.behaviors.Behavior instance
