@@ -84,7 +84,13 @@ class ManualBehavior(Behavior):
         if isinstance(raw, bool) or str(raw).lower() in ("true", "false"):
             self._value = raw if isinstance(raw, bool) else str(raw).lower() == "true"
         else:
-            self._value = float(raw)
+            try:
+                self._value = float(raw)
+            except (TypeError, ValueError):
+                # Non-numeric, non-boolean manual value (e.g. a String-typed
+                # tag) — keep it as-is rather than crash; SimEngine._write_value
+                # casts to the tag's declared OPC UA data type on every tick.
+                self._value = raw
 
     def set(self, v: Any) -> None:
         self._value = v

@@ -110,6 +110,16 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     last_login_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS nodeset_imports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_filename TEXT NOT NULL,
+                    device_ids TEXT NOT NULL DEFAULT '[]',
+                    device_count INTEGER NOT NULL DEFAULT 0,
+                    tag_count INTEGER NOT NULL DEFAULT 0,
+                    warning_count INTEGER NOT NULL DEFAULT 0,
+                    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
             """)
 
     # ── Devices ──────────────────────────────────────────────────────────────
@@ -315,6 +325,58 @@ class Database:
                          t.get("manual_value")),
                     )
             conn.commit()
+
+    # ── NodeSet imports ──────────────────────────────────────────────────────
+
+    def create_nodeset_import(self, source_filename: str, device_ids: list[int],
+                               device_count: int, tag_count: int, warning_count: int) -> int:
+        import json
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO nodeset_imports (source_filename, device_ids, device_count, "
+                "tag_count, warning_count) VALUES (?,?,?,?,?)",
+                (source_filename, json.dumps(device_ids), device_count, tag_count, warning_count),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def get_nodeset_imports(self) -> list[dict]:
+        import json
+        with self._conn() as conn:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM nodeset_imports ORDER BY imported_at DESC"
+            )]
+        for r in rows:
+            r["device_ids"] = json.loads(r["device_ids"])
+        return rows
+
+    def get_nodeset_import(self, import_id: int) -> Optional[dict]:
+        import json
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM nodeset_imports WHERE id=?", (import_id,)).fetchone()
+        if not r:
+            return None
+        row = dict(r)
+        row["device_ids"] = json.loads(row["device_ids"])
+        return row
+
+    def delete_nodeset_import(self, import_id: int) -> Optional[list[int]]:
+        """Deletes only the devices this import batch created (cascades to
+        their tags via the FK). Devices already removed independently since
+        the import are skipped, not treated as an error. Returns the device
+        ids actually deleted, or None if the import batch itself doesn't exist."""
+        row = self.get_nodeset_import(import_id)
+        if row is None:
+            return None
+        with self._conn() as conn:
+            deleted = []
+            for device_id in row["device_ids"]:
+                cur = conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
+                if cur.rowcount > 0:
+                    deleted.append(device_id)
+            conn.execute("DELETE FROM nodeset_imports WHERE id=?", (import_id,))
+            conn.commit()
+            return deleted
 
     # ── Users ────────────────────────────────────────────────────────────────
 

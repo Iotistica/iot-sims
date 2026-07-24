@@ -5,6 +5,7 @@ import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import TagDrawer from './components/TagDrawer.vue'
 import ProfilesDrawer from './components/ProfilesDrawer.vue'
+import NodeSetImportModal from './components/NodeSetImportModal.vue'
 import TemplatePickerModal from './components/TemplatePickerModal.vue'
 import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
@@ -14,7 +15,7 @@ import UsersDrawer from './components/UsersDrawer.vue'
 import type { Device, Tag, Meta, Health, HistoryPoint } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, CloudUploadOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47901'
 
@@ -37,6 +38,7 @@ const profilesDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
 const saveTemplateOpen     = ref(false)
 const usersDrawerOpen      = ref(false)
+const nodeSetImportOpen    = ref(false)
 
 // Active profile state
 const activeProfileId   = ref<number | null>(null)
@@ -140,6 +142,7 @@ function selectDevice(d: Device) {
 function openAddDevice() { editingDevice.value = null; deviceDrawerOpen.value = true }
 function openEditDevice(d: Device) { editingDevice.value = d; deviceDrawerOpen.value = true }
 async function onDeviceSaved() { await loadDevices(); await loadHealth() }
+async function onNodeSetImported() { await loadDevices(); await loadHealth() }
 async function duplicateDevice(d: Device) {
   try {
     const created = await api.devices.create({
@@ -532,6 +535,10 @@ onUnmounted(() => {
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
         <a-button v-if="activeProfileId !== null" size="small" @click="openSaveAs">Save As</a-button>
         <a-button size="small" @click="profilesDrawerOpen = true">Open</a-button>
+        <a-button size="small" @click="nodeSetImportOpen = true">
+          <template #icon><CloudUploadOutlined /></template>
+          Import NodeSet
+        </a-button>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
 
         <div style="display:flex;align-items:center;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
@@ -700,6 +707,12 @@ onUnmounted(() => {
 
     <!-- Users drawer -->
     <UsersDrawer v-model:open="usersDrawerOpen" />
+
+    <!-- NodeSet2 XML import -->
+    <NodeSetImportModal
+      v-model:open="nodeSetImportOpen"
+      @imported="onNodeSetImported"
+    />
 
     <!-- Save as template -->
     <SaveTemplateModal

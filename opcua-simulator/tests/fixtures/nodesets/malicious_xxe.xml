@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE UANodeSet [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<UANodeSet xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd">
+  <UAObject NodeId="ns=1;i=1" BrowseName="1:Evil">
+    <DisplayName>&xxe;</DisplayName>
+  </UAObject>
+</UANodeSet>

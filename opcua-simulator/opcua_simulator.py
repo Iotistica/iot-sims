@@ -26,7 +26,17 @@ from typing import Any, Optional
 
 import uvicorn
 from asyncua import Server, ua
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -50,6 +60,9 @@ from lib.db import (
     verify_password,
 )
 from lib.nodes import NodeManager
+from lib.nodeset.importer import ImportPlan, commit_import, plan_import
+from lib.nodeset.models import NodeSetParseError
+from lib.nodeset.parser import MAX_FILE_SIZE_BYTES, parse_nodeset_xml
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("opcua-sim")
@@ -79,6 +92,12 @@ class SimEngine:
         # Independent of self.server (the OPC UA endpoint) — nodes stay
         # reachable and hold their last value while paused/stopped.
         self.clock_state: str = "running"
+        # Serializes structural live-node mutations (add/delete device/tag,
+        # bulk NodeSet import) against each other and against tick()'s walk
+        # over the node registry — without this, a bulk import running
+        # concurrently with the 5s tick loop can hit "dict changed size
+        # during iteration" or write to a node mid-delete.
+        self.structural_lock = asyncio.Lock()
 
     def pause(self) -> None:
         self.clock_state = "paused"
@@ -107,6 +126,20 @@ class SimEngine:
         self.node_manager = NodeManager(self.server)
         await self.node_manager.register_namespace()
 
+        await self._load_all_from_db()
+
+        await self.server.start()
+        log.info("OPC UA server started at %s", OPCUA_ENDPOINT)
+
+    async def stop(self) -> None:
+        if self.server:
+            await self.server.stop()
+
+    async def _load_all_from_db(self) -> None:
+        """Create live nodes for every enabled device/tag currently in the
+        DB. Used both at startup and by rebuild_live_state() — the recovery
+        path after a partial structural mutation failure (e.g. a NodeSet
+        import that fails partway through live node creation)."""
         devices = await asyncio.to_thread(self.db.get_devices)
         for dev in devices:
             if not dev["enabled"]:
@@ -117,24 +150,34 @@ class SimEngine:
                 if tag["enabled"]:
                     await self._create_live_tag(dev["id"], tag)
 
-        await self.server.start()
-        log.info("OPC UA server started at %s", OPCUA_ENDPOINT)
-
-    async def stop(self) -> None:
-        if self.server:
-            await self.server.stop()
+    async def rebuild_live_state(self) -> None:
+        """Tear down every live node and recreate it from persisted DB
+        state. Callers must hold self.structural_lock. This is the recovery
+        mechanism when a structural mutation fails partway through and the
+        live address space can no longer be trusted to match the DB."""
+        for dev in list(self.node_manager.get_all_devices()):
+            self._tag_behaviors.pop(dev.device_id, None)
+            for t in self.node_manager.get_tags_for_device(dev.device_id):
+                self._tag_behaviors.pop(t.tag_id, None)
+                self._history.pop(t.tag_id, None)
+            await self.node_manager.delete_device(dev.device_id)
+        await self._load_all_from_db()
+        log.info("Live OPC UA address space rebuilt from persisted DB state")
 
     async def _write_value(self, live_tag, val: Any) -> None:
         dt = live_tag.data_type
         if dt == "Boolean":
-            v: Any = bool(val)
+            await live_tag.node.write_value(bool(val), varianttype=ua.VariantType.Boolean)
         elif dt == "Int32":
-            v = int(val)
+            # asyncua infers Int64 for a plain Python int, which mismatches
+            # the node's actual Int32 variant type (created via lib/nodes.py)
+            # and gets the write rejected with BadTypeMismatch — the type
+            # must be explicit here.
+            await live_tag.node.write_value(int(val), varianttype=ua.VariantType.Int32)
         elif dt == "String":
-            v = str(val)
+            await live_tag.node.write_value(str(val), varianttype=ua.VariantType.String)
         else:
-            v = float(val)
-        await live_tag.node.write_value(v)
+            await live_tag.node.write_value(float(val), varianttype=ua.VariantType.Double)
 
     async def _create_live_tag(self, device_id: int, tag_row: dict):
         behavior = make_behavior(tag_row["behavior"], tag_row["behavior_params"], tag_row.get("manual_value"))
@@ -145,36 +188,56 @@ class SimEngine:
         return live_tag
 
     async def add_device_live(self, device_row: dict) -> None:
-        await self.node_manager.create_device(device_row)
+        async with self.structural_lock:
+            await self._add_device_live_locked(device_row)
 
     async def add_tag_live(self, device_id: int, tag_row: dict) -> None:
-        await self._create_live_tag(device_id, tag_row)
+        async with self.structural_lock:
+            await self._create_live_tag(device_id, tag_row)
+
+    async def _add_device_live_locked(self, device_row: dict) -> None:
+        """Caller must hold self.structural_lock — used directly by callers
+        (e.g. NodeSet import) that are already holding it for a whole batch,
+        since asyncio.Lock isn't reentrant."""
+        await self.node_manager.create_device(device_row)
 
     async def update_device_live(self, device_id: int, device_row: dict) -> None:
         """Node identity (key) may have changed — delete + recreate the folder
         and everything under it, rather than BACnet's whole-stack-reload
         approach (unnecessary here since asyncua supports true item-level
         mutation, confirmed by the Step 0 spike)."""
-        await self.delete_device_live(device_id)
-        if device_row["enabled"]:
-            await self.node_manager.create_device(device_row)
-            tags = await asyncio.to_thread(self.db.get_tags, device_id)
-            for tag in tags:
-                if tag["enabled"]:
-                    await self._create_live_tag(device_id, tag)
+        async with self.structural_lock:
+            await self._delete_device_live_locked(device_id)
+            if device_row["enabled"]:
+                await self.node_manager.create_device(device_row)
+                tags = await asyncio.to_thread(self.db.get_tags, device_id)
+                for tag in tags:
+                    if tag["enabled"]:
+                        await self._create_live_tag(device_id, tag)
 
     async def update_tag_live(self, device_id: int, tag_id: int, tag_row: dict) -> None:
-        await self.delete_tag_live(tag_id)
-        if tag_row["enabled"]:
-            await self._create_live_tag(device_id, tag_row)
+        async with self.structural_lock:
+            await self._delete_tag_live_locked(tag_id)
+            if tag_row["enabled"]:
+                await self._create_live_tag(device_id, tag_row)
 
     async def delete_device_live(self, device_id: int) -> None:
+        async with self.structural_lock:
+            await self._delete_device_live_locked(device_id)
+
+    async def delete_tag_live(self, tag_id: int) -> None:
+        async with self.structural_lock:
+            await self._delete_tag_live_locked(tag_id)
+
+    async def _delete_device_live_locked(self, device_id: int) -> None:
+        """Caller must hold self.structural_lock."""
         for t in self.node_manager.get_tags_for_device(device_id):
             self._tag_behaviors.pop(t.tag_id, None)
             self._history.pop(t.tag_id, None)
         await self.node_manager.delete_device(device_id)
 
-    async def delete_tag_live(self, tag_id: int) -> None:
+    async def _delete_tag_live_locked(self, tag_id: int) -> None:
+        """Caller must hold self.structural_lock."""
         await self.node_manager.delete_tag(tag_id)
         self._tag_behaviors.pop(tag_id, None)
         self._history.pop(tag_id, None)
@@ -201,46 +264,50 @@ class SimEngine:
         devices = await asyncio.to_thread(self.db.get_devices)
         dev_map = {d["id"]: d for d in devices}
 
-        for live_tag in self.node_manager.get_all_tags():
-            tag_row = await asyncio.to_thread(self.db.get_tag, live_tag.device_id, live_tag.tag_id)
-            if not tag_row:
-                continue
-            dev = dev_map.get(live_tag.device_id)
-            if not dev:
-                continue
+        # Held for the whole walk so a concurrent structural mutation (add/
+        # delete device/tag, a NodeSet import) can't change node_manager's
+        # registry out from under this iteration.
+        async with self.structural_lock:
+            for live_tag in self.node_manager.get_all_tags():
+                tag_row = await asyncio.to_thread(self.db.get_tag, live_tag.device_id, live_tag.tag_id)
+                if not tag_row:
+                    continue
+                dev = dev_map.get(live_tag.device_id)
+                if not dev:
+                    continue
 
-            # Rebuild behavior fresh from DB (so config edits apply without a
-            # node rebuild) but carry stateful internals across ticks.
-            prev = self._tag_behaviors.get(live_tag.tag_id)
-            new_b = make_behavior(tag_row["behavior"], tag_row["behavior_params"], tag_row.get("manual_value"))
-            if isinstance(new_b, ManualBehavior) and isinstance(prev, ManualBehavior):
-                new_b.set(prev._value)
-            elif tag_row.get("manual_value") is not None and isinstance(new_b, ManualBehavior):
-                new_b.set(tag_row["manual_value"])
-            if isinstance(new_b, FaultBehavior) and isinstance(prev, FaultBehavior):
-                new_b._fault_active = prev._fault_active
-                new_b._fault_end_elapsed = prev._fault_end_elapsed
-                new_b._inner = prev._inner
-            if isinstance(new_b, RandomWalkBehavior) and isinstance(prev, RandomWalkBehavior):
-                new_b._value = prev._value
-            self._tag_behaviors[live_tag.tag_id] = new_b
+                # Rebuild behavior fresh from DB (so config edits apply without a
+                # node rebuild) but carry stateful internals across ticks.
+                prev = self._tag_behaviors.get(live_tag.tag_id)
+                new_b = make_behavior(tag_row["behavior"], tag_row["behavior_params"], tag_row.get("manual_value"))
+                if isinstance(new_b, ManualBehavior) and isinstance(prev, ManualBehavior):
+                    new_b.set(prev._value)
+                elif tag_row.get("manual_value") is not None and isinstance(new_b, ManualBehavior):
+                    new_b.set(tag_row["manual_value"])
+                if isinstance(new_b, FaultBehavior) and isinstance(prev, FaultBehavior):
+                    new_b._fault_active = prev._fault_active
+                    new_b._fault_end_elapsed = prev._fault_end_elapsed
+                    new_b._inner = prev._inner
+                if isinstance(new_b, RandomWalkBehavior) and isinstance(prev, RandomWalkBehavior):
+                    new_b._value = prev._value
+                self._tag_behaviors[live_tag.tag_id] = new_b
 
-            val = new_b.compute(self.state)
-            await self._write_value(live_tag, val)
+                val = new_b.compute(self.state)
+                await self._write_value(live_tag, val)
 
-            hist = self._history.setdefault(live_tag.tag_id, deque(maxlen=720))
-            hist.append((time.time(), 1.0 if val is True else 0.0 if val is False else float(val)))
+                hist = self._history.setdefault(live_tag.tag_id, deque(maxlen=720))
+                hist.append((time.time(), val))
 
-            if dev["id"] not in snapshot:
-                snapshot[dev["id"]] = {"device_id": dev["id"], "name": dev["name"], "tags": []}
-            snapshot[dev["id"]]["tags"].append({
-                "id": live_tag.tag_id,
-                "name": tag_row["name"],
-                "data_type": tag_row["data_type"],
-                "value": val,
-                "unit": tag_row.get("unit", ""),
-                "behavior": tag_row["behavior"],
-            })
+                if dev["id"] not in snapshot:
+                    snapshot[dev["id"]] = {"device_id": dev["id"], "name": dev["name"], "tags": []}
+                snapshot[dev["id"]]["tags"].append({
+                    "id": live_tag.tag_id,
+                    "name": tag_row["name"],
+                    "data_type": tag_row["data_type"],
+                    "value": val,
+                    "unit": tag_row.get("unit", ""),
+                    "behavior": tag_row["behavior"],
+                })
 
         self._current_values = {"devices": list(snapshot.values()), "tick": self.state.elapsed_seconds}
 
@@ -339,6 +406,23 @@ def _log_event(device_id: int, level: str, message: str) -> None:
     }
     _device_logs.setdefault(device_id, deque(maxlen=_MAX_LOG)).append(entry)
     _global_log.append(entry)
+
+
+def _track(coro, description: str) -> None:
+    """asyncio.create_task() swallows exceptions unless something awaits the
+    task or checks its result — several endpoints fire structural live-node
+    mutations without awaiting them (the DB write already succeeded and is
+    the source of truth; the REST response shouldn't wait on OPC UA node
+    creation). This makes sure a failure there still gets logged with a
+    stack trace instead of vanishing silently."""
+    task = asyncio.create_task(coro)
+
+    def _on_done(t: asyncio.Task) -> None:
+        exc = t.exception() if not t.cancelled() else None
+        if exc is not None:
+            log.error("Background task failed (%s):", description, exc_info=exc)
+
+    task.add_done_callback(_on_done)
 
 
 def get_current_user(request: Request) -> dict:
@@ -573,7 +657,7 @@ async def create_device(body: DeviceCreate):
     _device_names[device["id"]] = device["name"]
     _log_event(device["id"], "info", f"Device created: {device['name']}")
     if body.enabled:
-        asyncio.create_task(engine.add_device_live(device))
+        _track(engine.add_device_live(device), f"add_device_live({device['id']})")
     return device
 
 
@@ -600,7 +684,7 @@ async def update_device(device_id: int, body: DeviceUpdate):
         _log_event(device_id, "info", f"Device renamed to '{body.name}'")
     else:
         _log_event(device_id, "info", "Device configuration updated")
-    asyncio.create_task(engine.update_device_live(device_id, updated))
+    _track(engine.update_device_live(device_id, updated), f"update_device_live({device_id})")
     return updated
 
 
@@ -609,7 +693,7 @@ async def delete_device(device_id: int):
     deleted = await asyncio.to_thread(db.delete_device, device_id)
     if not deleted:
         raise HTTPException(404, "Device not found")
-    asyncio.create_task(engine.delete_device_live(device_id))
+    _track(engine.delete_device_live(device_id), f"delete_device_live({device_id})")
 
 
 # ── Tags ──
@@ -637,7 +721,7 @@ async def create_tag(device_id: int, body: TagCreate):
         raise HTTPException(409, f"Tag '{body.name}' already exists on this device")
     _log_event(device_id, "info", f"Tag added: {body.name} ({body.data_type})")
     if d["enabled"] and body.enabled:
-        asyncio.create_task(engine.add_tag_live(device_id, tag))
+        _track(engine.add_tag_live(device_id, tag), f"add_tag_live({device_id}, {tag['id']})")
     return tag
 
 
@@ -665,7 +749,7 @@ async def update_tag(device_id: int, tag_id: int, body: TagUpdate):
         _log_event(device_id, "info", f"Tag '{body.name}' behavior changed to {body.behavior}")
     else:
         _log_event(device_id, "info", f"Tag '{body.name}' updated")
-    asyncio.create_task(engine.update_tag_live(device_id, tag_id, updated))
+    _track(engine.update_tag_live(device_id, tag_id, updated), f"update_tag_live({device_id}, {tag_id})")
     return updated
 
 
@@ -675,7 +759,7 @@ async def delete_tag(device_id: int, tag_id: int):
     if not deleted:
         raise HTTPException(404, "Tag not found")
     _log_event(device_id, "warn", f"Tag removed (id {tag_id})")
-    asyncio.create_task(engine.delete_tag_live(tag_id))
+    _track(engine.delete_tag_live(tag_id), f"delete_tag_live({tag_id})")
 
 
 @api.post("/devices/{device_id}/tags/{tag_id}/value")
@@ -778,6 +862,112 @@ async def export_profile(profile_id: int):
 @api.post("/profiles/import", status_code=201)
 async def import_profile(body: ProfileImport):
     return await asyncio.to_thread(db.import_profile, body.name, body.description, body.data)
+
+
+# ── NodeSet2 XML import ──
+# See docs/nodeset-import.md for scope: Objects/Variables only, flattened
+# onto the existing devices/tags schema, no export yet (see that doc for why).
+
+def _plan_summary(plan: ImportPlan) -> dict:
+    """Shared shape between preview (nothing committed) and import (committed) responses."""
+    return {
+        "devices": [
+            {
+                "name": d.name,
+                "description": d.description,
+                "tag_count": len(d.tags),
+                "tags": [
+                    {"name": t.name, "data_type": t.data_type, "writable": t.writable}
+                    for t in d.tags[:25]  # sample, not the full tree, for large imports
+                ],
+            }
+            for d in plan.devices
+        ],
+        "device_count": len(plan.devices),
+        "tag_count": sum(len(d.tags) for d in plan.devices),
+    }
+
+
+async def _read_and_parse_upload(file: UploadFile):
+    xml_bytes = await file.read()
+    if len(xml_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(413, f"File exceeds the {MAX_FILE_SIZE_BYTES}-byte limit")
+    try:
+        parsed = await asyncio.to_thread(parse_nodeset_xml, xml_bytes, file.filename or "upload.xml")
+    except NodeSetParseError as e:
+        raise HTTPException(400, str(e))
+    return parsed
+
+
+@api.post("/nodesets/preview")
+async def nodeset_preview(file: UploadFile = File(...)):
+    parsed = await _read_and_parse_upload(file)
+    plan = plan_import(parsed, batch_name=Path(file.filename or "Imported").stem)
+    return {
+        "report": parsed.report.to_dict(),
+        "plan": _plan_summary(plan),
+    }
+
+
+@api.post("/nodesets/import", status_code=201)
+async def nodeset_import(
+    file: UploadFile = File(...),
+    name: str = Form(""),
+    conflict_strategy: str = Form("skip"),
+):
+    if conflict_strategy not in ("skip", "reject"):
+        raise HTTPException(400, "conflict_strategy must be 'skip' or 'reject' in this release")
+    parsed = await _read_and_parse_upload(file)
+    if not parsed.report.valid:
+        raise HTTPException(400, f"NodeSet document has errors: {parsed.report.errors}")
+
+    batch_name = name or Path(file.filename or "Imported").stem
+    plan = plan_import(parsed, batch_name=batch_name)
+    result = await commit_import(
+        db, engine, plan, source_filename=file.filename or "upload.xml", conflict_strategy=conflict_strategy,
+    )
+    if result.errors:
+        raise HTTPException(409, {"errors": result.errors, "warnings": result.warnings})
+
+    for d in result.devices_created:
+        _device_names[d["id"]] = d["name"]
+    _log_event(0, "info", f"NodeSet import '{batch_name}': {len(result.devices_created)} device(s), "
+                           f"{result.tags_created} tag(s), {len(result.devices_skipped)} skipped")
+
+    return {
+        "import_id": result.import_id,
+        "devices_created": [{"id": d["id"], "name": d["name"], "tag_count": len(d["tags"])}
+                             for d in result.devices_created],
+        "tags_created": result.tags_created,
+        "devices_skipped": result.devices_skipped,
+        "parse_report": parsed.report.to_dict(),
+        "warnings": result.warnings,
+    }
+
+
+@api.get("/nodesets/imports")
+async def list_nodeset_imports():
+    return await asyncio.to_thread(db.get_nodeset_imports)
+
+
+@api.get("/nodesets/imports/{import_id}")
+async def get_nodeset_import(import_id: int):
+    row = await asyncio.to_thread(db.get_nodeset_import, import_id)
+    if not row:
+        raise HTTPException(404, "Import not found")
+    return row
+
+
+@api.delete("/nodesets/imports/{import_id}", status_code=200)
+async def delete_nodeset_import(import_id: int):
+    row = await asyncio.to_thread(db.get_nodeset_import, import_id)
+    if not row:
+        raise HTTPException(404, "Import not found")
+    deleted_ids = await asyncio.to_thread(db.delete_nodeset_import, import_id)
+    for device_id in deleted_ids:
+        _track(engine.delete_device_live(device_id), f"delete_device_live({device_id}) [nodeset import cleanup]")
+    blocked = [d for d in row["device_ids"] if d not in deleted_ids]
+    return {"deleted_device_ids": deleted_ids, "already_removed": blocked}
 
 
 # ── State ──

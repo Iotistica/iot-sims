@@ -1,0 +1,61 @@
+{
+  "name": "Compressor & Process Plant",
+  "description": "Reciprocating compressor feeding a gearbox-driven conveyor into a process line with its own temperature/pressure/flow instrumentation. Vibration and process pressure carry fault injection for anomaly-detection testing.",
+  "data": {
+    "devices": [
+      {
+        "name": "Compressor-1",
+        "description": "Two-stage reciprocating air compressor",
+        "manufacturer": "Atlas Copco",
+        "model": "GA 90 VSD+",
+        "enabled": true,
+        "tags": [
+          { "name": "Run",                "data_type": "Boolean", "writable": false, "unit": "",     "behavior": "manual",   "behavior_params": "{\"value\":true}", "enabled": true },
+          { "name": "Discharge-Pressure", "data_type": "Double",  "writable": false, "unit": "kPa",  "behavior": "fault",    "behavior_params": "{\"base_behavior\":\"noise\",\"base_params\":{\"base\":720,\"noise\":15},\"fault_type\":\"spike\",\"fault_value\":950,\"mtbf_minutes\":240,\"fault_duration_seconds\":20}", "enabled": true },
+          { "name": "Suction-Pressure",   "data_type": "Double",  "writable": false, "unit": "kPa",  "behavior": "noise",    "behavior_params": "{\"base\":98,\"noise\":2}", "enabled": true },
+          { "name": "Motor-Current",      "data_type": "Double",  "writable": false, "unit": "A",    "behavior": "noise",    "behavior_params": "{\"base\":124,\"noise\":6}", "enabled": true },
+          { "name": "Motor-Temperature",  "data_type": "Double",  "writable": false, "unit": "degC", "behavior": "noise",    "behavior_params": "{\"base\":71,\"noise\":3}", "enabled": true },
+          { "name": "Vibration",          "data_type": "Double",  "writable": false, "unit": "mm/s", "behavior": "noise",    "behavior_params": "{\"base\":1.8,\"noise\":0.3}", "enabled": true }
+        ]
+      },
+      {
+        "name": "Gearbox-1",
+        "description": "Reduction gearbox driving Conveyor-1",
+        "manufacturer": "SEW-Eurodrive",
+        "model": "X3FS175",
+        "enabled": true,
+        "tags": [
+          { "name": "Vibration",       "data_type": "Double",  "writable": false, "unit": "mm/s", "behavior": "fault",    "behavior_params": "{\"base_behavior\":\"noise\",\"base_params\":{\"base\":2.4,\"noise\":0.4},\"fault_type\":\"stuck\",\"fault_value\":11.2,\"mtbf_minutes\":600,\"fault_duration_seconds\":900}", "enabled": true },
+          { "name": "Oil-Temperature", "data_type": "Double",  "writable": false, "unit": "degC", "behavior": "noise",    "behavior_params": "{\"base\":54,\"noise\":2}", "enabled": true },
+          { "name": "Run",             "data_type": "Boolean", "writable": false, "unit": "",     "behavior": "manual",   "behavior_params": "{\"value\":true}", "enabled": true }
+        ]
+      },
+      {
+        "name": "Conveyor-1",
+        "description": "Belt conveyor feeding the process line",
+        "manufacturer": "Dorner",
+        "model": "3200 Series",
+        "enabled": true,
+        "tags": [
+          { "name": "Run",            "data_type": "Boolean", "writable": false, "unit": "",       "behavior": "manual", "behavior_params": "{\"value\":true}", "enabled": true },
+          { "name": "Speed",          "data_type": "Double",  "writable": true,  "unit": "percent", "behavior": "noise",  "behavior_params": "{\"base\":72,\"noise\":2}", "enabled": true },
+          { "name": "Motor-Current",  "data_type": "Double",  "writable": false, "unit": "A",      "behavior": "noise",  "behavior_params": "{\"base\":18,\"noise\":1.5}", "enabled": true },
+          { "name": "Jam-Detected",   "data_type": "Boolean", "writable": false, "unit": "",       "behavior": "manual", "behavior_params": "{\"value\":false}", "enabled": true }
+        ]
+      },
+      {
+        "name": "Process-Line-1",
+        "description": "Downstream process instrumentation",
+        "manufacturer": "Endress+Hauser",
+        "model": "Micropilot FMR60",
+        "enabled": true,
+        "tags": [
+          { "name": "Process-Temperature", "data_type": "Double", "writable": false, "unit": "degC", "behavior": "sine",  "behavior_params": "{\"base\":145,\"amplitude\":6,\"period_hours\":4}", "enabled": true },
+          { "name": "Process-Pressure",    "data_type": "Double", "writable": false, "unit": "kPa",  "behavior": "noise", "behavior_params": "{\"base\":310,\"noise\":10}", "enabled": true },
+          { "name": "Process-Flow",        "data_type": "Double", "writable": false, "unit": "m3/h", "behavior": "noise", "behavior_params": "{\"base\":24,\"noise\":1.2}", "enabled": true },
+          { "name": "Tank-Level",          "data_type": "Double", "writable": false, "unit": "percent", "behavior": "random_walk", "behavior_params": "{\"value\":60,\"step\":2,\"min\":10,\"max\":95}", "enabled": true }
+        ]
+      }
+    ]
+  }
+}

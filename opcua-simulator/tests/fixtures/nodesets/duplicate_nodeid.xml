@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<UANodeSet xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd"
+           xmlns:uax="http://opcfoundation.org/UA/2008/02/Types.xsd">
+  <NamespaceUris>
+    <Uri>http://example.org/Dup</Uri>
+  </NamespaceUris>
+  <UAObject NodeId="ns=1;i=1" BrowseName="1:A">
+    <DisplayName>A</DisplayName>
+    <References>
+      <Reference ReferenceType="Organizes" IsForward="false">i=85</Reference>
+    </References>
+  </UAObject>
+  <UAVariable NodeId="ns=1;i=2" BrowseName="1:X" DataType="Double">
+    <DisplayName>X</DisplayName>
+    <References>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1</Reference>
+    </References>
+    <Value><uax:Double>1.0</uax:Double></Value>
+  </UAVariable>
+  <UAVariable NodeId="ns=1;i=2" BrowseName="1:XDuplicate" DataType="Double">
+    <DisplayName>XDuplicate</DisplayName>
+    <References>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1</Reference>
+    </References>
+    <Value><uax:Double>2.0</uax:Double></Value>
+  </UAVariable>
+</UANodeSet>

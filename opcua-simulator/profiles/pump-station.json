@@ -1,0 +1,69 @@
+{
+  "name": "Pump Station",
+  "description": "Duty/standby centrifugal pump pair on a common suction tank, with station power metering. Bearing vibration and motor current carry fault injection for anomaly-detection testing.",
+  "data": {
+    "devices": [
+      {
+        "name": "Pump-1",
+        "description": "Duty pump — centrifugal, VFD-driven",
+        "manufacturer": "Grundfos",
+        "model": "CR 45-2",
+        "enabled": true,
+        "tags": [
+          { "name": "Motor-Run",          "data_type": "Boolean", "writable": false, "unit": "",     "behavior": "manual",   "behavior_params": "{\"value\":true}", "enabled": true },
+          { "name": "Motor-Current",      "data_type": "Double",  "writable": false, "unit": "A",    "behavior": "fault",    "behavior_params": "{\"base_behavior\":\"noise\",\"base_params\":{\"base\":42,\"noise\":2},\"fault_type\":\"spike\",\"fault_value\":78,\"mtbf_minutes\":180,\"fault_duration_seconds\":30}", "enabled": true },
+          { "name": "Motor-Temperature",  "data_type": "Double",  "writable": false, "unit": "degC", "behavior": "noise",    "behavior_params": "{\"base\":58,\"noise\":2.5}", "enabled": true },
+          { "name": "Bearing-Vibration",  "data_type": "Double",  "writable": false, "unit": "mm/s", "behavior": "fault",    "behavior_params": "{\"base_behavior\":\"noise\",\"base_params\":{\"base\":2.1,\"noise\":0.3},\"fault_type\":\"stuck\",\"fault_value\":9.5,\"mtbf_minutes\":720,\"fault_duration_seconds\":600}", "enabled": true },
+          { "name": "Discharge-Pressure", "data_type": "Double",  "writable": false, "unit": "kPa",  "behavior": "noise",    "behavior_params": "{\"base\":410,\"noise\":8}", "enabled": true },
+          { "name": "Suction-Pressure",   "data_type": "Double",  "writable": false, "unit": "kPa",  "behavior": "noise",    "behavior_params": "{\"base\":85,\"noise\":3}", "enabled": true },
+          { "name": "Flow-Rate",          "data_type": "Double",  "writable": false, "unit": "L/s",  "behavior": "noise",    "behavior_params": "{\"base\":68,\"noise\":2.5}", "enabled": true },
+          { "name": "Speed-Reference",    "data_type": "Double",  "writable": true,  "unit": "percent", "behavior": "constant", "behavior_params": "{\"value\":85}", "enabled": true }
+        ]
+      },
+      {
+        "name": "Pump-2",
+        "description": "Standby pump — centrifugal, VFD-driven",
+        "manufacturer": "Grundfos",
+        "model": "CR 45-2",
+        "enabled": true,
+        "tags": [
+          { "name": "Motor-Run",          "data_type": "Boolean", "writable": false, "unit": "",     "behavior": "manual",   "behavior_params": "{\"value\":false}", "enabled": true },
+          { "name": "Motor-Current",      "data_type": "Double",  "writable": false, "unit": "A",    "behavior": "constant", "behavior_params": "{\"value\":0}", "enabled": true },
+          { "name": "Motor-Temperature",  "data_type": "Double",  "writable": false, "unit": "degC", "behavior": "noise",    "behavior_params": "{\"base\":22,\"noise\":1}", "enabled": true },
+          { "name": "Bearing-Vibration",  "data_type": "Double",  "writable": false, "unit": "mm/s", "behavior": "noise",    "behavior_params": "{\"base\":0.2,\"noise\":0.1}", "enabled": true },
+          { "name": "Discharge-Pressure", "data_type": "Double",  "writable": false, "unit": "kPa",  "behavior": "constant", "behavior_params": "{\"value\":0}", "enabled": true },
+          { "name": "Suction-Pressure",   "data_type": "Double",  "writable": false, "unit": "kPa",  "behavior": "noise",    "behavior_params": "{\"base\":85,\"noise\":3}", "enabled": true },
+          { "name": "Flow-Rate",          "data_type": "Double",  "writable": false, "unit": "L/s",  "behavior": "constant", "behavior_params": "{\"value\":0}", "enabled": true },
+          { "name": "Speed-Reference",    "data_type": "Double",  "writable": true,  "unit": "percent", "behavior": "constant", "behavior_params": "{\"value\":0}", "enabled": true }
+        ]
+      },
+      {
+        "name": "Suction-Tank-1",
+        "description": "Common suction tank feeding Pump-1/Pump-2",
+        "manufacturer": "Highland Tank",
+        "model": "V-5000",
+        "enabled": true,
+        "tags": [
+          { "name": "Level",            "data_type": "Double",  "writable": false, "unit": "percent", "behavior": "ramp",   "behavior_params": "{\"from\":75,\"to\":45,\"duration_minutes\":180,\"repeat\":true}", "enabled": true },
+          { "name": "High-Level-Alarm", "data_type": "Boolean", "writable": false, "unit": "",       "behavior": "manual", "behavior_params": "{\"value\":false}", "enabled": true },
+          { "name": "Low-Level-Alarm",  "data_type": "Boolean", "writable": false, "unit": "",       "behavior": "manual", "behavior_params": "{\"value\":false}", "enabled": true },
+          { "name": "Inlet-Temperature","data_type": "Double",  "writable": false, "unit": "degC",   "behavior": "noise",  "behavior_params": "{\"base\":18,\"noise\":1}", "enabled": true }
+        ]
+      },
+      {
+        "name": "Station-Meter",
+        "description": "Pump station incoming electrical feed",
+        "manufacturer": "Schneider Electric",
+        "model": "PowerLogic PM5560",
+        "enabled": true,
+        "tags": [
+          { "name": "Active-Power-kW", "data_type": "Double", "writable": false, "unit": "kW",  "behavior": "noise", "behavior_params": "{\"base\":31,\"noise\":2}", "enabled": true },
+          { "name": "Voltage-L1",      "data_type": "Double", "writable": false, "unit": "V",   "behavior": "fault", "behavior_params": "{\"base_behavior\":\"noise\",\"base_params\":{\"base\":400,\"noise\":2},\"fault_type\":\"stuck\",\"fault_value\":352,\"mtbf_minutes\":480,\"fault_duration_seconds\":120}", "enabled": true },
+          { "name": "Current-L1",      "data_type": "Double", "writable": false, "unit": "A",   "behavior": "noise", "behavior_params": "{\"base\":48,\"noise\":3}", "enabled": true },
+          { "name": "Frequency",       "data_type": "Double", "writable": false, "unit": "Hz",  "behavior": "noise", "behavior_params": "{\"base\":60,\"noise\":0.05}", "enabled": true },
+          { "name": "Power-Factor",    "data_type": "Double", "writable": false, "unit": "",    "behavior": "noise", "behavior_params": "{\"base\":0.91,\"noise\":0.02}", "enabled": true }
+        ]
+      }
+    ]
+  }
+}
