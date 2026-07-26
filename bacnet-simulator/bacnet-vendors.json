@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-19",
+  "updated": "2026-07-26",
   "source": "BACnet International BTL Database",
   "url": "https://www.bacnetinternational.net/btl/",
   "vendors": [
@@ -2200,7 +2200,7 @@
           "name": "Eclypse Series",
           "type": "B-BC",
           "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/distech controls, inc./BTL_Listing_31339_DistechControls_EclypseSeries.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/distech controls, inc./BTL_Listing_31608_DistechControls_EclypseSeries.pdf"
         },
         {
           "name": "RCB-PFC Series",
@@ -2747,7 +2747,7 @@
           "name": "AS-M B50",
           "type": "B-BC",
           "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/gebäude automatisierung gmbh/BTL_Listing_31367_GebaeudeAutomatisierung_ASMB50.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/gebäude automatisierung gmbh/BTL_Listing_31610_GebauedeAutomatisierung_ASMB50.pdf"
         }
       ]
     },
@@ -4199,6 +4199,12 @@
           "type": "B-BC",
           "typeLabel": "Building Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/mbs gmbh/BTL_Listing_31237_MBS_MBSUniversalGW.pdf"
+        },
+        {
+          "name": "UBR",
+          "type": "B-RTR",
+          "typeLabel": "Router",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/mbs gmbh/BTL_Listing_31607_MBS_UBR.pdf"
         }
       ]
     },
@@ -4409,6 +4415,17 @@
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/mitsubishi electric europe b.v. uk branch/BTL_Listing_30675_MitsubishiElectrict_ProconMelcoBEMS.pdf"
+        }
+      ]
+    },
+    {
+      "name": "Mitsubishi Electric Iconics Digital Solutions, Inc.",
+      "models": [
+        {
+          "name": "GENESIS",
+          "type": "B-AWS",
+          "typeLabel": "Workstation",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/mitsubishi electric iconics digital solutions, inc./BTL_Listing_31551_Mitsubishi_GENESIS.pdf"
         }
       ]
     },
@@ -5612,7 +5629,7 @@
           "name": "Network Management Card 4",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/schneider electric/BTL_Listing_31476_SchneiderElectric_NetworkManagementCard4.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/schneider electric/BTL_Listing_31609_SchneiderElectric_NetworkMannagementCard4.pdf"
         },
         {
           "name": "PM5500 Power Meter Series, PM5300 Power Meter Series",
