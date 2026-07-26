@@ -1,7 +1,4 @@
 {
-  "name": "Compressor & Process Plant",
-  "description": "Reciprocating compressor feeding a gearbox-driven conveyor into a process line with its own temperature/pressure/flow instrumentation. Vibration and process pressure carry fault injection for anomaly-detection testing.",
-  "data": {
     "devices": [
       {
         "name": "Compressor-1",
@@ -57,5 +54,4 @@
         ]
       }
     ]
-  }
 }

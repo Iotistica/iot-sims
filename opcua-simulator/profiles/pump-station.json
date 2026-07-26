@@ -1,7 +1,4 @@
 {
-  "name": "Pump Station",
-  "description": "Duty/standby centrifugal pump pair on a common suction tank, with station power metering. Bearing vibration and motor current carry fault injection for anomaly-detection testing.",
-  "data": {
     "devices": [
       {
         "name": "Pump-1",
@@ -65,5 +62,4 @@
         ]
       }
     ]
-  }
 }

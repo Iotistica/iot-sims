@@ -1094,6 +1094,16 @@ class SimEngine:
         # device instance → slot index (for physical instance offset)
         self._device_slots: dict[int, int] = {}
         self._reload_event = asyncio.Event()
+        # Guards reload() against overlapping runs. Every device/object CRUD route
+        # fires reload() via asyncio.create_task() (fire-and-forget), and start()
+        # does hundreds of awaited DB calls for a large profile — plenty of time
+        # for a second reload() to start before the first finishes. Without this
+        # lock, two reloads race on self.app/_objects/_device_slots and the loser
+        # can leave a stale DeviceObject (e.g. an old instance number for a device
+        # that was since renumbered) registered in the winner's _virtual_devices,
+        # where it keeps answering Who-Is broadcasts indefinitely even though the
+        # DB (source of truth) has already moved on.
+        self._reload_lock = asyncio.Lock()
         self._current_values: dict = {}  # for API
         # object DB id → last logged value (for change detection)
         self._prev_values: dict[int, Any] = {}  # kept for history only
@@ -1341,27 +1351,28 @@ class SimEngine:
 
     async def reload(self) -> None:
         """Rebuild the BACnet stack from DB (called after config changes)."""
-        log.info("Reloading BACnet stack...")
-        if self.app:
-            for (bacnet_obj, _) in list(self._objects.values()):
+        async with self._reload_lock:
+            log.info("Reloading BACnet stack...")
+            if self.app:
+                for (bacnet_obj, _) in list(self._objects.values()):
+                    try:
+                        self.app.delete_object(bacnet_obj)
+                    except Exception:
+                        pass
+                self._objects.clear()
+                self._prev_values.clear()
+                self._history.clear()
+                self._current_values = {}
+                # Explicitly close the bacpypes3 socket before dropping the reference.
+                # BinaryOutputObject↔PriorityArray form a circular reference that delays
+                # GC, keeping the UDP socket bound to port 47808 and preventing re-bind.
                 try:
-                    self.app.delete_object(bacnet_obj)
+                    await self.app.close()
                 except Exception:
                     pass
-            self._objects.clear()
-            self._prev_values.clear()
-            self._history.clear()
-            self._current_values = {}
-            # Explicitly close the bacpypes3 socket before dropping the reference.
-            # BinaryOutputObject↔PriorityArray form a circular reference that delays
-            # GC, keeping the UDP socket bound to port 47808 and preventing re-bind.
-            try:
-                await self.app.close()
-            except Exception:
-                pass
-            self.app = None
-        await self.start()
-        log.info("Reload complete")
+                self.app = None
+            await self.start()
+            log.info("Reload complete")
 
     async def stop(self) -> None:
         """Cleanly shut down the BACnet stack."""
