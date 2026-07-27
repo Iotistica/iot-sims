@@ -6,3 +6,4 @@ pyjwt==2.13.0
 bcrypt==5.0.0
 defusedxml==0.7.1
 python-multipart==0.0.20
+psutil==6.1.1

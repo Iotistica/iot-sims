@@ -14,8 +14,10 @@ import secrets
 import socket
 import sqlite3
 import time
+import csv
+import io
 from abc import ABC, abstractmethod
-from collections import deque
+from collections import deque, defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -24,6 +26,7 @@ from typing import Any, Optional, Union
 
 import bcrypt
 import jwt
+import psutil
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -39,7 +42,13 @@ from bacpypes3.primitivedata import Real, ObjectIdentifier
 from bacpypes3.basetypes import EngineeringUnits, BinaryPV
 from bacpypes3.debugging import bacpypes_debugging, ModuleLogger
 from bacpypes3.local.networkport import NetworkPortObject
-from bacpypes3.apdu import ReadPropertyACK, SimpleAckPDU
+from bacpypes3.apdu import (
+    ReadPropertyACK,
+    SimpleAckPDU,
+    ErrorPDU,
+    RejectPDU,
+    AbortPDU,
+)
 
 import logging
 logging.basicConfig(
@@ -914,11 +923,15 @@ def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> 
 
 # ─── BACnet Application ───────────────────────────────────────────────────────
 
-def _is_broadcast_address(source) -> bool:
-    if source is None:
-        return True
-    s = str(source)
-    return s.endswith(".255:47808") or s in ("*:47808", "<broadcast>:47808")
+def _is_broadcast_address(destination) -> bool:
+    # The *source* of a UDP packet is always the sender's own unicast return
+    # address, whether the packet was sent broadcast or not — it never tells
+    # you how the request was addressed. The destination does: bacpypes3's
+    # IPv4 BVLL layer sets pduDestination to LocalBroadcast()/GlobalBroadcast()
+    # only when the incoming LPDU was an Original-Broadcast-NPDU.
+    if destination is None:
+        return False
+    return bool(getattr(destination, "is_localbroadcast", False) or getattr(destination, "is_globalbroadcast", False))
 
 
 def _is_device_objid(objid) -> bool:
@@ -953,6 +966,7 @@ class SimApplication(Application):
         self._virtual_devices: dict[int, DeviceObject] = {}
         self._virtual_object_lists: dict[int, list] = {}
         self._sim_engine: Any = None  # set by SimEngine after construction
+        self._own_ip: Optional[str] = None  # set by SimEngine.start(), for I-Am loopback filtering
 
     def get_object_id(self, objid):
         obj = super().get_object_id(objid)
@@ -966,7 +980,23 @@ class SimApplication(Application):
         low = apdu.deviceInstanceRangeLowLimit
         high = apdu.deviceInstanceRangeHighLimit
         source = apdu.pduSource
-        is_unicast = not _is_broadcast_address(source)
+        is_unicast = not _is_broadcast_address(getattr(apdu, "pduDestination", None))
+
+        metrics.requests_total += 1
+        metrics.requests_by_service["WhoIs"] += 1
+        metrics.discovery_total += 1
+        if is_unicast:
+            metrics.requests_unicast += 1
+        else:
+            metrics.requests_broadcast += 1
+        now = time.time()
+        src_str = str(source)
+        metrics.clients_seen[src_str] = now
+        metrics.recent_requests.append({
+            "ts": now, "service": "WhoIs", "source": src_str,
+            "broadcast": not is_unicast, "device": None, "ok": True,
+        })
+
         saved = self.device_object
         try:
             for did, dev_obj in self._virtual_devices.items():
@@ -983,8 +1013,56 @@ class SimApplication(Application):
         finally:
             self.device_object = saved
 
+    async def do_IAmRequest(self, apdu) -> None:
+        # Unconfirmed and previously unhandled — Application has no default
+        # do_IAmRequest, so incoming I-Am from other devices on the network
+        # was silently dropped before this override existed (indication()
+        # only raises UnrecognizedService for confirmed requests with no
+        # handler; unconfirmed ones with no handler just return, app.py
+        # ~878-881). This hook is purely additive — no existing behavior
+        # changes by adding it.
+        try:
+            instance = int(apdu.iAmDeviceIdentifier[1])
+        except Exception:
+            return
+        source = apdu.pduSource
+        src_str = str(source)
+        now = time.time()
+
+        metrics.discovery_total += 1
+        metrics.clients_seen[src_str] = now
+        is_new = instance not in metrics.iam_seen
+        metrics.iam_seen[instance] = now
+        if is_new:
+            metrics.new_devices_timeline.append({"ts": now, "device_instance": instance, "source": src_str})
+
+        # Flag a real collision: someone other than us claiming one of our
+        # own virtual devices' instance numbers. Loopback of our own I_am
+        # broadcasts (if the OS reflects them back) is filtered by IP.
+        own_ip = (self._own_ip or "").split(":")[0]
+        source_ip = src_str.split(":")[0]
+        if instance in self._virtual_devices and source_ip and source_ip != own_ip:
+            metrics.duplicate_id_events.append({
+                "ts": now, "device_instance": instance, "source": src_str,
+            })
+
     async def do_ReadPropertyRequest(self, apdu) -> None:
         objid = apdu.objectIdentifier
+
+        # Stamp pending context here (cheap: dict write + counter increments,
+        # no scans/allocation) — SimApplication.response() pops this to
+        # attribute latency + success/error once the outcome is known,
+        # whether this method answers directly or delegates to super().
+        pending_key = (str(apdu.pduSource), apdu.apduInvokeID)
+        metrics.pending[pending_key] = {
+            "service": "ReadProperty", "objid": str(objid), "started": time.monotonic(),
+        }
+        metrics.requests_total += 1
+        metrics.requests_by_service["ReadProperty"] += 1
+        metrics.reads_total += 1
+        metrics.requests_unicast += 1  # ReadProperty is always confirmed/unicast by protocol
+        metrics.clients_seen[str(apdu.pduSource)] = time.time()
+
         if _is_device_objid(objid):
             did = int(objid[1])
             virtual = self._virtual_devices.get(did)
@@ -1021,6 +1099,16 @@ class SimApplication(Application):
         await super().do_ReadPropertyRequest(apdu)
 
     async def do_WritePropertyRequest(self, apdu) -> None:
+        pending_key = (str(apdu.pduSource), apdu.apduInvokeID)
+        metrics.pending[pending_key] = {
+            "service": "WriteProperty", "objid": str(apdu.objectIdentifier), "started": time.monotonic(),
+        }
+        metrics.requests_total += 1
+        metrics.requests_by_service["WriteProperty"] += 1
+        metrics.writes_total += 1
+        metrics.requests_unicast += 1  # WriteProperty is always confirmed/unicast by protocol
+        metrics.clients_seen[str(apdu.pduSource)] = time.time()
+
         if self._sim_engine is None:
             await super().do_WritePropertyRequest(apdu)
             return
@@ -1071,12 +1159,67 @@ class SimApplication(Application):
                 value = (str(bpv) == "active")
         except Exception as e:
             log.warning("WriteProperty decode error on %s: %s", apdu.objectIdentifier, e)
+            metrics.errors_by_type["error:property.invalidDataType"] += 1
             await super().do_WritePropertyRequest(apdu)
             return
 
         # Persist to DB and update in-memory sim
         await self._sim_engine.write_object(db_id, value)
         await self.response(SimpleAckPDU(context=apdu))
+
+    async def response(self, apdu) -> None:  # type: ignore[override]
+        # Every outcome — success, reject, abort, or protocol error — passes
+        # through here before being sent on the wire, regardless of whether
+        # it originated in our own do_*Request code above or fell through to
+        # bacpypes3's own internal object/property validation inside
+        # super().do_*Request(). See Application.indication() (bacpypes3
+        # app.py): it catches RejectException/AbortException/ExecutionError
+        # from the do_*Request call and turns each into exactly the PDU
+        # types checked below, always via self.response(...) — so this is
+        # the one stable place to observe every request's real outcome
+        # without touching indication()'s own dispatch logic.
+        pending_key = (str(apdu.pduDestination), apdu.apduInvokeID) if getattr(apdu, "pduDestination", None) else None
+        ctx = metrics.pending.pop(pending_key, None) if pending_key else None
+
+        now = time.time()
+        latency_ms = (time.monotonic() - ctx["started"]) * 1000 if ctx else None
+        if latency_ms is not None:
+            metrics.latencies_ms.append(latency_ms)
+
+        objid_key = ctx["objid"] if ctx else None
+        service = ctx["service"] if ctx else None
+        ok = True
+        error_label = None
+
+        if isinstance(apdu, RejectPDU):
+            ok = False
+            error_label = f"reject:{apdu.apduAbortRejectReason}"
+        elif isinstance(apdu, AbortPDU):
+            ok = False
+            error_label = f"abort:{apdu.apduAbortRejectReason}"
+        elif isinstance(apdu, ErrorPDU):
+            ok = False
+            err_class = getattr(apdu, "errorClass", "unknown")
+            err_code = getattr(apdu, "errorCode", "unknown")
+            error_label = f"error:{err_class}.{err_code}"
+
+        if error_label:
+            metrics.errors_by_type[error_label] += 1
+            metrics.recent_errors.append({
+                "ts": now, "type": error_label, "service": service, "object": objid_key,
+            })
+        elif objid_key and service == "ReadProperty":
+            metrics.object_reads[objid_key] += 1
+        elif objid_key and service == "WriteProperty":
+            metrics.object_writes[objid_key] += 1
+
+        if service:
+            metrics.recent_requests.append({
+                "ts": now, "service": service, "object": objid_key, "ok": ok,
+                "latency_ms": latency_ms,
+            })
+
+        await super().response(apdu)
 
 
 # ─── Sim Engine ───────────────────────────────────────────────────────────────
@@ -1172,6 +1315,7 @@ class SimEngine:
 
         self.app = SimApplication.from_object_list([primary_dev_obj, self.network_port])
         self.app._sim_engine = self
+        self.app._own_ip = base_ip  # for filtering our own I-Am loopback in duplicate-ID detection
         await asyncio.sleep(0.3)
 
         self.app._virtual_devices[primary["device_instance"]] = primary_dev_obj
@@ -1519,6 +1663,48 @@ _device_names: dict[int, str] = {}
 _MAX_LOG = 300
 
 
+# ─── Analytics metrics store ───────────────────────────────────────────────────
+# In-memory only (never persisted), same pattern as _global_log above — reset
+# on process restart. Plain dict/deque mutations only, no locks needed (single
+# asyncio event loop) and no per-request DB writes, so this stays cheap enough
+# to not affect simulator performance.
+
+class Metrics:
+    def __init__(self) -> None:
+        self.start_time = time.time()
+        # (str(pduSource), invoke_id) -> {device, object, service, started}
+        # stamped at request-start, popped in SimApplication.response()
+        self.pending: dict[tuple, dict] = {}
+
+        self.requests_total = 0
+        self.requests_by_service: dict[str, int] = defaultdict(int)
+        self.requests_by_device: dict[int, int] = defaultdict(int)
+        self.requests_broadcast = 0
+        self.requests_unicast = 0
+        self.reads_total = 0
+        self.writes_total = 0
+
+        # "reject:<reason>" / "abort:<reason>" / "error:<class>.<code>"
+        self.errors_by_type: dict[str, int] = defaultdict(int)
+        self.recent_errors: deque = deque(maxlen=200)
+
+        self.object_reads: dict[int, int] = defaultdict(int)
+        self.object_writes: dict[int, int] = defaultdict(int)
+
+        self.discovery_total = 0
+        self.iam_seen: dict[int, float] = {}          # device_instance -> last-seen ts
+        self.new_devices_timeline: deque = deque(maxlen=200)
+        self.duplicate_id_events: deque = deque(maxlen=100)
+
+        self.recent_requests: deque = deque(maxlen=500)   # live traffic feed
+        self.latencies_ms: deque = deque(maxlen=500)
+        self.clients_seen: dict[str, float] = {}            # source addr -> last-seen ts
+
+
+metrics = Metrics()
+metrics_ws_clients: list[WebSocket] = []
+
+
 def _log_event(device_id: int, level: str, message: str) -> None:
     entry = {
         "ts": time.time(),
@@ -1549,6 +1735,158 @@ async def broadcast_state() -> None:
         ws_clients.remove(ws)
 
 
+# ─── Analytics aggregation ─────────────────────────────────────────────────────
+# Per-request instrumentation (above, in SimApplication) only does cheap O(1)
+# counter/dict updates. All cross-referencing and sorting — which is more
+# expensive but still bounded (object counts are small; deques capped at
+# <=500) — happens here instead, once per metrics tick rather than once per
+# BACnet request, so it can't add per-request latency to the simulator.
+
+_PROCESS = psutil.Process()
+
+
+def _object_to_device_map() -> dict[str, int]:
+    """Reverse of engine.app._virtual_object_lists (device -> [objid]),
+    rebuilt each tick rather than cached, since it's cheap and always in sync
+    with the current device set (no invalidation-on-reload bookkeeping
+    needed)."""
+    mapping: dict[str, int] = {}
+    if engine is None or engine.app is None:
+        return mapping
+    for did, objids in engine.app._virtual_object_lists.items():
+        for objid in objids:
+            mapping[str(ObjectIdentifier(objid))] = did
+    return mapping
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    idx = min(len(s) - 1, int(len(s) * pct))
+    return s[idx]
+
+
+async def build_metrics_snapshot() -> dict:
+    now = time.time()
+    devices = await asyncio.to_thread(db.get_devices) if db is not None else []
+    obj_to_device = _object_to_device_map()
+
+    # Overview
+    recent_1s = [r for r in metrics.recent_requests if now - r["ts"] <= 1.0]
+    active_clients = [addr for addr, ts in metrics.clients_seen.items() if now - ts <= 30.0]
+    online_devices = sum(1 for d in devices if d.get("enabled"))
+    active_alarms = sum(
+        1 for dev in engine.get_state().get("devices", []) if engine is not None
+        for o in dev["objects"] if o.get("behavior") == "fault"
+    ) if engine is not None else 0
+
+    # Traffic
+    device_activity: dict[int, int] = defaultdict(int)
+    for objid_key, count in list(metrics.object_reads.items()) + list(metrics.object_writes.items()):
+        did = obj_to_device.get(objid_key)
+        if did is not None:
+            device_activity[did] += count
+    top_devices = sorted(device_activity.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    device_names = {d["device_instance"]: d["name"] for d in devices}
+
+    # Object analytics
+    all_objids = set(obj_to_device.keys())
+    accessed_objids = set(metrics.object_reads.keys()) | set(metrics.object_writes.keys())
+    unused_objects = len(all_objids - accessed_objids)
+    top_objects = sorted(
+        ((k, metrics.object_reads.get(k, 0) + metrics.object_writes.get(k, 0)) for k in accessed_objids),
+        key=lambda kv: kv[1], reverse=True,
+    )[:15]
+
+    # Performance
+    lat = list(metrics.latencies_ms)
+    error_count_recent = sum(1 for e in metrics.recent_errors if now - e["ts"] <= 60.0)
+    total_count_recent = sum(1 for r in metrics.recent_requests if now - r["ts"] <= 60.0)
+
+    return {
+        "ts": now,
+        "overview": {
+            "total_devices": len(devices),
+            "online_devices": online_devices,
+            "offline_devices": len(devices) - online_devices,
+            "active_clients": len(active_clients),
+            "requests_per_sec": len(recent_1s),
+            "avg_response_time_ms": round(sum(lat) / len(lat), 2) if lat else 0.0,
+            "active_alarms": active_alarms,
+        },
+        "traffic": {
+            "requests_total": metrics.requests_total,
+            "reads_total": metrics.reads_total,
+            "writes_total": metrics.writes_total,
+            "requests_by_service": dict(metrics.requests_by_service),
+            "broadcast": metrics.requests_broadcast,
+            "unicast": metrics.requests_unicast,
+            "top_devices": [
+                {"device_instance": did, "name": device_names.get(did, f"#{did}"), "count": c}
+                for did, c in top_devices
+            ],
+            "recent_requests": list(metrics.recent_requests)[-100:],
+        },
+        "devices": {
+            "list": [
+                {
+                    "id": d["id"],
+                    "device_instance": d["device_instance"],
+                    "name": d["name"],
+                    "enabled": bool(d.get("enabled")),
+                    "object_count": len(engine.app._virtual_object_lists.get(d["device_instance"], [])) if engine and engine.app else 0,
+                    "activity": device_activity.get(d["device_instance"], 0),
+                }
+                for d in devices
+            ],
+            "uptime_seconds": engine.state.elapsed_seconds if engine else 0,
+        },
+        "objects": {
+            "total": len(all_objids),
+            "unused": unused_objects,
+            "top_accessed": [{"object": k, "count": c} for k, c in top_objects],
+            "reads_total": sum(metrics.object_reads.values()),
+            "writes_total": sum(metrics.object_writes.values()),
+        },
+        "performance": {
+            "avg_response_time_ms": round(sum(lat) / len(lat), 2) if lat else 0.0,
+            "p95_response_time_ms": round(_percentile(lat, 0.95), 2),
+            "throughput_per_sec": len(recent_1s),
+            "concurrent_clients": len(active_clients),
+            "cpu_percent": _PROCESS.cpu_percent(interval=None),
+            "memory_mb": round(_PROCESS.memory_info().rss / (1024 * 1024), 1),
+            "error_rate_percent": round(100 * error_count_recent / total_count_recent, 2) if total_count_recent else 0.0,
+        },
+        "errors": {
+            "total": sum(metrics.errors_by_type.values()),
+            "by_type": dict(metrics.errors_by_type),
+            "duplicate_device_ids": list(metrics.duplicate_id_events)[-20:],
+            "recent": list(metrics.recent_errors)[-50:],
+        },
+        "discovery": {
+            "who_is_total": metrics.discovery_total,
+            "devices_seen": len(metrics.iam_seen),
+            "new_devices_timeline": list(metrics.new_devices_timeline)[-50:],
+        },
+    }
+
+
+async def broadcast_metrics() -> None:
+    if not metrics_ws_clients:
+        return
+    snapshot = await build_metrics_snapshot()
+    data = json.dumps(snapshot)
+    dead = []
+    for ws in metrics_ws_clients:
+        try:
+            await ws.send_text(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        metrics_ws_clients.remove(ws)
+
+
 # ─── Background tasks ─────────────────────────────────────────────────────────
 
 async def tick_loop() -> None:
@@ -1568,6 +1906,20 @@ async def tick_loop() -> None:
             log.error("Tick error: %s", e)
 
 
+async def metrics_loop() -> None:
+    # Deliberately independent of TICK_SECONDS/tick_loop — device-value
+    # simulation and analytics refresh are different concerns with different
+    # natural cadences (5s vs 1s), and coupling them would mean either
+    # slowing down analytics or speeding up (and adding load to) the actual
+    # device simulation just to serve the dashboard.
+    while True:
+        await asyncio.sleep(1.0)
+        try:
+            await broadcast_metrics()
+        except Exception as e:
+            log.error("Metrics tick error: %s", e)
+
+
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -1581,10 +1933,12 @@ async def lifespan(app: FastAPI):
     engine = SimEngine(db)
     await engine.start()
     tick_task = asyncio.create_task(tick_loop())
+    metrics_task = asyncio.create_task(metrics_loop())
     log.info("BACnet Simulator API ready on port %d", SIM_API_PORT)
     yield
     log.info("Shutting down")
     tick_task.cancel()
+    metrics_task.cancel()
     try:
         await tick_task
     except asyncio.CancelledError:
@@ -1992,6 +2346,63 @@ async def ws_endpoint(websocket: WebSocket):
     finally:
         if websocket in ws_clients:
             ws_clients.remove(websocket)
+
+
+# ── Analytics ──
+# Fully separate from the /ws + tick_loop() device-simulation path above —
+# different cadence (1s vs TICK_SECONDS=5s), different client list, so the
+# dashboard can never add latency to actual device-value simulation.
+
+@api.get("/analytics/snapshot")
+async def analytics_snapshot():
+    return await build_metrics_snapshot()
+
+
+@api.get("/analytics/export")
+async def analytics_export(format: str = "json"):
+    snapshot = await build_metrics_snapshot()
+    if format == "json":
+        return JSONResponse(content=snapshot)
+
+    if format != "csv":
+        raise HTTPException(400, "format must be 'json' or 'csv'")
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["section", "key", "value"])
+    for section, payload in snapshot.items():
+        if section == "ts":
+            continue
+        if isinstance(payload, dict):
+            for k, v in payload.items():
+                if isinstance(v, (dict, list)):
+                    continue
+                writer.writerow([section, k, v])
+    content = buf.getvalue()
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="analytics_{int(time.time())}.csv"'},
+    )
+
+
+@api.websocket("/ws/analytics")
+async def ws_analytics_endpoint(websocket: WebSocket):
+    token = websocket.query_params.get("token", "")
+    if not await asyncio.to_thread(user_from_token, token):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    metrics_ws_clients.append(websocket)
+    try:
+        await websocket.send_text(json.dumps(await build_metrics_snapshot()))
+        while True:
+            await websocket.receive_text()  # keep alive (ping)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in metrics_ws_clients:
+            metrics_ws_clients.remove(websocket)
 
 
 # ── Admin static assets (Vite build output) ──

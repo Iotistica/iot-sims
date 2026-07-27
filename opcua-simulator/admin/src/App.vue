@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
+import FolderDrawer from './components/FolderDrawer.vue'
 import TagDrawer from './components/TagDrawer.vue'
 import ProfilesDrawer from './components/ProfilesDrawer.vue'
 import NodeSetImportModal from './components/NodeSetImportModal.vue'
@@ -12,12 +13,14 @@ import IotisticaLogo from './components/IotisticaLogo.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import LoginView from './components/LoginView.vue'
 import UsersDrawer from './components/UsersDrawer.vue'
-import type { Device, Tag, Meta, Health, HistoryPoint } from './types'
+import AnalyticsDashboard from './components/AnalyticsDashboard.vue'
+import type { Device, Tag, Meta, Health, HistoryPoint, Folder } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, CloudUploadOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, CloudUploadOutlined, DashboardOutlined, FolderOutlined, FolderAddOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47901'
+const activeView = ref<'devices' | 'analytics'>('devices')
 
 const health  = ref<Health>({ status: 'unknown', opcua_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
 const simActionLoading = ref(false)
@@ -25,6 +28,7 @@ const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
 const meta    = ref<Meta>({ data_types: [], behaviors: [] })
 const devices = ref<Device[]>([])
+const folders = ref<Folder[]>([])
 const selectedDevice = ref<Device | null>(null)
 const tags = ref<Tag[]>([])
 const liveValues = ref<Record<number, number | boolean>>({})
@@ -32,6 +36,9 @@ const liveValues = ref<Record<number, number | boolean>>({})
 // Drawers
 const deviceDrawerOpen  = ref(false)
 const editingDevice     = ref<Device | null>(null)
+const addDeviceFolderId = ref<number | null>(null)
+const folderDrawerOpen  = ref(false)
+const editingFolder     = ref<Folder | null>(null)
 const tagDrawerOpen     = ref(false)
 const editingTag        = ref<Tag | null>(null)
 const profilesDrawerOpen   = ref(false)
@@ -128,6 +135,46 @@ async function loadDevices() {
     }
   } catch { /* swallow */ }
 }
+async function loadFolders() {
+  try { folders.value = await api.folders.list() } catch { /* swallow */ }
+}
+
+// ── Sidebar tree (folders + devices) ────────────────────────────────────────
+interface TreeNode {
+  key: string
+  kind: 'folder' | 'device'
+  folder?: Folder
+  device?: Device
+  children?: TreeNode[]
+}
+
+const sidebarTree = computed<TreeNode[]>(() => {
+  const folderNodes = new Map<number, TreeNode>()
+  for (const f of folders.value) {
+    folderNodes.set(f.id, { key: `folder-${f.id}`, kind: 'folder', folder: f, children: [] })
+  }
+  const roots: TreeNode[] = []
+  for (const f of folders.value) {
+    const node = folderNodes.get(f.id)!
+    const parent = f.parent_folder_id != null ? folderNodes.get(f.parent_folder_id) : undefined
+    if (parent) parent.children!.push(node)
+    else roots.push(node)
+  }
+  for (const d of devices.value) {
+    const node: TreeNode = { key: `device-${d.id}`, kind: 'device', device: d }
+    const parent = d.folder_id != null ? folderNodes.get(d.folder_id) : undefined
+    if (parent) parent.children!.push(node)
+    else roots.push(node)
+  }
+  return roots
+})
+const expandedKeys = ref<string[]>([])
+watch(folders, () => { expandedKeys.value = folders.value.map(f => `folder-${f.id}`) }, { immediate: true })
+
+function onTreeSelect(_keys: unknown, info: { node: { dataRef?: TreeNode } & Partial<TreeNode> }) {
+  const data = info.node.dataRef ?? (info.node as TreeNode)
+  if (data.kind === 'device' && data.device) selectDevice(data.device)
+}
 async function loadTags() {
   if (!selectedDevice.value) return
   try { tags.value = await api.tags.list(selectedDevice.value.id) } catch { /* swallow */ }
@@ -139,10 +186,41 @@ function selectDevice(d: Device) {
 }
 
 // Device actions
-function openAddDevice() { editingDevice.value = null; deviceDrawerOpen.value = true }
+function openAddDevice() { editingDevice.value = null; addDeviceFolderId.value = null; deviceDrawerOpen.value = true }
 function openEditDevice(d: Device) { editingDevice.value = d; deviceDrawerOpen.value = true }
 async function onDeviceSaved() { await loadDevices(); await loadHealth() }
 async function onNodeSetImported() { await loadDevices(); await loadHealth() }
+
+// Folder actions
+function openAddFolder() { editingFolder.value = null; folderDrawerOpen.value = true }
+function openEditFolder(f: Folder) { editingFolder.value = f; folderDrawerOpen.value = true }
+async function onFolderSaved() { await loadFolders(); await loadDevices() }
+async function toggleFolderEnabled(f: Folder, enabled: boolean) {
+  try {
+    await api.folders.setEnabled(f.id, enabled)
+    await loadFolders()
+    await loadHealth()
+  } catch (e: unknown) {
+    message.error((e as Error).message)
+  }
+}
+function deleteFolder(f: Folder) {
+  Modal.confirm({
+    title: `Delete "${f.name}"?`,
+    content: 'A folder can only be deleted once it has no sub-folders or devices left in it.',
+    okType: 'danger',
+    okText: 'Delete',
+    onOk: async () => {
+      try {
+        await api.folders.del(f.id)
+        await loadFolders()
+        message.success('Folder deleted')
+      } catch (e: unknown) {
+        message.error((e as Error).message)
+      }
+    },
+  })
+}
 async function duplicateDevice(d: Device) {
   try {
     const created = await api.devices.create({
@@ -539,6 +617,10 @@ onUnmounted(() => {
           <template #icon><CloudUploadOutlined /></template>
           Import NodeSet
         </a-button>
+        <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
+          <a-radio-button value="devices">Devices</a-radio-button>
+          <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
+        </a-radio-group>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
 
         <div style="display:flex;align-items:center;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
@@ -558,45 +640,78 @@ onUnmounted(() => {
         </div>
       </a-layout-header>
 
-      <a-layout>
+      <a-layout v-if="activeView === 'devices'">
 
-        <!-- Sidebar: devices -->
-        <a-layout-sider :width="260" style="background:white;border-right:1px solid #e8e8e8;overflow:auto">
+        <!-- Sidebar: folders + devices -->
+        <a-layout-sider :width="280" style="background:white;border-right:1px solid #e8e8e8;overflow:auto">
           <div style="padding:10px 12px 10px 16px;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;justify-content:space-between">
             <span style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.8px">Devices</span>
-            <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
+            <a-space :size="4">
+              <a-button size="small" title="Add Folder" @click="openAddFolder">
+                <template #icon><FolderAddOutlined /></template>
+              </a-button>
+              <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
+            </a-space>
           </div>
 
-          <div v-if="!devices.length" style="padding:24px 16px;color:#bbb;text-align:center;font-size:13px">
+          <div v-if="!devices.length && !folders.length" style="padding:24px 16px;color:#bbb;text-align:center;font-size:13px">
             No devices yet
           </div>
 
-          <div
-            v-for="d in devices" :key="d.id"
-            style="padding:10px 12px 10px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;border-bottom:1px solid #f5f5f5;transition:background .1s"
-            :style="{
-              background: selectedDevice?.id === d.id ? '#e6f7ff' : 'white',
-              borderRight: selectedDevice?.id === d.id ? '3px solid #1890ff' : '3px solid transparent',
-            }"
-            @click="selectDevice(d)"
+          <a-tree
+            v-else
+            v-model:expanded-keys="expandedKeys"
+            :tree-data="sidebarTree"
+            :selected-keys="selectedDevice ? [`device-${selectedDevice.id}`] : []"
+            :field-names="{ children: 'children', title: 'key', key: 'key' }"
+            block-node
+            style="padding:6px 4px"
+            @select="onTreeSelect"
           >
-            <a-badge :status="d.enabled ? 'success' : 'default'" />
-            <div style="flex:1;min-width:0">
-              <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.name }}</div>
-              <div v-if="d.model" style="font-size:11px;color:#aaa">{{ d.model }}</div>
-            </div>
-            <a-space :size="2">
-              <a-button type="text" size="small" title="Edit" @click.stop="openEditDevice(d)">
-                <template #icon><EditOutlined /></template>
-              </a-button>
-              <a-button type="text" size="small" title="Duplicate" @click.stop="duplicateDevice(d)">
-                <template #icon><CopyOutlined /></template>
-              </a-button>
-              <a-button type="text" size="small" danger title="Delete" @click.stop="deleteDevice(d)">
-                <template #icon><DeleteOutlined /></template>
-              </a-button>
-            </a-space>
-          </div>
+            <template #title="node">
+              <!-- Folder row -->
+              <div v-if="node.kind === 'folder'" style="display:flex;align-items:center;gap:6px;padding:2px 0">
+                <FolderOutlined :style="{ color: node.folder.enabled ? '#1890ff' : '#ccc' }" />
+                <span
+                  style="flex:1;min-width:0;font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+                  :style="{ color: node.folder.enabled ? 'inherit' : '#bbb' }"
+                >{{ node.folder.name }}</span>
+                <a-space :size="0" @click.stop>
+                  <a-switch
+                    size="small"
+                    :checked="!!node.folder.enabled"
+                    @change="(v: boolean) => toggleFolderEnabled(node.folder, v)"
+                  />
+                  <a-button type="text" size="small" title="Edit" @click="openEditFolder(node.folder)">
+                    <template #icon><EditOutlined /></template>
+                  </a-button>
+                  <a-button type="text" size="small" danger title="Delete" @click="deleteFolder(node.folder)">
+                    <template #icon><DeleteOutlined /></template>
+                  </a-button>
+                </a-space>
+              </div>
+
+              <!-- Device row -->
+              <div v-else style="display:flex;align-items:center;gap:8px;padding:2px 0">
+                <a-badge :status="node.device.enabled ? 'success' : 'default'" />
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
+                  <div v-if="node.device.model" style="font-size:11px;color:#aaa">{{ node.device.model }}</div>
+                </div>
+                <a-space :size="0" @click.stop>
+                  <a-button type="text" size="small" title="Edit" @click="openEditDevice(node.device)">
+                    <template #icon><EditOutlined /></template>
+                  </a-button>
+                  <a-button type="text" size="small" title="Duplicate" @click="duplicateDevice(node.device)">
+                    <template #icon><CopyOutlined /></template>
+                  </a-button>
+                  <a-button type="text" size="small" danger title="Delete" @click="deleteDevice(node.device)">
+                    <template #icon><DeleteOutlined /></template>
+                  </a-button>
+                </a-space>
+              </div>
+            </template>
+          </a-tree>
         </a-layout-sider>
 
         <!-- Content: tags + log -->
@@ -681,6 +796,8 @@ onUnmounted(() => {
         <DeviceLogPanel />
         </a-layout-content>
       </a-layout>
+
+      <AnalyticsDashboard v-else style="flex:auto;min-height:0" />
     </a-layout>
 
     <!-- Device drawer -->

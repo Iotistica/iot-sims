@@ -1,3 +1,12 @@
+export interface Folder {
+  id: number
+  key: string
+  name: string
+  parent_folder_id: number | null
+  description: string
+  enabled: number
+}
+
 export interface Device {
   id: number
   key: string
@@ -6,6 +15,7 @@ export interface Device {
   manufacturer: string
   model: string
   enabled: number
+  folder_id: number | null
 }
 
 export interface Tag {
@@ -126,4 +136,147 @@ export interface NodeSetImportRecord {
   tag_count: number
   warning_count: number
   imported_at: string
+}
+
+// ── Analytics dashboard (see lib/analytics.py build_metrics_snapshot) ──────
+
+export interface AnalyticsRecentRequest {
+  ts: number
+  service: string
+  peer: string
+  ok: boolean
+  latency_ms: number
+}
+
+export interface AnalyticsNodeRef {
+  node: string
+  device: string | null
+  tag: string
+}
+
+export interface AnalyticsSessionEvent {
+  ts: number
+  event: 'created' | 'activated' | 'closed' | 'auth_failed'
+  session_id: string
+  name?: [string, number]
+  auth_method?: string | null
+  duration_s?: number | null
+  status?: string
+}
+
+export interface AnalyticsSessionRow {
+  session_id: string
+  peer: string
+  state: 'Created' | 'Activated' | 'Closed'
+  user_role: string | null
+  timeout_s: number | null
+}
+
+export interface AnalyticsSubscriptionRow {
+  subscription_id: number
+  session_id: string
+  publishing_interval_ms: number
+  monitored_item_count: number
+  avg_queue_size: number
+}
+
+export interface AnalyticsRecentError {
+  ts: number
+  service: string
+  peer: string | null
+  status: string
+  node?: string
+}
+
+export interface AnalyticsAlarm {
+  tag_id: number
+  tag_name: string
+  device_name: string
+  fault_type: string
+  severity: 'warning' | 'critical'
+  opened_ts: number
+  acknowledged: boolean
+  acknowledged_ts: number | null
+  cleared_ts: number | null
+}
+
+export interface AnalyticsAlarmEvent extends AnalyticsAlarm {
+  ts: number
+  event: 'open' | 'ack' | 'clear'
+}
+
+export interface AnalyticsSnapshot {
+  ts: number
+  overview: {
+    total_servers: number
+    active_sessions: number
+    connected_clients: number
+    subscriptions: number
+    monitored_items: number
+    requests_per_sec: number
+    active_alarms: number
+  }
+  traffic: {
+    requests_total: number
+    requests_ok: number
+    requests_failed: number
+    requests_by_service: Record<string, number>
+    reads_total: number
+    writes_total: number
+    browse_total: number
+    call_total: number
+    top_clients: { client: string; count: number }[]
+    top_nodes: (AnalyticsNodeRef & { count: number })[]
+    recent_requests: AnalyticsRecentRequest[]
+  }
+  sessions: {
+    active: number
+    created_total: number
+    closed_total: number
+    avg_duration_s: number
+    list: AnalyticsSessionRow[]
+    recent_events: AnalyticsSessionEvent[]
+  }
+  nodes: {
+    top_read: (AnalyticsNodeRef & { count: number })[]
+    top_written: (AnalyticsNodeRef & { count: number })[]
+    reads_total: number
+    writes_total: number
+    distinct_nodes_accessed: number
+  }
+  subscriptions: {
+    active: number
+    monitored_items: number
+    monitored_items_created_total: number
+    monitored_items_deleted_total: number
+    dropped_notifications: number
+    list: AnalyticsSubscriptionRow[]
+  }
+  performance: {
+    avg_response_time_ms: number
+    p95_response_time_ms: number
+    p99_response_time_ms: number
+    requests_per_sec: number
+    concurrent_clients: number
+    cpu_percent: number
+    memory_mb: number
+    error_rate_percent: number
+  }
+  errors: {
+    total: number
+    by_type: Record<string, number>
+    recent: AnalyticsRecentError[]
+  }
+  security: {
+    policy: string
+    secure_channel_opens: number
+    auth_failures: number
+    rejected_connections: number
+  }
+  alarms: {
+    active: number
+    active_list: AnalyticsAlarm[]
+    avg_ack_time_s: number
+    recent_events: AnalyticsAlarmEvent[]
+  }
 }

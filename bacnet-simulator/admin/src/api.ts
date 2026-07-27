@@ -1,4 +1,4 @@
-import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse } from './types'
+import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot } from './types'
 import { authToken, logout } from './auth'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -81,5 +81,24 @@ export const api = {
     load:    (id: number)                                   => req<{ ok: boolean }>(`/profiles/${id}/load`, { method: 'POST' }),
     import_: (name: string, description: string, data: object) =>
       req<Profile>('/profiles/import', { method: 'POST', body: JSON.stringify({ name, description, data }) }),
+  },
+
+  analytics: {
+    snapshot: () => req<AnalyticsSnapshot>('/analytics/snapshot'),
+    // File download, not JSON — needs the Bearer auth header, so a plain
+    // <a href> link (no custom headers on navigation) won't work here.
+    export: async (format: 'csv' | 'json') => {
+      const headers: Record<string, string> = {}
+      if (authToken.value) headers['Authorization'] = `Bearer ${authToken.value}`
+      const res = await fetch(`/analytics/export?format=${format}`, { headers })
+      if (!res.ok) throw new Error(res.statusText)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `analytics_${Date.now()}.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    },
   },
 }

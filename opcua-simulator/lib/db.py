@@ -52,6 +52,22 @@ def _slugify(name: str) -> str:
     return slug or "device"
 
 
+def is_effectively_enabled(device_row: dict, folders_by_id: dict[int, dict]) -> bool:
+    """A device is only live if it's enabled AND every ancestor folder up to
+    root is enabled — pure function over already-fetched rows, deliberately
+    not a DB method, since callers (SimEngine) need to run it in a tight loop
+    over every device without re-querying folders each time."""
+    if not device_row["enabled"]:
+        return False
+    fid = device_row.get("folder_id")
+    while fid is not None:
+        folder = folders_by_id.get(fid)
+        if folder is None or not folder["enabled"]:
+            return False
+        fid = folder["parent_folder_id"]
+    return True
+
+
 # ─── Database ─────────────────────────────────────────────────────────────────
 
 class Database:
@@ -70,6 +86,15 @@ class Database:
         path_obj.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript("""
+                CREATE TABLE IF NOT EXISTS folders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    parent_folder_id INTEGER REFERENCES folders(id),
+                    description TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1
+                );
+
                 CREATE TABLE IF NOT EXISTS devices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     key TEXT NOT NULL UNIQUE,
@@ -77,7 +102,8 @@ class Database:
                     description TEXT NOT NULL DEFAULT '',
                     manufacturer TEXT NOT NULL DEFAULT '',
                     model TEXT NOT NULL DEFAULT '',
-                    enabled INTEGER NOT NULL DEFAULT 1
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    folder_id INTEGER REFERENCES folders(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS tags (
@@ -121,6 +147,89 @@ class Database:
                     imported_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
             """)
+            # CREATE TABLE IF NOT EXISTS above is a no-op on an already-existing
+            # `devices` table from before folders existed — add the column here,
+            # idempotently, for databases created by an older version of this file.
+            existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
+            if "folder_id" not in existing_columns:
+                conn.execute("ALTER TABLE devices ADD COLUMN folder_id INTEGER REFERENCES folders(id)")
+            conn.commit()
+
+    # ── Folders ──────────────────────────────────────────────────────────────
+
+    def _unique_folder_key(self, conn: sqlite3.Connection, name: str, exclude_id: Optional[int] = None) -> str:
+        base = _slugify(name)
+        key = base
+        suffix = 2
+        while True:
+            row = conn.execute(
+                "SELECT id FROM folders WHERE key=?" + (" AND id != ?" if exclude_id else ""),
+                (key, exclude_id) if exclude_id else (key,),
+            ).fetchone()
+            if not row:
+                return key
+            key = f"{base}-{suffix}"
+            suffix += 1
+
+    def get_folders(self) -> list[dict]:
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM folders ORDER BY name")]
+
+    def get_folder(self, folder_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM folders WHERE id=?", (folder_id,)).fetchone()
+            return dict(r) if r else None
+
+    def create_folder(self, name: str, parent_folder_id: Optional[int] = None, description: str = "") -> dict:
+        with self._conn() as conn:
+            key = self._unique_folder_key(conn, name)
+            cur = conn.execute(
+                "INSERT INTO folders (key, name, parent_folder_id, description) VALUES (?,?,?,?)",
+                (key, name, parent_folder_id, description),
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM folders WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def update_folder(self, folder_id: int, name: str, parent_folder_id: Optional[int] = None,
+                       description: str = "") -> Optional[dict]:
+        with self._conn() as conn:
+            existing = conn.execute("SELECT * FROM folders WHERE id=?", (folder_id,)).fetchone()
+            if not existing:
+                return None
+            key = existing["key"] if existing["name"] == name else self._unique_folder_key(conn, name, exclude_id=folder_id)
+            conn.execute(
+                "UPDATE folders SET key=?, name=?, parent_folder_id=?, description=? WHERE id=?",
+                (key, name, parent_folder_id, description, folder_id),
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM folders WHERE id=?", (folder_id,)).fetchone())
+
+    def update_folder_enabled(self, folder_id: int, enabled: bool) -> bool:
+        """Writes only folders.enabled — never touches any device row. Effective
+        enablement (folder.enabled AND every ancestor folder AND device.enabled)
+        is computed by is_effectively_enabled(), not persisted per-device."""
+        with self._conn() as conn:
+            cur = conn.execute("UPDATE folders SET enabled=? WHERE id=?", (1 if enabled else 0, folder_id))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_folder(self, folder_id: int) -> bool:
+        """Refuses to delete a non-empty folder (sub-folders or devices still
+        reference it) — returns False rather than silently cascading, since a
+        folder delete is not something a child device/folder should ever be
+        implicitly swept up in."""
+        with self._conn() as conn:
+            has_subfolders = conn.execute(
+                "SELECT 1 FROM folders WHERE parent_folder_id=?", (folder_id,)
+            ).fetchone()
+            has_devices = conn.execute(
+                "SELECT 1 FROM devices WHERE folder_id=?", (folder_id,)
+            ).fetchone()
+            if has_subfolders or has_devices:
+                return False
+            cur = conn.execute("DELETE FROM folders WHERE id=?", (folder_id,))
+            conn.commit()
+            return cur.rowcount > 0
 
     # ── Devices ──────────────────────────────────────────────────────────────
 
@@ -148,27 +257,28 @@ class Database:
             suffix += 1
 
     def create_device(self, name: str, description: str = "", manufacturer: str = "",
-                       model: str = "", enabled: bool = True) -> dict:
+                       model: str = "", enabled: bool = True, folder_id: Optional[int] = None) -> dict:
         with self._conn() as conn:
             key = self._unique_key(conn, name)
             cur = conn.execute(
-                "INSERT INTO devices (key, name, description, manufacturer, model, enabled) "
-                "VALUES (?,?,?,?,?,?)",
-                (key, name, description, manufacturer, model, 1 if enabled else 0),
+                "INSERT INTO devices (key, name, description, manufacturer, model, enabled, folder_id) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (key, name, description, manufacturer, model, 1 if enabled else 0, folder_id),
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM devices WHERE id=?", (cur.lastrowid,)).fetchone())
 
     def update_device(self, device_id: int, name: str, description: str = "",
-                       manufacturer: str = "", model: str = "", enabled: bool = True) -> Optional[dict]:
+                       manufacturer: str = "", model: str = "", enabled: bool = True,
+                       folder_id: Optional[int] = None) -> Optional[dict]:
         with self._conn() as conn:
             existing = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
             if not existing:
                 return None
             key = existing["key"] if existing["name"] == name else self._unique_key(conn, name, exclude_id=device_id)
             conn.execute(
-                "UPDATE devices SET key=?, name=?, description=?, manufacturer=?, model=?, enabled=? WHERE id=?",
-                (key, name, description, manufacturer, model, 1 if enabled else 0, device_id),
+                "UPDATE devices SET key=?, name=?, description=?, manufacturer=?, model=?, enabled=?, folder_id=? WHERE id=?",
+                (key, name, description, manufacturer, model, 1 if enabled else 0, folder_id, device_id),
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone())
@@ -252,12 +362,13 @@ class Database:
 
     def _snapshot_data(self, conn: sqlite3.Connection) -> tuple[str, int]:
         import json
+        folders = [dict(r) for r in conn.execute("SELECT * FROM folders")]
         devices = [dict(r) for r in conn.execute("SELECT * FROM devices")]
         for d in devices:
             d["tags"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM tags WHERE device_id=?", (d["id"],)
             )]
-        return json.dumps({"devices": devices}), len(devices)
+        return json.dumps({"folders": folders, "devices": devices}), len(devices)
 
     def save_profile(self, name: str, description: str = "") -> dict:
         with self._conn() as conn:
@@ -303,16 +414,58 @@ class Database:
             ).fetchone())
 
     def replace_live_state(self, data: dict) -> None:
-        """Destructively replace all devices/tags with a profile's snapshot."""
+        """Destructively replace all folders/devices/tags with a profile's
+        snapshot. A profile saved before folders existed has no "folders" key
+        at all — defaults to an empty list, so every device lands at root
+        exactly as it did before this feature existed."""
         with self._conn() as conn:
             conn.execute("DELETE FROM devices")
+            conn.execute("DELETE FROM folders")
+
+            # Folders reference their own parent by the snapshot's old id —
+            # insert in dependency order (a parent must exist before its
+            # child) and build old_id -> new_id as we go, since AUTOINCREMENT
+            # assigns fresh ids on re-insert.
+            remaining = list(data.get("folders", []))
+            old_to_new: dict[int, int] = {}
+            guard = 0
+            while remaining and guard <= len(data.get("folders", [])) + 1:
+                guard += 1
+                still_remaining = []
+                for f in remaining:
+                    parent_old = f.get("parent_folder_id")
+                    if parent_old is not None and parent_old not in old_to_new:
+                        still_remaining.append(f)
+                        continue
+                    key = self._unique_folder_key(conn, f["name"])
+                    parent_new = old_to_new.get(parent_old) if parent_old is not None else None
+                    cur = conn.execute(
+                        "INSERT INTO folders (key, name, parent_folder_id, description, enabled) "
+                        "VALUES (?,?,?,?,?)",
+                        (key, f["name"], parent_new, f.get("description", ""), f.get("enabled", 1)),
+                    )
+                    old_to_new[f["id"]] = cur.lastrowid
+                remaining = still_remaining
+            # Any folders left over reference a parent that was never resolved
+            # (broken/cyclic snapshot data) — attach them at root rather than
+            # silently dropping them.
+            for f in remaining:
+                key = self._unique_folder_key(conn, f["name"])
+                conn.execute(
+                    "INSERT INTO folders (key, name, parent_folder_id, description, enabled) "
+                    "VALUES (?,?,NULL,?,?)",
+                    (key, f["name"], f.get("description", ""), f.get("enabled", 1)),
+                )
+
             for d in data.get("devices", []):
                 key = self._unique_key(conn, d["name"])
+                folder_old = d.get("folder_id")
+                folder_new = old_to_new.get(folder_old) if folder_old is not None else None
                 cur = conn.execute(
-                    "INSERT INTO devices (key, name, description, manufacturer, model, enabled) "
-                    "VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO devices (key, name, description, manufacturer, model, enabled, folder_id) "
+                    "VALUES (?,?,?,?,?,?,?)",
                     (key, d["name"], d.get("description", ""), d.get("manufacturer", ""),
-                     d.get("model", ""), d.get("enabled", 1)),
+                     d.get("model", ""), d.get("enabled", 1), folder_new),
                 )
                 device_id = cur.lastrowid
                 for t in d.get("tags", []):

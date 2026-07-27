@@ -11,13 +11,20 @@ add_variable()/Node.delete() both work correctly after the server has
 started and a client is already connected).
 
 Device/object config is persisted in SQLite so it survives restarts and can
-be edited live via a management UI (admin frontend is a separate follow-up).
+be edited live via a management UI.
+
+Route handlers live in lib/routes_*.py (FastAPI APIRouters) — this file kept
+growing into a single-file monolith as they were added one at a time; they
+now share state via lib/state.py instead of this module's own globals. What
+stays here: the SimEngine itself (owns the live OPC UA server + tick loop,
+needed by nearly every router), the FastAPI app/middleware/lifespan wiring,
+and the handful of routes (health, sim clock, device-value /state + /ws)
+that are simple enough not to warrant their own file.
 """
 import asyncio
 import json
 import logging
 import os
-import sqlite3
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -26,22 +33,13 @@ from typing import Any, Optional
 
 import uvicorn
 from asyncua import Server, ua
-from fastapi import (
-    Depends,
-    FastAPI,
-    File,
-    Form,
-    HTTPException,
-    Request,
-    UploadFile,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
+import lib.state as state
+from lib.analytics import Metrics, install_analytics, record_fault_transition
 from lib.behaviors import (
     TICK_SECONDS,
     VALID_BEHAVIORS,
@@ -51,18 +49,9 @@ from lib.behaviors import (
     SimState,
     make_behavior,
 )
-from lib.db import (
-    VALID_DATA_TYPES,
-    Database,
-    create_access_token,
-    hash_password,
-    user_from_token,
-    verify_password,
-)
+from lib.db import Database, is_effectively_enabled, user_from_token
 from lib.nodes import NodeManager
-from lib.nodeset.importer import ImportPlan, commit_import, plan_import
-from lib.nodeset.models import NodeSetParseError
-from lib.nodeset.parser import MAX_FILE_SIZE_BYTES, parse_nodeset_xml
+from lib import routes_analytics, routes_auth, routes_devices, routes_folders, routes_nodesets, routes_profiles
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("opcua-sim")
@@ -92,9 +81,9 @@ class SimEngine:
         # Independent of self.server (the OPC UA endpoint) — nodes stay
         # reachable and hold their last value while paused/stopped.
         self.clock_state: str = "running"
-        # Serializes structural live-node mutations (add/delete device/tag,
-        # bulk NodeSet import) against each other and against tick()'s walk
-        # over the node registry — without this, a bulk import running
+        # Serializes structural live-node mutations (add/delete folder/device/
+        # tag, bulk NodeSet import) against each other and against tick()'s
+        # walk over the node registry — without this, a bulk import running
         # concurrently with the 5s tick loop can hit "dict changed size
         # during iteration" or write to a node mid-delete.
         self.structural_lock = asyncio.Lock()
@@ -126,6 +115,10 @@ class SimEngine:
         self.node_manager = NodeManager(self.server)
         await self.node_manager.register_namespace()
 
+        # Must be installed before server.start() so every hook is live
+        # before any client can connect — see lib/analytics.py.
+        install_analytics(self.server, state.metrics)
+
         await self._load_all_from_db()
 
         await self.server.start()
@@ -135,16 +128,46 @@ class SimEngine:
         if self.server:
             await self.server.stop()
 
+    def _resolve_parent_node(self, folder_id: Optional[int]):
+        """None (root, under Objects) or another live folder's own node —
+        the caller is responsible for creation order (a folder's parent must
+        already be live) since only the caller knows what order it's
+        iterating in."""
+        if folder_id is None:
+            return None
+        live_folder = self.node_manager.get_folder(folder_id)
+        return live_folder.node if live_folder else None
+
     async def _load_all_from_db(self) -> None:
-        """Create live nodes for every enabled device/tag currently in the
-        DB. Used both at startup and by rebuild_live_state() — the recovery
-        path after a partial structural mutation failure (e.g. a NodeSet
-        import that fails partway through live node creation)."""
+        """Create live nodes for every folder, and every effectively-enabled
+        device/tag, currently in the DB. Used both at startup and by
+        rebuild_live_state() — the recovery path after a partial structural
+        mutation failure (e.g. a NodeSet import that fails partway through
+        live node creation, or a folder move)."""
+        folders = await asyncio.to_thread(self.db.get_folders)
+        folders_by_id = {f["id"]: f for f in folders}
+
+        # Folders reference their own parent by id — create root-first
+        # (parent_folder_id is None or already live) so add_folder() always
+        # has a real parent Node to attach to.
+        remaining = list(folders)
+        guard = 0
+        while remaining and guard <= len(folders) + 1:
+            guard += 1
+            still_remaining = []
+            for f in remaining:
+                parent_id = f["parent_folder_id"]
+                if parent_id is not None and self.node_manager.get_folder(parent_id) is None:
+                    still_remaining.append(f)
+                    continue
+                await self.node_manager.create_folder(f, self._resolve_parent_node(parent_id))
+            remaining = still_remaining
+
         devices = await asyncio.to_thread(self.db.get_devices)
         for dev in devices:
-            if not dev["enabled"]:
+            if not is_effectively_enabled(dev, folders_by_id):
                 continue
-            await self.node_manager.create_device(dev)
+            await self.node_manager.create_device(dev, self._resolve_parent_node(dev.get("folder_id")))
             tags = await asyncio.to_thread(self.db.get_tags, dev["id"])
             for tag in tags:
                 if tag["enabled"]:
@@ -154,15 +177,48 @@ class SimEngine:
         """Tear down every live node and recreate it from persisted DB
         state. Callers must hold self.structural_lock. This is the recovery
         mechanism when a structural mutation fails partway through and the
-        live address space can no longer be trusted to match the DB."""
+        live address space can no longer be trusted to match the DB — also
+        reused for folder moves and profile load, where the alternative
+        (a scoped delete+recreate) risks orphaning live devices/sub-folders
+        registered separately from the folder/device being moved."""
         for dev in list(self.node_manager.get_all_devices()):
             self._tag_behaviors.pop(dev.device_id, None)
             for t in self.node_manager.get_tags_for_device(dev.device_id):
                 self._tag_behaviors.pop(t.tag_id, None)
                 self._history.pop(t.tag_id, None)
             await self.node_manager.delete_device(dev.device_id)
+
+        # Folders: leaf-first (a parent's recursive delete must never race a
+        # child's own already-completed one). Parent/child derived from the
+        # DB, not the live registry (LiveFolder doesn't track parent) — any
+        # live folder no longer present in the DB is treated as a leaf and
+        # deleted first, which is always safe.
+        db_folders_by_id = {f["id"]: f for f in await asyncio.to_thread(self.db.get_folders)}
+        live_folder_ids = {lf.folder_id for lf in self.node_manager.get_all_folders()}
+        child_count: dict[int, int] = {fid: 0 for fid in live_folder_ids}
+        for fid in live_folder_ids:
+            parent = db_folders_by_id.get(fid, {}).get("parent_folder_id")
+            if parent in child_count:
+                child_count[parent] += 1
+        queue = [fid for fid, c in child_count.items() if c == 0]
+        while queue:
+            fid = queue.pop()
+            parent = db_folders_by_id.get(fid, {}).get("parent_folder_id")
+            await self.node_manager.delete_folder(fid)
+            if parent in child_count:
+                child_count[parent] -= 1
+                if child_count[parent] == 0:
+                    queue.append(parent)
+
         await self._load_all_from_db()
         log.info("Live OPC UA address space rebuilt from persisted DB state")
+
+    async def resync_live_state(self) -> None:
+        """Locked wrapper around rebuild_live_state() for callers outside
+        the engine (folder move, profile load) that don't already hold
+        structural_lock."""
+        async with self.structural_lock:
+            await self.rebuild_live_state()
 
     async def _write_value(self, live_tag, val: Any) -> None:
         dt = live_tag.data_type
@@ -185,6 +241,16 @@ class SimEngine:
         val = behavior.compute(self.state)
         await self._write_value(live_tag, val)
         self._tag_behaviors[tag_row["id"]] = behavior
+        # This initial compute() can itself flip a fresh FaultBehavior active
+        # before tick()'s own before/after edge-detection ever runs on it —
+        # without this, that first activation would go unrecorded (was_active
+        # is unconditionally False here since the tag has no prior state).
+        if isinstance(behavior, FaultBehavior) and behavior._fault_active:
+            dev = await asyncio.to_thread(self.db.get_device, device_id)
+            record_fault_transition(
+                state.metrics, tag_row["id"], tag_row["name"], dev["name"] if dev else f"#{device_id}",
+                True, False, behavior.fault_type,
+            )
         return live_tag
 
     async def add_device_live(self, device_row: dict) -> None:
@@ -199,17 +265,20 @@ class SimEngine:
         """Caller must hold self.structural_lock — used directly by callers
         (e.g. NodeSet import) that are already holding it for a whole batch,
         since asyncio.Lock isn't reentrant."""
-        await self.node_manager.create_device(device_row)
+        await self.node_manager.create_device(device_row, self._resolve_parent_node(device_row.get("folder_id")))
 
     async def update_device_live(self, device_id: int, device_row: dict) -> None:
-        """Node identity (key) may have changed — delete + recreate the folder
-        and everything under it, rather than BACnet's whole-stack-reload
-        approach (unnecessary here since asyncua supports true item-level
-        mutation, confirmed by the Step 0 spike)."""
+        """Node identity is now a stable id-based NodeId (lib/nodes.py), not
+        derived from name/key/folder — but asyncua still has no in-place
+        "move" primitive, and a device's folder_id may have changed, so this
+        stays delete + recreate rather than an in-place attribute edit."""
         async with self.structural_lock:
             await self._delete_device_live_locked(device_id)
-            if device_row["enabled"]:
-                await self.node_manager.create_device(device_row)
+            folders_by_id = {f["id"]: f for f in await asyncio.to_thread(self.db.get_folders)}
+            if is_effectively_enabled(device_row, folders_by_id):
+                await self.node_manager.create_device(
+                    device_row, self._resolve_parent_node(device_row.get("folder_id"))
+                )
                 tags = await asyncio.to_thread(self.db.get_tags, device_id)
                 for tag in tags:
                     if tag["enabled"]:
@@ -242,6 +311,56 @@ class SimEngine:
         self._tag_behaviors.pop(tag_id, None)
         self._history.pop(tag_id, None)
 
+    # ── Folders ──────────────────────────────────────────────────────────────
+
+    async def add_folder_live(self, folder_row: dict) -> None:
+        async with self.structural_lock:
+            await self.node_manager.create_folder(folder_row, self._resolve_parent_node(folder_row.get("parent_folder_id")))
+
+    async def rename_folder_live(self, folder_id: int, name: str) -> None:
+        """Name-only change — a folder's NodeId is id-based (lib/nodes.py),
+        so this never needs to touch the wire node's identity, just its
+        DisplayName attribute. Not a structural mutation, no lock needed."""
+        live = self.node_manager.get_folder(folder_id)
+        if not live:
+            return
+        await live.node.write_attribute(ua.AttributeIds.DisplayName, ua.DataValue(ua.LocalizedText(name)))
+
+    async def delete_folder_live(self, folder_id: int) -> None:
+        async with self.structural_lock:
+            await self.node_manager.delete_folder(folder_id)
+
+    async def set_folder_enabled_live(self, folder_id: int, enabled: bool) -> None:
+        """Only ever changes which devices are LIVE — never touches any
+        device's own `enabled` DB value (that would violate the
+        non-destructive cascade: a device disabled on its own must stay
+        disabled even after its folder re-enables, and vice versa). Doesn't
+        scope to just this folder's descendants — recomputes every device's
+        effective-enabled state fresh from DB and reconciles the diff, since
+        the DB write for folders.enabled already happened by the time this
+        runs (see routes_folders.py) — simplicity over the optimization of
+        walking just the affected subtree, fine at simulator scale."""
+        async with self.structural_lock:
+            folders_by_id = {f["id"]: f for f in await asyncio.to_thread(self.db.get_folders)}
+            devices = await asyncio.to_thread(self.db.get_devices)
+            changed = 0
+            for dev in devices:
+                eff = is_effectively_enabled(dev, folders_by_id)
+                live = self.node_manager.get_device(dev["id"]) is not None
+                if eff and not live:
+                    await self._add_device_live_locked(dev)
+                    tags = await asyncio.to_thread(self.db.get_tags, dev["id"])
+                    for tag in tags:
+                        if tag["enabled"]:
+                            await self._create_live_tag(dev["id"], tag)
+                    changed += 1
+                elif not eff and live:
+                    await self._delete_device_live_locked(dev["id"])
+                    changed += 1
+            log.info(
+                "Folder %d enabled=%s — %d device(s) changed live state", folder_id, enabled, changed,
+            )
+
     def set_manual_value(self, tag_id: int, value: Any) -> bool:
         behavior = self._tag_behaviors.get(tag_id)
         if behavior is None:
@@ -265,8 +384,8 @@ class SimEngine:
         dev_map = {d["id"]: d for d in devices}
 
         # Held for the whole walk so a concurrent structural mutation (add/
-        # delete device/tag, a NodeSet import) can't change node_manager's
-        # registry out from under this iteration.
+        # delete folder/device/tag, a NodeSet import) can't change
+        # node_manager's registry out from under this iteration.
         async with self.structural_lock:
             for live_tag in self.node_manager.get_all_tags():
                 tag_row = await asyncio.to_thread(self.db.get_tag, live_tag.device_id, live_tag.tag_id)
@@ -292,8 +411,20 @@ class SimEngine:
                     new_b._value = prev._value
                 self._tag_behaviors[live_tag.tag_id] = new_b
 
+                # Captured before compute() — _fault_active was already
+                # carried forward from prev above, so this is the state as
+                # of the end of the previous tick; compute() below may flip
+                # it during this tick.
+                was_fault_active = isinstance(new_b, FaultBehavior) and new_b._fault_active
+
                 val = new_b.compute(self.state)
                 await self._write_value(live_tag, val)
+
+                if isinstance(new_b, FaultBehavior):
+                    record_fault_transition(
+                        state.metrics, live_tag.tag_id, tag_row["name"], dev["name"],
+                        new_b._fault_active, was_fault_active, new_b.fault_type,
+                    )
 
                 hist = self._history.setdefault(live_tag.tag_id, deque(maxlen=720))
                 hist.append((time.time(), val))
@@ -318,137 +449,35 @@ class SimEngine:
         return list(self._history.get(tag_id, []))
 
 
-# ─── FastAPI request models ───────────────────────────────────────────────────
-
-class DeviceCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = ""
-    manufacturer: str = ""
-    model: str = ""
-    enabled: bool = True
-
-
-class DeviceUpdate(DeviceCreate):
-    pass
-
-
-class TagCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    data_type: str = "Double"
-    writable: bool = False
-    unit: str = ""
-    behavior: str = "constant"
-    behavior_params: str = '{"value":0}'
-    enabled: bool = True
-
-    def validate_choices(self) -> None:
-        if self.data_type not in VALID_DATA_TYPES:
-            raise HTTPException(400, f"data_type must be one of {sorted(VALID_DATA_TYPES)}")
-        if self.behavior not in VALID_BEHAVIORS:
-            raise HTTPException(400, f"behavior must be one of {sorted(VALID_BEHAVIORS)}")
-        try:
-            json.loads(self.behavior_params)
-        except Exception:
-            raise HTTPException(400, "behavior_params must be valid JSON")
-
-
-class TagUpdate(TagCreate):
-    pass
-
-
-class SetValueRequest(BaseModel):
-    value: Any
-
-
-class ProfileCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = ""
-
-
-class ProfileUpdate(ProfileCreate):
-    pass
-
-
-class ProfileImport(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=500)
-    data: dict
-
-
-class Credentials(BaseModel):
-    username: str = Field(..., min_length=1, max_length=64)
-    password: str = Field(..., min_length=8, max_length=200)
-
-
-class PasswordReset(BaseModel):
-    password: str = Field(..., min_length=8, max_length=200)
-
-
-# ─── Globals (shared between FastAPI and engine) ──────────────────────────────
-
-db: Database = None  # type: ignore
-engine: SimEngine = None  # type: ignore
-ws_clients: list[WebSocket] = []
-
-_device_logs: dict[int, deque] = {}
-_global_log: deque = deque(maxlen=1000)
-_device_names: dict[int, str] = {}
-_MAX_LOG = 300
-
-
-def _log_event(device_id: int, level: str, message: str) -> None:
-    entry = {
-        "ts": time.time(),
-        "level": level,
-        "device_id": device_id,
-        "device_name": _device_names.get(device_id, f"#{device_id}"),
-        "message": message,
-    }
-    _device_logs.setdefault(device_id, deque(maxlen=_MAX_LOG)).append(entry)
-    _global_log.append(entry)
-
-
-def _track(coro, description: str) -> None:
-    """asyncio.create_task() swallows exceptions unless something awaits the
-    task or checks its result — several endpoints fire structural live-node
-    mutations without awaiting them (the DB write already succeeded and is
-    the source of truth; the REST response shouldn't wait on OPC UA node
-    creation). This makes sure a failure there still gets logged with a
-    stack trace instead of vanishing silently."""
-    task = asyncio.create_task(coro)
-
-    def _on_done(t: asyncio.Task) -> None:
-        exc = t.exception() if not t.cancelled() else None
-        if exc is not None:
-            log.error("Background task failed (%s):", description, exc_info=exc)
-
-    task.add_done_callback(_on_done)
-
-
-def get_current_user(request: Request) -> dict:
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    user = user_from_token(db, auth_header[7:].strip())
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return user
-
-
 # ─── WebSocket broadcaster ─────────────────────────────────────────────────────
 
 async def broadcast_state() -> None:
-    if not ws_clients:
+    if not state.ws_clients:
         return
-    data = json.dumps(engine.get_state())
+    data = json.dumps(state.engine.get_state())
     dead = []
-    for ws in ws_clients:
+    for ws in state.ws_clients:
         try:
             await ws.send_text(data)
         except Exception:
             dead.append(ws)
     for ws in dead:
-        ws_clients.remove(ws)
+        state.ws_clients.remove(ws)
+
+
+async def broadcast_metrics() -> None:
+    from lib.analytics import build_metrics_snapshot
+    if not state.metrics_ws_clients:
+        return
+    data = json.dumps(await build_metrics_snapshot(state.engine, state.metrics))
+    dead = []
+    for ws in state.metrics_ws_clients:
+        try:
+            await ws.send_text(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        state.metrics_ws_clients.remove(ws)
 
 
 # ─── Background tasks ──────────────────────────────────────────────────────────
@@ -457,33 +486,50 @@ async def tick_loop() -> None:
     while True:
         await asyncio.sleep(TICK_SECONDS)
         try:
-            await engine.tick()
+            await state.engine.tick()
             await broadcast_state()
         except Exception as e:
             log.error("Tick error: %s", e)
+
+
+async def metrics_loop() -> None:
+    # Deliberately independent of TICK_SECONDS/tick_loop() — device-value
+    # simulation and analytics refresh are different concerns with different
+    # natural cadences (5s vs 1s); coupling them would mean either slowing
+    # down analytics or speeding up (and adding load to) the actual device
+    # simulation just to serve the dashboard.
+    while True:
+        await asyncio.sleep(1.0)
+        try:
+            await broadcast_metrics()
+        except Exception as e:
+            log.error("Metrics tick error: %s", e)
 
 
 # ─── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db, engine
-    db = Database(DB_PATH)
-    await asyncio.to_thread(db.setup)
-    for d in db.get_devices():
-        _device_names[d["id"]] = d["name"]
-    engine = SimEngine(db)
-    await engine.start()
+    state.db = Database(DB_PATH)
+    await asyncio.to_thread(state.db.setup)
+    for d in state.db.get_devices():
+        state._device_names[d["id"]] = d["name"]
+    state.metrics = Metrics()
+    state.engine = SimEngine(state.db)
+    await state.engine.start()
     tick_task = asyncio.create_task(tick_loop())
+    metrics_task = asyncio.create_task(metrics_loop())
     log.info("OPC UA Simulator API ready on port %d", SIM_API_PORT)
     yield
     log.info("Shutting down")
     tick_task.cancel()
-    try:
-        await tick_task
-    except asyncio.CancelledError:
-        pass
-    await engine.stop()
+    metrics_task.cancel()
+    for t in (tick_task, metrics_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    await state.engine.stop()
 
 
 # ─── FastAPI app ────────────────────────────────────────────────────────────────
@@ -511,7 +557,7 @@ async def auth_gate(request: Request, call_next):
     if request.method == "OPTIONS" or _is_public_path(request.url.path):
         return await call_next(request)
     auth_header = request.headers.get("authorization", "")
-    if not auth_header.lower().startswith("bearer ") or not user_from_token(db, auth_header[7:].strip()):
+    if not auth_header.lower().startswith("bearer ") or not user_from_token(state.db, auth_header[7:].strip()):
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
     return await call_next(request)
 
@@ -535,87 +581,23 @@ async def favicon():
     raise HTTPException(404)
 
 
-# ── Auth / Users ──
-
-@api.get("/auth/setup-required")
-async def auth_setup_required():
-    count = await asyncio.to_thread(db.count_users)
-    return {"setup_required": count == 0}
-
-
-@api.post("/auth/setup", status_code=201)
-async def auth_setup(body: Credentials):
-    count = await asyncio.to_thread(db.count_users)
-    if count > 0:
-        raise HTTPException(status_code=409, detail="Setup already completed")
-    password_hash = hash_password(body.password)
-    user = await asyncio.to_thread(db.create_user, body.username, password_hash)
-    token = create_access_token(user["id"], user["username"])
-    return {"access_token": token, "user": user}
-
-
-@api.post("/auth/login")
-async def auth_login(body: Credentials):
-    user = await asyncio.to_thread(db.get_user_by_username, body.username)
-    if not user or not verify_password(body.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-    await asyncio.to_thread(db.touch_last_login, user["id"])
-    token = create_access_token(user["id"], user["username"])
-    return {"access_token": token, "user": {"id": user["id"], "username": user["username"]}}
-
-
-@api.get("/auth/me")
-async def auth_me(current_user: dict = Depends(get_current_user)):
-    return current_user
-
-
-@api.get("/users")
-async def list_users():
-    return await asyncio.to_thread(db.list_users)
-
-
-@api.post("/users", status_code=201)
-async def create_user(body: Credentials):
-    if await asyncio.to_thread(db.get_user_by_username, body.username):
-        raise HTTPException(status_code=409, detail="Username already exists")
-    password_hash = hash_password(body.password)
-    return await asyncio.to_thread(db.create_user, body.username, password_hash)
-
-
-@api.post("/users/{user_id}/password")
-async def reset_user_password(user_id: int, body: PasswordReset):
-    if not await asyncio.to_thread(db.get_user, user_id):
-        raise HTTPException(status_code=404, detail="User not found")
-    password_hash = hash_password(body.password)
-    await asyncio.to_thread(db.update_user_password, user_id, password_hash)
-    return {"ok": True}
-
-
-@api.delete("/users/{user_id}", status_code=204)
-async def delete_user(user_id: int):
-    if not await asyncio.to_thread(db.get_user, user_id):
-        raise HTTPException(status_code=404, detail="User not found")
-    if await asyncio.to_thread(db.count_users) <= 1:
-        raise HTTPException(status_code=400, detail="Cannot delete the last remaining user")
-    await asyncio.to_thread(db.delete_user, user_id)
-
-
 # ── Health / meta ──
 
 @api.get("/health")
 async def health():
-    devices = await asyncio.to_thread(db.get_devices)
+    devices = await asyncio.to_thread(state.db.get_devices)
     return {
         "status": "ok",
         "devices": len(devices),
-        "opcua_running": engine.server is not None,
-        "sim_state": engine.clock_state,
-        "elapsed_seconds": engine.state.elapsed_seconds,
+        "opcua_running": state.engine.server is not None,
+        "sim_state": state.engine.clock_state,
+        "elapsed_seconds": state.engine.state.elapsed_seconds,
     }
 
 
 @api.get("/meta")
 async def meta():
+    from lib.db import VALID_DATA_TYPES
     return {
         "data_types": sorted(VALID_DATA_TYPES),
         "behaviors": sorted(VALID_BEHAVIORS),
@@ -626,378 +608,60 @@ async def meta():
 
 @api.post("/sim/start")
 async def sim_start():
-    engine.resume()
-    return {"sim_state": engine.clock_state}
+    state.engine.resume()
+    return {"sim_state": state.engine.clock_state}
 
 
 @api.post("/sim/pause")
 async def sim_pause():
-    engine.pause()
-    return {"sim_state": engine.clock_state}
+    state.engine.pause()
+    return {"sim_state": state.engine.clock_state}
 
 
 @api.post("/sim/stop")
 async def sim_stop():
-    engine.reset()
-    return {"sim_state": engine.clock_state, "elapsed_seconds": engine.state.elapsed_seconds}
-
-
-# ── Devices ──
-
-@api.get("/devices")
-async def list_devices():
-    return await asyncio.to_thread(db.get_devices)
-
-
-@api.post("/devices", status_code=201)
-async def create_device(body: DeviceCreate):
-    device = await asyncio.to_thread(
-        db.create_device, body.name, body.description, body.manufacturer, body.model, body.enabled
-    )
-    _device_names[device["id"]] = device["name"]
-    _log_event(device["id"], "info", f"Device created: {device['name']}")
-    if body.enabled:
-        _track(engine.add_device_live(device), f"add_device_live({device['id']})")
-    return device
-
-
-@api.get("/devices/{device_id}")
-async def get_device(device_id: int):
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    return d
-
-
-@api.put("/devices/{device_id}")
-async def update_device(device_id: int, body: DeviceUpdate):
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    updated = await asyncio.to_thread(
-        db.update_device, device_id, body.name, body.description, body.manufacturer, body.model, body.enabled
-    )
-    _device_names[device_id] = body.name
-    if d["enabled"] != body.enabled:
-        _log_event(device_id, "info", f"Device {'enabled' if body.enabled else 'disabled'}")
-    elif d["name"] != body.name:
-        _log_event(device_id, "info", f"Device renamed to '{body.name}'")
-    else:
-        _log_event(device_id, "info", "Device configuration updated")
-    _track(engine.update_device_live(device_id, updated), f"update_device_live({device_id})")
-    return updated
-
-
-@api.delete("/devices/{device_id}", status_code=204)
-async def delete_device(device_id: int):
-    deleted = await asyncio.to_thread(db.delete_device, device_id)
-    if not deleted:
-        raise HTTPException(404, "Device not found")
-    _track(engine.delete_device_live(device_id), f"delete_device_live({device_id})")
-
-
-# ── Tags ──
-
-@api.get("/devices/{device_id}/tags")
-async def list_tags(device_id: int):
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    return await asyncio.to_thread(db.get_tags, device_id)
-
-
-@api.post("/devices/{device_id}/tags", status_code=201)
-async def create_tag(device_id: int, body: TagCreate):
-    body.validate_choices()
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    try:
-        tag = await asyncio.to_thread(
-            db.create_tag, device_id, body.name, body.data_type, body.writable,
-            body.unit, body.behavior, body.behavior_params, body.enabled,
-        )
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, f"Tag '{body.name}' already exists on this device")
-    _log_event(device_id, "info", f"Tag added: {body.name} ({body.data_type})")
-    if d["enabled"] and body.enabled:
-        _track(engine.add_tag_live(device_id, tag), f"add_tag_live({device_id}, {tag['id']})")
-    return tag
-
-
-@api.get("/devices/{device_id}/tags/{tag_id}")
-async def get_tag(device_id: int, tag_id: int):
-    t = await asyncio.to_thread(db.get_tag, device_id, tag_id)
-    if not t:
-        raise HTTPException(404, "Tag not found")
-    return t
-
-
-@api.put("/devices/{device_id}/tags/{tag_id}")
-async def update_tag(device_id: int, tag_id: int, body: TagUpdate):
-    body.validate_choices()
-    existing = await asyncio.to_thread(db.get_tag, device_id, tag_id)
-    if not existing:
-        raise HTTPException(404, "Tag not found")
-    updated = await asyncio.to_thread(
-        db.update_tag, device_id, tag_id, body.name, body.data_type, body.writable,
-        body.unit, body.behavior, body.behavior_params, body.enabled,
-    )
-    if existing["enabled"] != body.enabled:
-        _log_event(device_id, "info", f"Tag '{body.name}' {'enabled' if body.enabled else 'disabled'}")
-    elif existing["behavior"] != body.behavior:
-        _log_event(device_id, "info", f"Tag '{body.name}' behavior changed to {body.behavior}")
-    else:
-        _log_event(device_id, "info", f"Tag '{body.name}' updated")
-    _track(engine.update_tag_live(device_id, tag_id, updated), f"update_tag_live({device_id}, {tag_id})")
-    return updated
-
-
-@api.delete("/devices/{device_id}/tags/{tag_id}", status_code=204)
-async def delete_tag(device_id: int, tag_id: int):
-    deleted = await asyncio.to_thread(db.delete_tag, device_id, tag_id)
-    if not deleted:
-        raise HTTPException(404, "Tag not found")
-    _log_event(device_id, "warn", f"Tag removed (id {tag_id})")
-    _track(engine.delete_tag_live(tag_id), f"delete_tag_live({tag_id})")
-
-
-@api.post("/devices/{device_id}/tags/{tag_id}/value")
-async def set_tag_value(device_id: int, tag_id: int, body: SetValueRequest):
-    t = await asyncio.to_thread(db.get_tag, device_id, tag_id)
-    if not t:
-        raise HTTPException(404, "Tag not found")
-    await asyncio.to_thread(db.set_manual_value, device_id, tag_id, body.value)
-    engine.set_manual_value(tag_id, body.value)
-    _log_event(device_id, "info", f"Manual override: '{t['name']}' = {body.value}")
-    return {"ok": True}
-
-
-@api.get("/devices/{device_id}/tags/{tag_id}/history")
-async def tag_history(device_id: int, tag_id: int):
-    return [{"ts": ts, "value": v} for ts, v in engine.get_history(tag_id)]
-
-
-# ── Logs ──
-
-@api.get("/devices/{device_id}/logs")
-async def device_logs(device_id: int, limit: int = 100):
-    entries = list(_device_logs.get(device_id, []))
-    return entries[-limit:]
-
-
-@api.get("/logs")
-async def all_logs(limit: int = 200):
-    entries = list(_global_log)
-    return entries[-limit:]
-
-
-# ── Profiles ──
-
-@api.get("/profiles")
-async def list_profiles():
-    return await asyncio.to_thread(db.get_profiles)
-
-
-@api.post("/profiles", status_code=201)
-async def save_profile(body: ProfileCreate):
-    return await asyncio.to_thread(db.save_profile, body.name, body.description)
-
-
-@api.put("/profiles/{profile_id}")
-async def update_profile(profile_id: int, body: ProfileUpdate):
-    ok = await asyncio.to_thread(db.update_profile, profile_id, body.name, body.description)
-    if not ok:
-        raise HTTPException(404, "Profile not found")
-    return {"ok": True}
-
-
-@api.delete("/profiles/{profile_id}", status_code=204)
-async def delete_profile(profile_id: int):
-    deleted = await asyncio.to_thread(db.delete_profile, profile_id)
-    if not deleted:
-        raise HTTPException(404, "Profile not found")
-
-
-@api.post("/profiles/{profile_id}/load")
-async def load_profile(profile_id: int):
-    row = await asyncio.to_thread(db.get_profile, profile_id)
-    if not row:
-        raise HTTPException(404, "Profile not found")
-    data = json.loads(row["data"])
-
-    # Tear down every live node before replacing DB state, then rebuild from scratch.
-    for dev in await asyncio.to_thread(db.get_devices):
-        await engine.delete_device_live(dev["id"])
-    await asyncio.to_thread(db.replace_live_state, data)
-
-    for dev in await asyncio.to_thread(db.get_devices):
-        if not dev["enabled"]:
-            continue
-        await engine.add_device_live(dev)
-        for tag in await asyncio.to_thread(db.get_tags, dev["id"]):
-            if tag["enabled"]:
-                await engine.add_tag_live(dev["id"], tag)
-        _device_names[dev["id"]] = dev["name"]
-
-    # A freshly loaded profile starts paused at t=0 — press Start when ready.
-    engine.reset()
-    return {"ok": True}
-
-
-@api.get("/profiles/{profile_id}/export")
-async def export_profile(profile_id: int):
-    row = await asyncio.to_thread(db.get_profile, profile_id)
-    if not row:
-        raise HTTPException(404, "Profile not found")
-    content = json.dumps(json.loads(row["data"]), indent=2)
-    filename = row["name"].replace(" ", "_") + ".json"
-    return Response(
-        content=content,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@api.post("/profiles/import", status_code=201)
-async def import_profile(body: ProfileImport):
-    return await asyncio.to_thread(db.import_profile, body.name, body.description, body.data)
-
-
-# ── NodeSet2 XML import ──
-# See docs/nodeset-import.md for scope: Objects/Variables only, flattened
-# onto the existing devices/tags schema, no export yet (see that doc for why).
-
-def _plan_summary(plan: ImportPlan) -> dict:
-    """Shared shape between preview (nothing committed) and import (committed) responses."""
-    return {
-        "devices": [
-            {
-                "name": d.name,
-                "description": d.description,
-                "tag_count": len(d.tags),
-                "tags": [
-                    {"name": t.name, "data_type": t.data_type, "writable": t.writable}
-                    for t in d.tags[:25]  # sample, not the full tree, for large imports
-                ],
-            }
-            for d in plan.devices
-        ],
-        "device_count": len(plan.devices),
-        "tag_count": sum(len(d.tags) for d in plan.devices),
-    }
-
-
-async def _read_and_parse_upload(file: UploadFile):
-    xml_bytes = await file.read()
-    if len(xml_bytes) > MAX_FILE_SIZE_BYTES:
-        raise HTTPException(413, f"File exceeds the {MAX_FILE_SIZE_BYTES}-byte limit")
-    try:
-        parsed = await asyncio.to_thread(parse_nodeset_xml, xml_bytes, file.filename or "upload.xml")
-    except NodeSetParseError as e:
-        raise HTTPException(400, str(e))
-    return parsed
-
-
-@api.post("/nodesets/preview")
-async def nodeset_preview(file: UploadFile = File(...)):
-    parsed = await _read_and_parse_upload(file)
-    plan = plan_import(parsed, batch_name=Path(file.filename or "Imported").stem)
-    return {
-        "report": parsed.report.to_dict(),
-        "plan": _plan_summary(plan),
-    }
-
-
-@api.post("/nodesets/import", status_code=201)
-async def nodeset_import(
-    file: UploadFile = File(...),
-    name: str = Form(""),
-    conflict_strategy: str = Form("skip"),
-):
-    if conflict_strategy not in ("skip", "reject"):
-        raise HTTPException(400, "conflict_strategy must be 'skip' or 'reject' in this release")
-    parsed = await _read_and_parse_upload(file)
-    if not parsed.report.valid:
-        raise HTTPException(400, f"NodeSet document has errors: {parsed.report.errors}")
-
-    batch_name = name or Path(file.filename or "Imported").stem
-    plan = plan_import(parsed, batch_name=batch_name)
-    result = await commit_import(
-        db, engine, plan, source_filename=file.filename or "upload.xml", conflict_strategy=conflict_strategy,
-    )
-    if result.errors:
-        raise HTTPException(409, {"errors": result.errors, "warnings": result.warnings})
-
-    for d in result.devices_created:
-        _device_names[d["id"]] = d["name"]
-    _log_event(0, "info", f"NodeSet import '{batch_name}': {len(result.devices_created)} device(s), "
-                           f"{result.tags_created} tag(s), {len(result.devices_skipped)} skipped")
-
-    return {
-        "import_id": result.import_id,
-        "devices_created": [{"id": d["id"], "name": d["name"], "tag_count": len(d["tags"])}
-                             for d in result.devices_created],
-        "tags_created": result.tags_created,
-        "devices_skipped": result.devices_skipped,
-        "parse_report": parsed.report.to_dict(),
-        "warnings": result.warnings,
-    }
-
-
-@api.get("/nodesets/imports")
-async def list_nodeset_imports():
-    return await asyncio.to_thread(db.get_nodeset_imports)
-
-
-@api.get("/nodesets/imports/{import_id}")
-async def get_nodeset_import(import_id: int):
-    row = await asyncio.to_thread(db.get_nodeset_import, import_id)
-    if not row:
-        raise HTTPException(404, "Import not found")
-    return row
-
-
-@api.delete("/nodesets/imports/{import_id}", status_code=200)
-async def delete_nodeset_import(import_id: int):
-    row = await asyncio.to_thread(db.get_nodeset_import, import_id)
-    if not row:
-        raise HTTPException(404, "Import not found")
-    deleted_ids = await asyncio.to_thread(db.delete_nodeset_import, import_id)
-    for device_id in deleted_ids:
-        _track(engine.delete_device_live(device_id), f"delete_device_live({device_id}) [nodeset import cleanup]")
-    blocked = [d for d in row["device_ids"] if d not in deleted_ids]
-    return {"deleted_device_ids": deleted_ids, "already_removed": blocked}
+    state.engine.reset()
+    return {"sim_state": state.engine.clock_state, "elapsed_seconds": state.engine.state.elapsed_seconds}
 
 
 # ── State ──
 
 @api.get("/state")
 async def get_state():
-    return engine.get_state()
+    return state.engine.get_state()
 
 
-# ── WebSocket ──
+# ── WebSocket (device values) ──
 
 @api.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     # Browsers can't set custom headers on the WS handshake, so the token
     # travels as a query param instead of Authorization: Bearer.
     token = websocket.query_params.get("token", "")
-    if not await asyncio.to_thread(user_from_token, db, token):
+    if not await asyncio.to_thread(user_from_token, state.db, token):
         await websocket.close(code=4401)
         return
     await websocket.accept()
-    ws_clients.append(websocket)
+    state.ws_clients.append(websocket)
     try:
-        await websocket.send_text(json.dumps(engine.get_state()))
+        await websocket.send_text(json.dumps(state.engine.get_state()))
         while True:
             await websocket.receive_text()  # keep alive (ping)
     except WebSocketDisconnect:
         pass
     finally:
-        if websocket in ws_clients:
-            ws_clients.remove(websocket)
+        if websocket in state.ws_clients:
+            state.ws_clients.remove(websocket)
+
+
+# ── Routers ──
+
+api.include_router(routes_auth.router)
+api.include_router(routes_devices.router)
+api.include_router(routes_folders.router)
+api.include_router(routes_profiles.router)
+api.include_router(routes_nodesets.router)
+api.include_router(routes_analytics.router)
 
 
 # ── Admin static assets (Vite build output) ──

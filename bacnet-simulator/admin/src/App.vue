@@ -11,12 +11,14 @@ import IotisticaLogo from './components/IotisticaLogo.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import LoginView from './components/LoginView.vue'
 import UsersDrawer from './components/UsersDrawer.vue'
+import AnalyticsDashboard from './components/AnalyticsDashboard.vue'
 import type { Device, SimObject, Meta, Health, HistoryPoint } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, DashboardOutlined, ApartmentOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
+const activeView = ref<'devices' | 'analytics'>('devices')
 
 const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
 const simActionLoading = ref(false)
@@ -530,7 +532,13 @@ onUnmounted(() => {
           </span>
         </div>
 
+        <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
+          <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
+          <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
+        </a-radio-group>
+
         <div style="flex:1" />
+        <template v-if="activeView === 'devices'">
         <a-tag v-if="activeProfileName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProfileName }}</a-tag>
         <a-button size="small" @click="newProfile">
           <template #icon><FileAddOutlined /></template>
@@ -539,6 +547,7 @@ onUnmounted(() => {
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
         <a-button v-if="activeProfileId !== null" size="small" @click="openSaveAs">Save As</a-button>
         <a-button size="small" @click="profilesDrawerOpen = true">Open</a-button>
+        </template>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
 
         <div style="display:flex;align-items:center;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
@@ -558,7 +567,8 @@ onUnmounted(() => {
         </div>
       </a-layout-header>
 
-      <a-layout>
+      <AnalyticsDashboard v-if="activeView === 'analytics'" />
+      <a-layout v-else>
 
         <!-- Sidebar: devices -->
         <a-layout-sider :width="260" style="background:white;border-right:1px solid #e8e8e8;overflow:auto">

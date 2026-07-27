@@ -21,12 +21,12 @@ app needs to know an import happened.
 The cost of that choice: nested Object hierarchy inside a device is
 flattened into dotted tag names (`SubAssembly.Motor.Current`) rather than
 modeled as nested live OPC UA objects, and original source NodeIds/
-namespace indices are not preserved — imported tags get the same
-deterministic name-derived NodeIds any manually-created tag gets. That
-means no byte-for-byte round-trip export (yet). Given this simulator's
-actual use case — simulate a device's *tags*, not host a faithful copy of
-someone else's type system — that trade was judged worth it. See **Known
-limitations** for the honest list.
+namespace indices are not preserved — imported tags get the same stable,
+id-based NodeIds (`tag/<id>`) any manually-created tag gets (see
+`lib/nodes.py`). That means no byte-for-byte round-trip export (yet). Given
+this simulator's actual use case — simulate a device's *tags*, not host a
+faithful copy of someone else's type system — that trade was judged worth
+it. See **Known limitations** for the honest list.
 
 ## Scope
 
@@ -91,6 +91,12 @@ tag's behavior afterward, so nothing is locked in, it just doesn't guess.
 * Bare top-level `UAVariable`s (no enclosing Object at all) land on one
   catch-all device named after the import, so nothing is dropped just
   because it doesn't fit the device/tag assumption.
+* Every imported device lands at the address-space root (no folder
+  assignment) regardless of the source document's own structure — this is
+  unchanged by the folder-hierarchy feature. A `preserveHierarchy` import
+  option that maps source Object nesting onto real folders is a documented
+  possible follow-up, not implemented here; source Object nesting is still
+  always flattened into dotted tag names as described above.
 
 ### Conflict strategies
 

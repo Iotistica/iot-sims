@@ -1,6 +1,6 @@
 import type {
-  Device, Tag, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse,
-  NodeSetPreviewResponse, NodeSetImportResponse, NodeSetImportRecord,
+  Device, Tag, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse, Folder,
+  NodeSetPreviewResponse, NodeSetImportResponse, NodeSetImportRecord, AnalyticsSnapshot, AnalyticsAlarm,
 } from './types'
 import { authToken, logout } from './auth'
 
@@ -83,6 +83,16 @@ export const api = {
     logs:   (id: number, limit = 100)      => req<LogEntry[]>(`/devices/${id}/logs?limit=${limit}`),
   },
 
+  folders: {
+    list:   ()                                    => req<Folder[]>('/folders'),
+    create: (b: Omit<Folder, 'id' | 'key' | 'enabled'>) => req<Folder>('/folders', { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<Folder, 'id' | 'key' | 'enabled'>) =>
+      req<Folder>(`/folders/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    setEnabled: (id: number, enabled: boolean) =>
+      req<{ ok: boolean }>(`/folders/${id}/enabled`, { method: 'POST', body: JSON.stringify({ enabled }) }),
+    del:    (id: number)                          => req<null>(`/folders/${id}`, { method: 'DELETE' }),
+  },
+
   tags: {
     list:     (did: number)                        => req<Tag[]>(`/devices/${did}/tags`),
     create:   (did: number, b: object)             => req<Tag>(`/devices/${did}/tags`, { method: 'POST', body: JSON.stringify(b) }),
@@ -120,5 +130,25 @@ export const api = {
     imports: () => req<NodeSetImportRecord[]>('/nodesets/imports'),
     deleteImport: (id: number) =>
       req<{ deleted_device_ids: number[]; already_removed: number[] }>(`/nodesets/imports/${id}`, { method: 'DELETE' }),
+  },
+
+  analytics: {
+    snapshot: () => req<AnalyticsSnapshot>('/analytics/snapshot'),
+    ackAlarm: (tagId: number) => req<AnalyticsAlarm>(`/analytics/alarms/${tagId}/ack`, { method: 'POST' }),
+    // File download, not JSON — needs the Bearer auth header, so a plain
+    // <a href> link (no custom headers on navigation) won't work here.
+    export: async (format: 'csv' | 'json') => {
+      const headers: Record<string, string> = {}
+      if (authToken.value) headers['Authorization'] = `Bearer ${authToken.value}`
+      const res = await fetch(`/analytics/export?format=${format}`, { headers })
+      if (!res.ok) throw new Error(res.statusText)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `analytics_${Date.now()}.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    },
   },
 }

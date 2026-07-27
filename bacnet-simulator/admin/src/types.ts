@@ -89,3 +89,98 @@ export interface AuthResponse {
   access_token: string
   user: User
 }
+
+// ─── Analytics ──────────────────────────────────────────────────────────────
+
+export interface RecentRequest {
+  ts: number
+  service: string
+  source?: string
+  broadcast?: boolean
+  device?: number | null
+  object?: string | null
+  ok: boolean
+  latency_ms?: number | null
+}
+
+export interface RecentError {
+  ts: number
+  type: string
+  service: string | null
+  object: string | null
+}
+
+export interface DuplicateIdEvent {
+  ts: number
+  device_instance: number
+  source: string
+}
+
+export interface NewDeviceEvent {
+  ts: number
+  device_instance: number
+  source: string
+}
+
+export interface AnalyticsDeviceRow {
+  id: number
+  device_instance: number
+  name: string
+  enabled: boolean
+  object_count: number
+  activity: number
+}
+
+export interface AnalyticsSnapshot {
+  ts: number
+  overview: {
+    total_devices: number
+    online_devices: number
+    offline_devices: number
+    active_clients: number
+    requests_per_sec: number
+    avg_response_time_ms: number
+    active_alarms: number
+  }
+  traffic: {
+    requests_total: number
+    reads_total: number
+    writes_total: number
+    requests_by_service: Record<string, number>
+    broadcast: number
+    unicast: number
+    top_devices: { device_instance: number; name: string; count: number }[]
+    recent_requests: RecentRequest[]
+  }
+  devices: {
+    list: AnalyticsDeviceRow[]
+    uptime_seconds: number
+  }
+  objects: {
+    total: number
+    unused: number
+    top_accessed: { object: string; count: number }[]
+    reads_total: number
+    writes_total: number
+  }
+  performance: {
+    avg_response_time_ms: number
+    p95_response_time_ms: number
+    throughput_per_sec: number
+    concurrent_clients: number
+    cpu_percent: number
+    memory_mb: number
+    error_rate_percent: number
+  }
+  errors: {
+    total: number
+    by_type: Record<string, number>
+    duplicate_device_ids: DuplicateIdEvent[]
+    recent: RecentError[]
+  }
+  discovery: {
+    who_is_total: number
+    devices_seen: number
+    new_devices_timeline: NewDeviceEvent[]
+  }
+}

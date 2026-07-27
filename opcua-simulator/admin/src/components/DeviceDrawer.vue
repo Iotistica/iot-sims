@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { api } from '../api'
-import type { Device } from '../types'
+import { buildFolderTreeOptions } from '../folderTree'
+import type { Device, Folder } from '../types'
 
 const props = defineProps<{
   open: boolean
   device: Device | null
+  folders: Folder[]
+  preSelectedFolderId?: number | null
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
@@ -20,6 +23,7 @@ const form = reactive({
   manufacturer: '',
   model: '',
   enabled: true,
+  folder_id: null as number | null,
 })
 
 watch(() => props.open, (v) => {
@@ -31,11 +35,17 @@ watch(() => props.open, (v) => {
       manufacturer: props.device.manufacturer ?? '',
       model: props.device.model ?? '',
       enabled: !!props.device.enabled,
+      folder_id: props.device.folder_id,
     })
   } else {
-    Object.assign(form, { name: '', description: '', manufacturer: '', model: '', enabled: true })
+    Object.assign(form, {
+      name: '', description: '', manufacturer: '', model: '', enabled: true,
+      folder_id: props.preSelectedFolderId ?? null,
+    })
   }
 })
+
+const treeOptions = computed(() => buildFolderTreeOptions(props.folders))
 
 async function save() {
   if (!form.name.trim()) { message.error('Name is required'); return }
@@ -87,6 +97,17 @@ async function save() {
           </a-form-item>
         </a-col>
       </a-row>
+
+      <a-form-item label="Folder">
+        <a-tree-select
+          v-model:value="form.folder_id"
+          :tree-data="treeOptions"
+          allow-clear
+          tree-default-expand-all
+          placeholder="Root (directly under Objects)"
+          style="width: 100%"
+        />
+      </a-form-item>
 
       <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
         <a-switch v-model:checked="form.enabled" />
