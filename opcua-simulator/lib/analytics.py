@@ -504,7 +504,8 @@ async def build_metrics_snapshot(engine: Any, metrics: Metrics) -> dict:
             "recent": list(metrics.recent_errors)[-50:],
         },
         "security": {
-            "policy": "NoSecurity",
+            "policy": ", ".join(p.name for p in engine.server._security_policy) if engine.server else "Unknown",
+            "anonymous_allowed": bool(iserver and ua.AnonymousIdentityToken in iserver.supported_tokens),
             "secure_channel_opens": metrics.secure_channel_opens,
             "auth_failures": metrics.auth_failures,
             "rejected_connections": metrics.rejected_connections,
@@ -530,14 +531,17 @@ def install_analytics(server: Server, metrics: Metrics) -> None:
     _install_subscription_patch(metrics)
 
 
-# ─── Synthetic alarm feed (derived from FaultBehavior, not real OPC UA A&C) ──
-# No OPC UA Alarm & Conditions implementation exists in this simulator — see
-# the Phase 1 plan for why building one is out of scope here. This proxy
-# reuses FaultBehavior's own _fault_active flag (a real concept in the sim:
-# a tag's value generator going into a fault state) so "alarms" reflect
-# actual simulated fault conditions rather than being fabricated from
-# nothing. Deliberately not wired into the OPC UA address space — a real
-# OPC UA client never sees these as Condition/Event nodes.
+# ─── Dashboard alarm feed (derived from FaultBehavior) ──────────────────────
+# This proxy reuses FaultBehavior's own _fault_active flag (a real concept in
+# the sim: a tag's value generator going into a fault state) so "alarms"
+# reflect actual simulated fault conditions rather than being fabricated from
+# nothing. This feeds the dashboard's own Alarm & Event Analytics panel only.
+# The same open/clear edges also drive lib/alarms.py's fire_alarm_condition(),
+# which fires a real, spec-shaped OPC UA AlarmConditionType event any real
+# client can subscribe to (v1: no Acknowledge/Confirm or ConditionRefresh —
+# see lib/alarms.py's module docstring) — the two are separate call sites in
+# opcua_simulator.py, kept independent so a failure in one can't affect the
+# other.
 
 def record_fault_transition(
     metrics: Metrics, tag_id: int, tag_name: str, device_name: str,

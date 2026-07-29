@@ -229,6 +229,7 @@ async function duplicateDevice(d: Device) {
       manufacturer: d.manufacturer,
       model:        d.model,
       enabled:      d.enabled,
+      folder_id:    d.folder_id,
     })
     const srcTags = await api.tags.list(d.id)
     for (const t of srcTags) {
@@ -273,12 +274,23 @@ function newProfile() {
     okType: 'danger',
     async onOk() {
       await Promise.allSettled(devices.value.map(d => api.devices.del(d.id)))
+      // Folders can only be deleted once empty — devices are already gone
+      // above, so repeatedly sweep leaf folders (innermost first) until
+      // nothing more can be removed.
+      let remaining = [...folders.value]
+      while (remaining.length) {
+        const results = await Promise.allSettled(remaining.map(f => api.folders.del(f.id)))
+        const stillThere = remaining.filter((_, i) => results[i].status === 'rejected')
+        if (stillThere.length === remaining.length) break // safety: nothing progressed
+        remaining = stillThere
+      }
       selectedDevice.value = null
       tags.value = []
       activeProfileId.value = null
       activeProfileName.value = null
       activeProfileDesc.value = ''
       await loadDevices()
+      await loadFolders()
       await loadHealth()
       message.success('Ready — add your first device')
     },
@@ -521,7 +533,7 @@ const columns: TableColumnsType = [
 let healthTimer: ReturnType<typeof setInterval>
 
 async function startApp() {
-  await Promise.all([loadMeta(), loadDevices(), loadHealth()])
+  await Promise.all([loadMeta(), loadDevices(), loadFolders(), loadHealth()])
   wsConnect()
   healthTimer = setInterval(loadHealth, 10_000)
 }
@@ -804,7 +816,17 @@ onUnmounted(() => {
     <DeviceDrawer
       v-model:open="deviceDrawerOpen"
       :device="editingDevice"
+      :folders="folders"
+      :pre-selected-folder-id="addDeviceFolderId"
       @saved="onDeviceSaved"
+    />
+
+    <!-- Folder drawer -->
+    <FolderDrawer
+      v-model:open="folderDrawerOpen"
+      :folder="editingFolder"
+      :folders="folders"
+      @saved="onFolderSaved"
     />
 
     <!-- Tag drawer -->

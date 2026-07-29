@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -39,6 +40,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import lib.state as state
+from lib.alarms import fire_alarm_condition, patch_oftype_filter
 from lib.analytics import Metrics, install_analytics, record_fault_transition
 from lib.behaviors import (
     TICK_SECONDS,
@@ -51,6 +53,8 @@ from lib.behaviors import (
 )
 from lib.db import Database, is_effectively_enabled, user_from_token
 from lib.nodes import NodeManager
+from lib.opcua_security import SimUserManager, ensure_opcua_certificate, parse_security_policies
+from lib.tls import ensure_admin_tls_certificate
 from lib import routes_analytics, routes_auth, routes_devices, routes_folders, routes_nodesets, routes_profiles
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -63,6 +67,21 @@ DB_PATH = DATA_DIR / "opcua_sim.db"
 SIM_API_PORT = int(os.environ.get("SIM_API_PORT", "47901"))
 OPCUA_PORT = int(os.environ.get("OPCUA_PORT", "4840"))
 OPCUA_ENDPOINT = f"opc.tcp://0.0.0.0:{OPCUA_PORT}/opcua-simulator/"
+
+# OPC UA transport security — both NoSecurity and an encrypted policy are
+# offered by default so existing NoSecurity clients (e.g. the current
+# iot-agent config) keep working; see docs/security.md for hardening.
+OPCUA_SECURITY_POLICIES_RAW = os.environ.get("OPCUA_SECURITY_POLICIES", "NoSecurity,Basic256Sha256_SignAndEncrypt")
+OPCUA_REQUIRE_AUTH = os.environ.get("OPCUA_REQUIRE_AUTH", "false").lower() == "true"
+OPCUA_APP_URI = os.environ.get("OPCUA_APP_URI", "urn:iotistica:opcua-simulator")
+OPCUA_CERT_DIR = Path(os.environ.get("OPCUA_CERT_DIR", str(DATA_DIR / "pki" / "opcua")))
+
+# Admin REST/WS API TLS — opt-in only (default off), since flipping it on
+# switches the whole SIM_API_PORT from HTTP to HTTPS. See docs/security.md.
+ADMIN_TLS_ENABLED = os.environ.get("ADMIN_TLS_ENABLED", "false").lower() == "true"
+ADMIN_TLS_CERT_DIR = Path(os.environ.get("ADMIN_TLS_CERT_DIR", str(DATA_DIR / "pki" / "admin")))
+ADMIN_TLS_CERT_FILE = os.environ.get("ADMIN_TLS_CERT_FILE")
+ADMIN_TLS_KEY_FILE = os.environ.get("ADMIN_TLS_KEY_FILE")
 
 
 # ─── Simulation engine ─────────────────────────────────────────────────────────
@@ -106,11 +125,31 @@ class SimEngine:
                 behavior._fault_end_elapsed = -1.0
 
     async def start(self) -> None:
-        self.server = Server()
+        # user_manager is only accepted as an InternalServer/Server
+        # constructor arg — Server has no set_user_manager() of its own.
+        self.server = Server(user_manager=SimUserManager())
         await self.server.init()
         self.server.set_endpoint(OPCUA_ENDPOINT)
         self.server.set_server_name("Iotistica OPC UA Simulator")
-        self.server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
+        # Must match the cert's SAN URI (below) — asyncua otherwise defaults
+        # to "urn:freeopcua:python:server", which most clients reject a
+        # certificate for since the ApplicationUri won't match.
+        await self.server.set_application_uri(OPCUA_APP_URI)
+
+        key_path, cert_path = await ensure_opcua_certificate(OPCUA_CERT_DIR, OPCUA_APP_URI, socket.gethostname())
+        await self.server.load_certificate(cert_path)
+        await self.server.load_private_key(key_path)
+        self.server.set_security_policy(parse_security_policies(OPCUA_SECURITY_POLICIES_RAW))
+        identity_tokens = [ua.UserNameIdentityToken] if OPCUA_REQUIRE_AUTH else [
+            ua.AnonymousIdentityToken,
+            ua.UserNameIdentityToken,
+        ]
+        self.server.set_identity_tokens(identity_tokens)
+        log.info(
+            "OPC UA security: policies=%s require_auth=%s",
+            OPCUA_SECURITY_POLICIES_RAW,
+            OPCUA_REQUIRE_AUTH,
+        )
 
         self.node_manager = NodeManager(self.server)
         await self.node_manager.register_namespace()
@@ -118,6 +157,7 @@ class SimEngine:
         # Must be installed before server.start() so every hook is live
         # before any client can connect — see lib/analytics.py.
         install_analytics(self.server, state.metrics)
+        patch_oftype_filter()
 
         await self._load_all_from_db()
 
@@ -251,6 +291,12 @@ class SimEngine:
                 state.metrics, tag_row["id"], tag_row["name"], dev["name"] if dev else f"#{device_id}",
                 True, False, behavior.fault_type,
             )
+            live_device = self.node_manager.get_device(device_id)
+            if live_device:
+                await fire_alarm_condition(
+                    self.server, live_device.folder_node, live_tag.node,
+                    tag_row["name"], behavior.fault_type, True,
+                )
         return live_tag
 
     async def add_device_live(self, device_row: dict) -> None:
@@ -425,6 +471,13 @@ class SimEngine:
                         state.metrics, live_tag.tag_id, tag_row["name"], dev["name"],
                         new_b._fault_active, was_fault_active, new_b.fault_type,
                     )
+                    if new_b._fault_active != was_fault_active:
+                        live_device = self.node_manager.get_device(live_tag.device_id)
+                        if live_device:
+                            await fire_alarm_condition(
+                                self.server, live_device.folder_node, live_tag.node,
+                                tag_row["name"], new_b.fault_type, new_b._fault_active,
+                            )
 
                 hist = self._history.setdefault(live_tag.tag_id, deque(maxlen=720))
                 hist.append((time.time(), val))
@@ -674,7 +727,18 @@ if _assets_dir.exists():
 # ─── Entry point ────────────────────────────────────────────────────────────────
 
 async def main():
-    config = uvicorn.Config(api, host="0.0.0.0", port=SIM_API_PORT, log_level="warning")
+    ssl_kwargs: dict[str, str] = {}
+    if ADMIN_TLS_ENABLED:
+        if ADMIN_TLS_CERT_FILE and ADMIN_TLS_KEY_FILE:
+            key_path, cert_path = Path(ADMIN_TLS_KEY_FILE), Path(ADMIN_TLS_CERT_FILE)
+        else:
+            key_path, cert_path = ensure_admin_tls_certificate(ADMIN_TLS_CERT_DIR, socket.gethostname())
+        ssl_kwargs = {"ssl_keyfile": str(key_path), "ssl_certfile": str(cert_path)}
+        log.info("Admin API: HTTPS enabled (cert=%s)", cert_path)
+    else:
+        log.info("Admin API: HTTP (ADMIN_TLS_ENABLED=false)")
+
+    config = uvicorn.Config(api, host="0.0.0.0", port=SIM_API_PORT, log_level="warning", **ssl_kwargs)
     server = uvicorn.Server(config)
     await server.serve()
 

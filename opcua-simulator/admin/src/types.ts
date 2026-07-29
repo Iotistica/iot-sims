@@ -269,6 +269,7 @@ export interface AnalyticsSnapshot {
   }
   security: {
     policy: string
+    anonymous_allowed: boolean
     secure_channel_opens: number
     auth_failures: number
     rejected_connections: number

@@ -267,6 +267,18 @@ const errorsByTypeData = computed(() => {
   return { labels, datasets: [{ label: 'Count', data: labels.map((k) => byType[k]), backgroundColor: '#f5222d' }] }
 })
 
+const securityMessage = computed(() => {
+  const sec = snapshot.value?.security
+  if (!sec) return ''
+  const noSecurityOnly = sec.policy === 'NoSecurity'
+  if (noSecurityOnly) {
+    return 'This simulator runs with NoSecurity only (no signing/encryption' +
+      (sec.anonymous_allowed ? ', anonymous auth' : '') +
+      ') — policy/certificate variety isn\'t meaningful here. The counters below reflect real connection activity.'
+  }
+  return `Active policies: ${sec.policy}. Anonymous sessions are ${sec.anonymous_allowed ? 'allowed' : 'disabled — username/password required'}.`
+})
+
 // ─── Table columns ──────────────────────────────────────────────────────────
 
 const recentRequestColumns = [
@@ -551,7 +563,7 @@ const alarmEventColumns = [
           <a-alert
             type="info"
             show-icon
-            message="This simulator runs with NoSecurity only (no signing/encryption, anonymous auth) — policy/certificate variety isn't meaningful here. The counters below reflect real connection activity."
+            :message="securityMessage"
             style="margin-bottom: 10px"
           />
           <div class="kpi-grid">
@@ -565,12 +577,6 @@ const alarmEventColumns = [
         <!-- ═══ Alarm & Event Analytics ═══ -->
         <section>
           <h3>Alarm &amp; Event Analytics</h3>
-          <a-alert
-            type="warning"
-            show-icon
-            message="Simulated — derived from tags using a &quot;fault&quot; behavior, not real OPC UA Alarms &amp; Conditions. This simulator doesn't implement A&amp;C, so these alarms exist only in this dashboard and aren't visible to real OPC UA clients."
-            style="margin-bottom: 10px"
-          />
           <div class="kpi-grid">
             <a-card size="small"><a-statistic title="Active Alarms" :value="snapshot.alarms.active" :value-style="{ color: snapshot.alarms.active ? '#faad14' : undefined }" /></a-card>
             <a-card size="small"><a-statistic title="Avg Acknowledgement Time" :value="fmtDuration(snapshot.alarms.avg_ack_time_s)" /></a-card>

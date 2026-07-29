@@ -105,6 +105,21 @@ class NodeManager:
             ua.NodeId(f"device/{device_id}/uuid", self.idx), "DeviceUUID", device_row["key"]
         )
         await uuid_var.set_writable(False)
+        # EventNotifier is only a valid attribute on Object/View nodes (not
+        # Variables, per spec) — set here on the device's own Object node so
+        # it can be used as an Event/Condition source (see lib/alarms.py).
+        #
+        # NOTE: asyncua's event delivery (monitored_item_service.trigger_event)
+        # matches only the *exact* subscribed source node — it does not walk
+        # HasNotifier references hierarchically, so subscribing to the Server
+        # node (the usual "give me everything" pattern) will NOT receive
+        # events sourced from this device; a client must subscribe directly
+        # to this device's node. ConditionRefresh (asyncua has this built in
+        # already — see subscription_service.py's condition_refresh) is the
+        # one path that isn't subject to this: it replays all currently
+        # Retain=True conditions server-wide regardless of which node a
+        # client's monitored item is on.
+        await folder.set_event_notifier([ua.EventNotifier.SubscribeToEvents])
         live = LiveDevice(device_id=device_id, key=device_row["key"], folder_node=folder, uuid_node=uuid_var)
         self._devices[device_id] = live
         return live
