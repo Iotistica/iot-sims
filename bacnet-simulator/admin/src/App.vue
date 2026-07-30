@@ -190,10 +190,10 @@ function deleteDevice(d: Device) {
 }
 
 // Profile actions
-function newProfile() {
+function newProject() {
   Modal.confirm({
-    title: 'Start a new profile?',
-    content: 'Save the current setup as a profile first if you want to keep it.',
+    title: 'Start a new project?',
+    content: 'Save the current setup as a project first if you want to keep it.',
     okText: 'Start Fresh',
     okType: 'danger',
     async onOk() {
@@ -255,7 +255,7 @@ async function doSave() {
   }
 }
 
-async function onProfileLoaded(id: number, name: string, desc: string) {
+async function onProjectLoaded(id: number, name: string, desc: string) {
   activeProfileId.value = id
   activeProfileName.value = name
   activeProfileDesc.value = desc
@@ -540,13 +540,13 @@ onUnmounted(() => {
         <div style="flex:1" />
         <template v-if="activeView === 'devices'">
         <a-tag v-if="activeProfileName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProfileName }}</a-tag>
-        <a-button size="small" @click="newProfile">
+        <a-button size="small" @click="newProject">
           <template #icon><FileAddOutlined /></template>
-          New
+          New Project
         </a-button>
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
         <a-button v-if="activeProfileId !== null" size="small" @click="openSaveAs">Save As</a-button>
-        <a-button size="small" @click="profilesDrawerOpen = true">Open</a-button>
+        <a-button size="small" @click="profilesDrawerOpen = true">Open Project</a-button>
         </template>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
 
@@ -711,7 +711,7 @@ onUnmounted(() => {
     <!-- Profiles drawer -->
     <ProfilesDrawer
       v-model:open="profilesDrawerOpen"
-      @loaded="onProfileLoaded"
+      @loaded="onProjectLoaded"
     />
 
     <!-- Users drawer -->
