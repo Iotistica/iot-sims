@@ -80,7 +80,7 @@ watch(() => props.open, (isOpen) => {
 <template>
   <a-drawer
     :open="open"
-    title="Open Profile"
+    title="Open Project"
     width="460"
     @close="emit('update:open', false)"
   >
