@@ -630,7 +630,7 @@ onUnmounted(() => {
           Import NodeSet
         </a-button>
         <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
-          <a-radio-button value="devices">Devices</a-radio-button>
+          <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
           <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
         </a-radio-group>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
