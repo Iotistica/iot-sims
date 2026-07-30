@@ -667,8 +667,13 @@ onUnmounted(() => {
                 </template>
                 <template v-else-if="column.key === 'actions'">
                   <a-space :size="2">
-                    <a-button type="link" size="small" @click="openEditObject(record as SimObject)">Edit</a-button>
-                    <a-button type="link" size="small" style="color:#8c8c8c" @click="duplicateObject(record as SimObject)">Copy</a-button>
+                     <a-button type="text" size="small" title="Edit" @click.stop="openEditObject(record as SimObject)">
+                <template #icon><EditOutlined /></template>
+              </a-button>
+                    <a-button type="text" size="small" title="Duplicate" @click.stop="duplicateObject(record as SimObject)">
+                <template #icon><CopyOutlined /></template>
+              </a-button>
+                   
                     <a-button
                       v-if="(record as SimObject).behavior === 'manual'"
                       type="link" size="small"
