@@ -678,7 +678,10 @@ onUnmounted(() => {
                     <a-button type="link" size="small" style="color:#722ed1" @click="openHistory(record as SimObject)">
                       <template #icon><LineChartOutlined /></template>
                     </a-button>
-                    <a-button type="link" size="small" danger @click="deleteObject(record as SimObject)">Del</a-button>
+                     <a-button type="text" size="small" danger title="Delete" @click.stop="deleteObject(record as SimObject)">
+                      <template #icon><DeleteOutlined /></template>
+                    </a-button>
+                    
                   </a-space>
                 </template>
               </template>
