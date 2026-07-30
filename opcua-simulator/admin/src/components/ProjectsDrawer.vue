@@ -2,9 +2,9 @@
 import { ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { DownloadOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons-vue'
-import type { Profile } from '../types'
+import type { Project } from '../types'
 import { api } from '../api'
-import ImportProfileModal from './ImportProfileModal.vue'
+import ImportProfileModal from './ImportProjectModal.vue'
 
 const emit = defineEmits<{
   'update:open': [val: boolean]
@@ -13,22 +13,22 @@ const emit = defineEmits<{
 
 const props = defineProps<{ open: boolean }>()
 
-const profiles = ref<Profile[]>([])
+const projects = ref<Project[]>([])
 const loading = ref(false)
 const importOpen = ref(false)
 
 async function load() {
   loading.value = true
   try {
-    profiles.value = await api.profiles.list()
+    projects.value = await api.projects.list()
   } catch (e: unknown) {
-    message.error((e as Error).message ?? 'Failed to load profiles')
+    message.error((e as Error).message ?? 'Failed to load projects')
   } finally {
     loading.value = false
   }
 }
 
-function confirmLoad(p: Profile) {
+function confirmLoad(p: Project) {
   Modal.confirm({
     title: `Load "${p.name}"?`,
     content: 'This will replace all current devices and tags with the saved profile.',
@@ -36,7 +36,7 @@ function confirmLoad(p: Profile) {
     okText: 'Load',
     async onOk() {
       try {
-        await api.profiles.load(p.id)
+        await api.projects.load(p.id)
         message.success(`"${p.name}" loaded`)
         emit('loaded', p.id, p.name, p.description)
         emit('update:open', false)
@@ -47,18 +47,18 @@ function confirmLoad(p: Profile) {
   })
 }
 
-function exportProfile(p: Profile) {
-  window.open(`/profiles/${p.id}/export`, '_blank')
+function exportProfile(p: Project) {
+  window.open(`/projects/${p.id}/export`, '_blank')
 }
 
-function confirmDelete(p: Profile) {
+function confirmDelete(p: Project) {
   Modal.confirm({
     title: `Delete "${p.name}"?`,
     okType: 'danger',
     okText: 'Delete',
     async onOk() {
       try {
-        await api.profiles.del(p.id)
+        await api.projects.del(p.id)
         message.success('Profile deleted')
         await load()
       } catch (e: unknown) {
@@ -80,7 +80,7 @@ watch(() => props.open, (isOpen) => {
 <template>
   <a-drawer
     :open="open"
-    title="Open Profile"
+    title="Open Project"
     width="460"
     @close="emit('update:open', false)"
   >
@@ -92,11 +92,11 @@ watch(() => props.open, (isOpen) => {
     </template>
 
     <a-spin :spinning="loading">
-      <div v-if="!profiles.length && !loading" style="text-align:center;color:#bbb;padding:60px 0;font-size:14px">
-        No profiles saved yet
+      <div v-if="!projects.length && !loading" style="text-align:center;color:#bbb;padding:60px 0;font-size:14px">
+        No projects saved yet
       </div>
       <div
-        v-for="p in profiles"
+        v-for="p in projects"
         :key="p.id"
         style="border:1px solid #e8e8e8;border-radius:6px;padding:12px 14px;margin-bottom:10px;background:white"
       >

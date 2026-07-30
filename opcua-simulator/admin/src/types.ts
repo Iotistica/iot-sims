@@ -44,7 +44,7 @@ export interface Health {
   elapsed_seconds: number
 }
 
-export interface Profile {
+export interface Project {
   id: number
   name: string
   description: string

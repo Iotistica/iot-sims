@@ -58,7 +58,7 @@ async function doImport() {
 
   importing.value = true
   try {
-    const result = await api.profiles.import_(name.value.trim(), desc.value.trim(), fileData.value)
+    const result = await api.projects.import_(name.value.trim(), desc.value.trim(), fileData.value)
     message.success(`"${result.name}" imported — ${result.device_count} device${result.device_count !== 1 ? 's' : ''}`)
     emit('update:open', false)
     emit('imported')

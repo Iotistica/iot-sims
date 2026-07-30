@@ -1,5 +1,5 @@
 import type {
-  Device, Tag, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse, Folder,
+  Device, Tag, Meta, Health, Project, LogEntry, HistoryPoint, User, AuthResponse, Folder,
   NodeSetPreviewResponse, NodeSetImportResponse, NodeSetImportRecord, AnalyticsSnapshot, AnalyticsAlarm,
 } from './types'
 import { authToken, logout } from './auth'
@@ -104,14 +104,14 @@ export const api = {
       req<HistoryPoint[]>(`/devices/${did}/tags/${tid}/history`),
   },
 
-  profiles: {
-    list:    ()                                              => req<Profile[]>('/profiles'),
-    save:    (name: string, description: string)            => req<Profile>('/profiles', { method: 'POST', body: JSON.stringify({ name, description }) }),
-    update:  (id: number, name: string, description: string) => req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description }) }),
-    del:     (id: number)                                   => req<null>(`/profiles/${id}`, { method: 'DELETE' }),
-    load:    (id: number)                                   => req<{ ok: boolean }>(`/profiles/${id}/load`, { method: 'POST' }),
+  projects: {
+    list:    ()                                              => req<Project[]>('/projects'),
+    save:    (name: string, description: string)            => req<Project>('/projects', { method: 'POST', body: JSON.stringify({ name, description }) }),
+    update:  (id: number, name: string, description: string) => req<{ ok: boolean }>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify({ name, description }) }),
+    del:     (id: number)                                   => req<null>(`/projects/${id}`, { method: 'DELETE' }),
+    load:    (id: number)                                   => req<{ ok: boolean }>(`/projects/${id}/load`, { method: 'POST' }),
     import_: (name: string, description: string, data: object) =>
-      req<Profile>('/profiles/import', { method: 'POST', body: JSON.stringify({ name, description, data }) }),
+      req<Project>('/projects/import', { method: 'POST', body: JSON.stringify({ name, description, data }) }),
   },
 
   nodesets: {

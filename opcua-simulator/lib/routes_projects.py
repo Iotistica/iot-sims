@@ -26,34 +26,34 @@ class ProfileImport(BaseModel):
     data: dict
 
 
-@router.get("/profiles")
-async def list_profiles():
-    return await asyncio.to_thread(state.db.get_profiles)
+@router.get("/projects")
+async def list_projects():
+    return await asyncio.to_thread(state.db.get_projects)
 
 
-@router.post("/profiles", status_code=201)
-async def save_profile(body: ProfileCreate):
-    return await asyncio.to_thread(state.db.save_profile, body.name, body.description)
+@router.post("/projects", status_code=201)
+async def save_project(body: ProfileCreate):
+    return await asyncio.to_thread(state.db.save_project, body.name, body.description)
 
 
-@router.put("/profiles/{profile_id}")
-async def update_profile(profile_id: int, body: ProfileUpdate):
-    ok = await asyncio.to_thread(state.db.update_profile, profile_id, body.name, body.description)
+@router.put("/projects/{project_id}")
+async def update_project(project_id: int, body: ProfileUpdate):
+    ok = await asyncio.to_thread(state.db.update_project, project_id, body.name, body.description)
     if not ok:
         raise HTTPException(404, "Profile not found")
     return {"ok": True}
 
 
-@router.delete("/profiles/{profile_id}", status_code=204)
-async def delete_profile(profile_id: int):
-    deleted = await asyncio.to_thread(state.db.delete_profile, profile_id)
+@router.delete("/projects/{project_id}", status_code=204)
+async def delete_project(project_id: int):
+    deleted = await asyncio.to_thread(state.db.delete_project, project_id)
     if not deleted:
         raise HTTPException(404, "Profile not found")
 
 
-@router.post("/profiles/{profile_id}/load")
-async def load_profile(profile_id: int):
-    row = await asyncio.to_thread(state.db.get_profile, profile_id)
+@router.post("/projects/{project_id}/load")
+async def load_project(project_id: int):
+    row = await asyncio.to_thread(state.db.get_project, project_id)
     if not row:
         raise HTTPException(404, "Profile not found")
     data = json.loads(row["data"])
@@ -68,14 +68,14 @@ async def load_profile(profile_id: int):
     for dev in await asyncio.to_thread(state.db.get_devices):
         state._device_names[dev["id"]] = dev["name"]
 
-    # A freshly loaded profile starts paused at t=0 — press Start when ready.
+    # A freshly loaded project starts paused at t=0 — press Start when ready.
     state.engine.reset()
     return {"ok": True}
 
 
-@router.get("/profiles/{profile_id}/export")
-async def export_profile(profile_id: int):
-    row = await asyncio.to_thread(state.db.get_profile, profile_id)
+@router.get("/projects/{project_id}/export")
+async def export_project(project_id: int):
+    row = await asyncio.to_thread(state.db.get_project, project_id)
     if not row:
         raise HTTPException(404, "Profile not found")
     content = json.dumps(json.loads(row["data"]), indent=2)
@@ -87,6 +87,6 @@ async def export_profile(profile_id: int):
     )
 
 
-@router.post("/profiles/import", status_code=201)
-async def import_profile(body: ProfileImport):
-    return await asyncio.to_thread(state.db.import_profile, body.name, body.description, body.data)
+@router.post("/projects/import", status_code=201)
+async def import_project(body: ProfileImport):
+    return await asyncio.to_thread(state.db.import_project, body.name, body.description, body.data)

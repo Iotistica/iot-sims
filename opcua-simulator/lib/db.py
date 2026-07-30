@@ -120,7 +120,7 @@ class Database:
                     UNIQUE(device_id, name)
                 );
 
-                CREATE TABLE IF NOT EXISTS profiles (
+                CREATE TABLE IF NOT EXISTS projects (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
@@ -349,15 +349,15 @@ class Database:
 
     # ── Profiles ─────────────────────────────────────────────────────────────
 
-    def get_profiles(self) -> list[dict]:
+    def get_projects(self) -> list[dict]:
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(
-                "SELECT id, name, description, created_at, device_count FROM profiles ORDER BY created_at DESC"
+                "SELECT id, name, description, created_at, device_count FROM projects ORDER BY created_at DESC"
             )]
 
-    def get_profile(self, profile_id: int) -> Optional[dict]:
+    def get_project(self, project_id: int) -> Optional[dict]:
         with self._conn() as conn:
-            r = conn.execute("SELECT * FROM profiles WHERE id=?", (profile_id,)).fetchone()
+            r = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
             return dict(r) if r else None
 
     def _snapshot_data(self, conn: sqlite3.Connection) -> tuple[str, int]:
@@ -370,52 +370,52 @@ class Database:
             )]
         return json.dumps({"folders": folders, "devices": devices}), len(devices)
 
-    def save_profile(self, name: str, description: str = "") -> dict:
+    def save_project(self, name: str, description: str = "") -> dict:
         with self._conn() as conn:
             data, count = self._snapshot_data(conn)
             cur = conn.execute(
-                "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
+                "INSERT INTO projects (name, description, device_count, data) VALUES (?,?,?,?)",
                 (name, description, count, data),
             )
             conn.commit()
             return dict(conn.execute(
-                "SELECT id, name, description, created_at, device_count FROM profiles WHERE id=?",
+                "SELECT id, name, description, created_at, device_count FROM projects WHERE id=?",
                 (cur.lastrowid,),
             ).fetchone())
 
-    def update_profile(self, profile_id: int, name: str, description: str) -> bool:
+    def update_project(self, project_id: int, name: str, description: str) -> bool:
         with self._conn() as conn:
             data, count = self._snapshot_data(conn)
             cur = conn.execute(
-                "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
-                (name, description, count, data, profile_id),
+                "UPDATE projects SET name=?, description=?, device_count=?, data=? WHERE id=?",
+                (name, description, count, data, project_id),
             )
             conn.commit()
             return cur.rowcount > 0
 
-    def delete_profile(self, profile_id: int) -> bool:
+    def delete_project(self, project_id: int) -> bool:
         with self._conn() as conn:
-            cur = conn.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
+            cur = conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
             conn.commit()
             return cur.rowcount > 0
 
-    def import_profile(self, name: str, description: str, data: dict) -> dict:
+    def import_project(self, name: str, description: str, data: dict) -> dict:
         import json
         device_count = len(data.get("devices", []))
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
+                "INSERT INTO projects (name, description, device_count, data) VALUES (?,?,?,?)",
                 (name, description, device_count, json.dumps(data)),
             )
             conn.commit()
             return dict(conn.execute(
-                "SELECT id, name, description, created_at, device_count FROM profiles WHERE id=?",
+                "SELECT id, name, description, created_at, device_count FROM projects WHERE id=?",
                 (cur.lastrowid,),
             ).fetchone())
 
     def replace_live_state(self, data: dict) -> None:
-        """Destructively replace all folders/devices/tags with a profile's
-        snapshot. A profile saved before folders existed has no "folders" key
+        """Destructively replace all folders/devices/tags with a project's
+        snapshot. A project saved before folders existed has no "folders" key
         at all — defaults to an empty list, so every device lands at root
         exactly as it did before this feature existed."""
         with self._conn() as conn:

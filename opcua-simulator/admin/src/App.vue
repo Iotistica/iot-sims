@@ -5,7 +5,7 @@ import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import FolderDrawer from './components/FolderDrawer.vue'
 import TagDrawer from './components/TagDrawer.vue'
-import ProfilesDrawer from './components/ProfilesDrawer.vue'
+import ProjectsDrawer from './components/ProjectsDrawer.vue'
 import NodeSetImportModal from './components/NodeSetImportModal.vue'
 import TemplatePickerModal from './components/TemplatePickerModal.vue'
 import SaveTemplateModal from './components/SaveTemplateModal.vue'
@@ -41,7 +41,7 @@ const folderDrawerOpen  = ref(false)
 const editingFolder     = ref<Folder | null>(null)
 const tagDrawerOpen     = ref(false)
 const editingTag        = ref<Tag | null>(null)
-const profilesDrawerOpen   = ref(false)
+const projectsDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
 const saveTemplateOpen     = ref(false)
 const usersDrawerOpen      = ref(false)
@@ -49,8 +49,8 @@ const nodeSetImportOpen    = ref(false)
 
 // Active profile state
 const activeProfileId   = ref<number | null>(null)
-const activeProfileName = ref<string | null>(null)
-const activeProfileDesc = ref<string>('')
+const activeProjectName = ref<string | null>(null)
+const activeProjectDesc = ref<string>('')
 
 // Save-profile modal
 const saveModalOpen    = ref(false)
@@ -265,11 +265,11 @@ function deleteDevice(d: Device) {
   })
 }
 
-// Profile actions
-function newProfile() {
+// Project actions
+function newProject() {
   Modal.confirm({
-    title: 'Start a new profile?',
-    content: 'Save the current setup as a profile first if you want to keep it.',
+    title: 'Start a new project?',
+    content: 'Save the current setup as a project first if you want to keep it.',
     okText: 'Start Fresh',
     okType: 'danger',
     async onOk() {
@@ -287,8 +287,8 @@ function newProfile() {
       selectedDevice.value = null
       tags.value = []
       activeProfileId.value = null
-      activeProfileName.value = null
-      activeProfileDesc.value = ''
+      activeProjectName.value = null
+      activeProjectDesc.value = ''
       await loadDevices()
       await loadFolders()
       await loadHealth()
@@ -298,8 +298,8 @@ function newProfile() {
 }
 
 function openSaveAs() {
-  saveModalName.value = activeProfileName.value ? `${activeProfileName.value} (copy)` : ''
-  saveModalDesc.value = activeProfileDesc.value
+  saveModalName.value = activeProjectName.value ? `${activeProjectName.value} (copy)` : ''
+  saveModalDesc.value = activeProjectDesc.value
   saveModalOpen.value = true
 }
 
@@ -307,12 +307,12 @@ function openSave() {
   if (activeProfileId.value !== null) {
     // Overwrite existing profile directly — no dialog
     Modal.confirm({
-      title: `Save to "${activeProfileName.value}"?`,
+      title: `Save to "${activeProjectName.value}"?`,
       okText: 'Save',
       async onOk() {
         try {
-          await api.profiles.update(activeProfileId.value!, activeProfileName.value!, activeProfileDesc.value)
-          message.success(`"${activeProfileName.value}" saved`)
+          await api.projects.update(activeProfileId.value!, activeProjectName.value!, activeProjectDesc.value)
+          message.success(`"${activeProjectName.value}" saved`)
         } catch (e: unknown) {
           message.error((e as Error).message ?? 'Failed to save')
         }
@@ -329,10 +329,10 @@ async function doSave() {
   if (!saveModalName.value.trim()) return
   saveModalLoading.value = true
   try {
-    const profile = await api.profiles.save(saveModalName.value.trim(), saveModalDesc.value.trim())
+    const profile = await api.projects.save(saveModalName.value.trim(), saveModalDesc.value.trim())
     activeProfileId.value = profile.id
-    activeProfileName.value = profile.name
-    activeProfileDesc.value = profile.description
+    activeProjectName.value = profile.name
+    activeProjectDesc.value = profile.description
     saveModalOpen.value = false
     message.success(`"${profile.name}" saved`)
   } catch (e: unknown) {
@@ -342,10 +342,10 @@ async function doSave() {
   }
 }
 
-async function onProfileLoaded(id: number, name: string, desc: string) {
+async function onProjectLoaded(id: number, name: string, desc: string) {
   activeProfileId.value = id
-  activeProfileName.value = name
-  activeProfileDesc.value = desc
+  activeProjectName.value = name
+  activeProjectDesc.value = desc
   await loadDevices()
   selectedDevice.value = null
   tags.value = []
@@ -617,14 +617,14 @@ onUnmounted(() => {
         </div>
 
         <div style="flex:1" />
-        <a-tag v-if="activeProfileName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProfileName }}</a-tag>
-        <a-button size="small" @click="newProfile">
+        <a-tag v-if="activeProjectName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProjectName }}</a-tag>
+        <a-button size="small" @click="newProject">
           <template #icon><FileAddOutlined /></template>
-          New
+          New Project
         </a-button>
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
         <a-button v-if="activeProfileId !== null" size="small" @click="openSaveAs">Save As</a-button>
-        <a-button size="small" @click="profilesDrawerOpen = true">Open</a-button>
+        <a-button size="small" @click="projectsDrawerOpen = true">Open project</a-button>
         <a-button size="small" @click="nodeSetImportOpen = true">
           <template #icon><CloudUploadOutlined /></template>
           Import NodeSet
@@ -838,10 +838,10 @@ onUnmounted(() => {
       @saved="onTagSaved"
     />
 
-    <!-- Profiles drawer -->
-    <ProfilesDrawer
-      v-model:open="profilesDrawerOpen"
-      @loaded="onProfileLoaded"
+    <!-- Projects drawer -->
+    <ProjectsDrawer
+      v-model:open="projectsDrawerOpen"
+      @loaded="onProjectLoaded"
     />
 
     <!-- Users drawer -->

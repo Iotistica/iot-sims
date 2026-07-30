@@ -55,7 +55,7 @@ from lib.db import Database, is_effectively_enabled, user_from_token
 from lib.nodes import NodeManager
 from lib.opcua_security import SimUserManager, ensure_opcua_certificate, parse_security_policies
 from lib.tls import ensure_admin_tls_certificate
-from lib import routes_analytics, routes_auth, routes_devices, routes_folders, routes_nodesets, routes_profiles
+from lib import routes_analytics, routes_auth, routes_devices, routes_folders, routes_nodesets, routes_projects
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("opcua-sim")
@@ -712,7 +712,7 @@ async def ws_endpoint(websocket: WebSocket):
 api.include_router(routes_auth.router)
 api.include_router(routes_devices.router)
 api.include_router(routes_folders.router)
-api.include_router(routes_profiles.router)
+api.include_router(routes_projects.router)
 api.include_router(routes_nodesets.router)
 api.include_router(routes_analytics.router)
 
