@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-26",
+  "updated": "2026-07-31",
   "source": "BACnet International BTL Database",
   "url": "https://www.bacnetinternational.net/btl/",
   "vendors": [
@@ -233,7 +233,7 @@
           "name": "ADF XTEC",
           "type": "B-BC",
           "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/btl/listings/adf technologies sdn bhd/BTL_Listing_30362_ADFTechnol_XTEC-X1.pdf"
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/adf technologies sdn bhd/BTL_Listing_31612_ADFTechnologies_ADFXTEC.pdf"
         },
         {
           "name": "ADFvision",
@@ -1435,6 +1435,12 @@
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/carrier corporation/BTL_Listing_30643_Carrier_TB.pdf"
+        },
+        {
+          "name": "Connect™ ProF Wifi Thermostat",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/carrier corporation/BTL_Listing_31611_Carrier_ConnectProFWifi.pdf"
         },
         {
           "name": "SmartView",
@@ -3494,6 +3500,12 @@
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/johnson controls inc./BTL_Listing_30435_JohnsonCon_DR556.pdf"
+        },
+        {
+          "name": "EasyIO Neo Series Ethernet Communication Module",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/johnson controls inc./BTL_Listing_31616_JohnsonControls_EasyIONeo-CM-ETH.pdf"
         },
         {
           "name": "EasyIO Neo Series Serial Port Communication Module",
@@ -5638,6 +5650,12 @@
           "pics_url": "https://www.bacnetinternational.net/btl/listings/schneider electric/BTL_Listing_24359_Schneider_PM5500.pdf"
         },
         {
+          "name": "PowerLogic™ Intuitive PM7000 Series Power and Energy Meter",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/schneider electric/BTL_Listing_31615_SchneiderElectric_PowerLogicPM7000.pdf"
+        },
+        {
           "name": "SE8000 Series",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
@@ -7458,6 +7476,12 @@
           "type": "B-AAC",
           "typeLabel": "Advanced Application Controller",
           "pics_url": "https://www.bacnetinternational.net/btl/listings/isma controlli s.p.a./BTL_Listing_30607_GlobalControl5_iSMABAAC20.pdf"
+        },
+        {
+          "name": "iSMA-B-AAC20 series",
+          "type": "B-AAC",
+          "typeLabel": "Advanced Application Controller",
+          "pics_url": "https://www.bacnetinternational.net/btl/listings/isma controlli s.p.a./BTL_Listing_31614_iSMACONTROLLI_iSMABAAC20.pdf"
         },
         {
           "name": "iSMA-B-FCU Series",
