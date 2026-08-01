@@ -12,6 +12,7 @@ const props = defineProps<{
   meta: Meta
   draftMode?: boolean
   draftObject?: Record<string, any> | null
+  existingObjects?: { object_type: string; object_instance: number }[]
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
@@ -46,6 +47,13 @@ const params = ref<any>({ value: 0 })
 
 // ── Intrinsic Reporting (alarm) config — editing only, needs a real object id ──
 
+// Instance numbers only need to be unique per (device, object_type) — matches
+// the DB's UNIQUE(device_id, object_type, object_instance) constraint (GH #20).
+// Suggest the next one after the highest existing instance of that same type.
+function nextInstanceFor(type: string): number {
+  const instances = (props.existingObjects ?? []).filter(o => o.object_type === type).map(o => o.object_instance)
+  return instances.length ? Math.max(...instances) + 1 : 0
+}
 const isAnalog = computed(() => form.object_type.startsWith('analog'))
 const isBinary = computed(() => form.object_type.startsWith('binary'))
 const isMultistate = computed(() => form.object_type.startsWith('multi-state'))
@@ -229,6 +237,13 @@ watch(() => form.behavior, (b) => {
   params.value = { ...(DEFAULT_PARAMS[b] ?? { value: 0 }) }
 })
 
+// Re-suggest the next free instance when the type changes while adding a new
+// object. Never touch it while editing an existing object (GH #20).
+watch(() => form.object_type, (type) => {
+  if (skipBehaviorReset || props.object || (props.draftMode && props.draftObject)) return
+  form.object_instance = nextInstanceFor(type)
+})
+
 // Watch both open and object so the form reinitialises whenever either changes —
 // this handles the case where the user clicks Edit on a second object while the
 // drawer is already open (open stays true, object prop changes).
@@ -253,9 +268,10 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
       params.value = { ...(typeof raw === 'string' ? JSON.parse(raw) : raw) }
     } catch { params.value = { value: 0 } }
   } else {
+    const type = props.meta.object_types[0] ?? 'analog-input'
     Object.assign(form, {
-      object_type: props.meta.object_types[0] ?? 'analog-input',
-      object_instance: 1, name: '', units: 'no-units', behavior: 'constant', enabled: true,
+      object_type: type,
+      object_instance: nextInstanceFor(type), name: '', units: 'no-units', behavior: 'constant', enabled: true,
       number_of_states: 2, reliability: 'no-fault-detected', polarity: 'normal',
     })
     params.value = { value: 0 }
@@ -317,7 +333,7 @@ async function save() {
           </a-form-item>
         </a-col>
         <a-col :span="10">
-          <a-form-item label="Instance" required>
+          <a-form-item label="Object Instance" required>
             <a-input-number v-model:value="form.object_instance" :min="0" style="width:100%" />
           </a-form-item>
         </a-col>

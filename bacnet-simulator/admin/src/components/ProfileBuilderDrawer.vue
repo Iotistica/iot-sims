@@ -610,6 +610,7 @@ const TYPE_COLORS: Record<string, string> = {
     :draft-mode="true"
     :draft-object="editingObject"
     :meta="meta"
+    :existing-objects="selectedDevice?.objects ?? []"
     @draft-saved="onObjectDraftSaved"
   />
 </template>

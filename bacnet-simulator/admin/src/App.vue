@@ -856,6 +856,7 @@ onUnmounted(() => {
       :object="editingObject"
       :device-id="selectedDevice?.id"
       :meta="meta"
+      :existing-objects="objects"
       @saved="onObjectSaved"
     />
 

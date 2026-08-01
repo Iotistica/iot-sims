@@ -2374,7 +2374,14 @@ class SimEngine:
                 if not obj_row["enabled"]:
                     continue
                 bacnet_obj, behavior = self._create_object(obj_row, slot, dev["name"])
-                self.app.add_object(bacnet_obj)
+                try:
+                    self.app.add_object(bacnet_obj)
+                except RuntimeError:
+                    log.exception(
+                        "Failed to add object %r on device %r (name/identifier collision?) — skipping",
+                        obj_row["name"], dev["name"],
+                    )
+                    continue
                 self._objects[obj_row["id"]] = (bacnet_obj, behavior)
                 bacnet_ids.append(bacnet_obj.objectIdentifier)
 
@@ -2414,28 +2421,31 @@ class SimEngine:
                 log_buffer = SequenceOf(LogRecord)(
                     [_build_log_record(r, monitored_objid[0]) for r in records]
                 )
-                tl_bacnet_obj = LocalTrendLogObject(
-                    objectIdentifier=("trend-log", slot * 1000 + tl_idx + 1),
-                    objectName=f"{dev['name']}.{tl['name']}",
-                    description=tl.get("description", ""),
-                    enable=Boolean(bool(tl["enabled"])),
-                    stopWhenFull=Boolean(bool(tl["stop_when_full"])),
-                    bufferSize=Unsigned(tl["buffer_size"]),
-                    logBuffer=log_buffer,
-                    recordCount=Unsigned(tl["record_count"]),
-                    totalRecordCount=Unsigned(tl["total_record_count"]),
-                    loggingType=LoggingType(tl["logging_type"]),
-                    statusFlags=[0, 0, 0, 0],
-                    reliability=Reliability("no-fault-detected"),
-                    logDeviceObjectProperty=DeviceObjectPropertyReference(
-                        objectIdentifier=monitored_objid,
-                        propertyIdentifier="present-value",
-                    ),
-                    logInterval=Unsigned(tl.get("log_interval") or 0),
-                )
-                self.app.add_object(tl_bacnet_obj)
-                self._trend_log_objects[tl["id"]] = tl_bacnet_obj
-                bacnet_ids.append(tl_bacnet_obj.objectIdentifier)
+                try:
+                    tl_bacnet_obj = LocalTrendLogObject(
+                        objectIdentifier=("trend-log", slot * 1000 + tl_idx + 1),
+                        objectName=f"{dev['name']}.{tl['name']}",
+                        description=tl.get("description", ""),
+                        enable=Boolean(bool(tl["enabled"])),
+                        stopWhenFull=Boolean(bool(tl["stop_when_full"])),
+                        bufferSize=Unsigned(tl["buffer_size"]),
+                        logBuffer=log_buffer,
+                        recordCount=Unsigned(tl["record_count"]),
+                        totalRecordCount=Unsigned(tl["total_record_count"]),
+                        loggingType=LoggingType(tl["logging_type"]),
+                        statusFlags=[0, 0, 0, 0],
+                        reliability=Reliability("no-fault-detected"),
+                        logDeviceObjectProperty=DeviceObjectPropertyReference(
+                            objectIdentifier=monitored_objid,
+                            propertyIdentifier="present-value",
+                        ),
+                        logInterval=Unsigned(tl.get("log_interval") or 0),
+                    )
+                    self.app.add_object(tl_bacnet_obj)
+                    self._trend_log_objects[tl["id"]] = tl_bacnet_obj
+                    bacnet_ids.append(tl_bacnet_obj.objectIdentifier)
+                except Exception:
+                    log.exception("Failed to build trend log %r on device %r — skipping", tl["name"], dev["name"])
 
             schedules = await asyncio.to_thread(self.db.get_schedules, dev["id"])
             for sched_idx, sched in enumerate(schedules):
