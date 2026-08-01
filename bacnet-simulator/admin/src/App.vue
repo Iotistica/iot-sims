@@ -21,7 +21,8 @@ import CalendarDrawer from './components/CalendarDrawer.vue'
 import type { Device, SimObject, Meta, Health, HistoryPoint } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined } from '@ant-design/icons-vue'
+import { isDark, toggleDark, themeConfig } from './theme'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
 const activeView = ref<'devices' | 'analytics' | 'alarms'>('devices')
@@ -587,7 +588,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <a-config-provider :theme="{ token: { colorPrimary: '#1890ff', borderRadius: 4 } }">
+  <a-config-provider :theme="themeConfig">
     <LoginView v-if="!authToken" @authenticated="onAuthenticated" />
     <a-layout v-else style="height:100vh">
 
@@ -649,6 +650,11 @@ onUnmounted(() => {
           <span style="color:rgba(255,255,255,0.5);font-size:12px">
             <UserOutlined /> {{ currentUser?.username }}
           </span>
+          <a-tooltip :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
+            <a-button size="small" type="text" @click="toggleDark">
+              <template #icon><BulbOutlined :style="{ color: isDark ? '#faad14' : 'rgba(255,255,255,0.5)' }" /></template>
+            </a-button>
+          </a-tooltip>
           <a-tooltip title="Manage users">
             <a-button size="small" type="text" @click="usersDrawerOpen = true">
               <template #icon><TeamOutlined :style="{ color: 'rgba(255,255,255,0.5)' }" /></template>
@@ -667,35 +673,35 @@ onUnmounted(() => {
       <a-layout v-else>
 
         <!-- Sidebar: devices -->
-        <a-layout-sider :width="260" style="background:white;border-right:1px solid #e8e8e8;overflow:auto">
-          <div style="padding:10px 12px 10px 16px;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;justify-content:space-between">
-            <span style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.8px">Devices</span>
+        <a-layout-sider :width="260" style="background:var(--surface);border-right:1px solid var(--border);overflow:auto">
+          <div style="padding:10px 12px 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+            <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Devices</span>
             <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
           </div>
 
-          <div v-if="devices.length" style="padding:8px 12px;border-bottom:1px solid #e8e8e8">
+          <div v-if="devices.length" style="padding:8px 12px;border-bottom:1px solid var(--border)">
             <a-input
               v-model:value="deviceSearch"
               size="small"
               allow-clear
               placeholder="Search devices…"
             >
-              <template #prefix><SearchOutlined style="color:#bbb" /></template>
+              <template #prefix><SearchOutlined style="color:var(--text-placeholder)" /></template>
             </a-input>
           </div>
 
-          <div v-if="!devices.length" style="padding:24px 16px;color:#bbb;text-align:center;font-size:13px">
+          <div v-if="!devices.length" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
             No devices yet
           </div>
-          <div v-else-if="!filteredDevices.length" style="padding:24px 16px;color:#bbb;text-align:center;font-size:13px">
+          <div v-else-if="!filteredDevices.length" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
             No devices match "{{ deviceSearch }}"
           </div>
 
           <div
             v-for="d in filteredDevices" :key="d.id"
-            style="padding:10px 12px 10px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;border-bottom:1px solid #f5f5f5;transition:background .1s"
+            style="padding:10px 12px 10px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border-subtle);transition:background .1s"
             :style="{
-              background: selectedDevice?.id === d.id ? '#e6f7ff' : 'white',
+              background: selectedDevice?.id === d.id ? 'var(--selected-bg)' : 'var(--surface)',
               borderRight: selectedDevice?.id === d.id ? '3px solid #1890ff' : '3px solid transparent',
             }"
             @click="selectDevice(d)"
@@ -703,7 +709,7 @@ onUnmounted(() => {
             <a-badge :status="d.enabled ? 'success' : 'default'" />
             <div style="flex:1;min-width:0">
               <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.name }}</div>
-              <div style="font-size:11px;color:#aaa">ID {{ d.device_instance }}</div>
+              <div style="font-size:11px;color:var(--text-secondary)">ID {{ d.device_instance }}</div>
             </div>
             <a-space :size="2">
               <a-button type="text" size="small" title="Edit" @click.stop="openEditDevice(d)">
@@ -756,15 +762,15 @@ onUnmounted(() => {
         <div style="flex:1;overflow:auto;padding:20px">
 
           <div v-if="!selectedDevice" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px">
-            <ApiOutlined style="font-size:48px;color:#d9d9d9" />
-            <span style="font-size:15px;color:#bbb">Select a device to manage its objects</span>
+            <ApiOutlined style="font-size:48px;color:var(--icon-disabled)" />
+            <span style="font-size:15px;color:var(--text-placeholder)">Select a device to manage its objects</span>
           </div>
 
           <template v-else>
             <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">
               <div>
                 <div style="font-size:18px;font-weight:600">{{ selectedDevice.name }}</div>
-                <div style="font-size:12px;color:#aaa;margin-top:3px">
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
                   Device {{ selectedDevice.device_instance }}
                   <template v-if="selectedDevice.description"> — {{ selectedDevice.description }}</template>
                   <template v-else> — {{ selectedDevice.model_name }}</template>
@@ -793,10 +799,10 @@ onUnmounted(() => {
                   <a-tag :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
                 </template>
                 <template v-else-if="column.key === 'units'">
-                  <span style="color:#aaa;font-size:12px">{{ (record as SimObject).units === 'no-units' ? '—' : (record as SimObject).units }}</span>
+                  <span style="color:var(--text-secondary);font-size:12px">{{ (record as SimObject).units === 'no-units' ? '—' : (record as SimObject).units }}</span>
                 </template>
                 <template v-else-if="column.key === 'value'">
-                  <span :style="{ fontFamily:'monospace', color: hasLive((record as SimObject).id) ? '#1890ff' : '#ccc' }">
+                  <span :style="{ fontFamily:'monospace', color: hasLive((record as SimObject).id) ? '#1890ff' : 'var(--text-disabled)' }">
                     {{ fmtVal(record as SimObject) }}
                   </span>
                 </template>
@@ -951,16 +957,16 @@ onUnmounted(() => {
       <template v-else-if="histObj">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
           <a-tag :color="BEHAVIOR_COLOR[histObj.behavior]">{{ histObj.behavior }}</a-tag>
-          <span style="font-size:12px;color:#aaa">{{ histObj.units === 'no-units' ? '' : histObj.units }}</span>
-          <span style="font-size:12px;color:#bbb;margin-left:auto">{{ histData.length }} samples</span>
+          <span style="font-size:12px;color:var(--text-secondary)">{{ histObj.units === 'no-units' ? '' : histObj.units }}</span>
+          <span style="font-size:12px;color:var(--text-placeholder);margin-left:auto">{{ histData.length }} samples</span>
         </div>
 
-        <div v-if="histData.length < 2" style="text-align:center;padding:40px 0;color:#bbb;font-size:13px">
+        <div v-if="histData.length < 2" style="text-align:center;padding:40px 0;color:var(--text-placeholder);font-size:13px">
           Not enough data yet — check back after a few ticks (5 s each)
         </div>
         <template v-else>
           <!-- Chart -->
-          <div style="border:1px solid #f0f0f0;border-radius:4px;background:#fafafa;overflow:hidden">
+          <div style="border:1px solid var(--border-subtle);border-radius:4px;background:var(--panel-bg);overflow:hidden">
             <svg :viewBox="`0 0 ${CHART_W} ${CHART_H}`" style="width:100%;display:block">
 
               <!-- Y-axis grid lines + labels -->
@@ -968,12 +974,12 @@ onUnmounted(() => {
                 <line
                   :x1="CHART_PAD.left" :y1="tick.y"
                   :x2="CHART_W - CHART_PAD.right" :y2="tick.y"
-                  stroke="#efefef" stroke-width="1"
+                  stroke="var(--border-subtle)" stroke-width="1"
                 />
                 <text
                   :x="CHART_PAD.left - 6" :y="tick.y"
                   text-anchor="end" dominant-baseline="middle"
-                  font-size="11" fill="#bbb" font-family="monospace"
+                  font-size="11" fill="var(--text-placeholder)" font-family="monospace"
                 >{{ tick.label }}</text>
               </template>
 
@@ -981,7 +987,7 @@ onUnmounted(() => {
               <line
                 :x1="CHART_PAD.left" :y1="CHART_H - CHART_PAD.bottom"
                 :x2="CHART_W - CHART_PAD.right" :y2="CHART_H - CHART_PAD.bottom"
-                stroke="#e0e0e0" stroke-width="1"
+                stroke="var(--border)" stroke-width="1"
               />
 
               <!-- X-axis ticks + labels -->
@@ -989,12 +995,12 @@ onUnmounted(() => {
                 <line
                   :x1="tick.x" :y1="CHART_H - CHART_PAD.bottom"
                   :x2="tick.x" :y2="CHART_H - CHART_PAD.bottom + 5"
-                  stroke="#d0d0d0" stroke-width="1"
+                  stroke="var(--text-disabled)" stroke-width="1"
                 />
                 <text
                   :x="tick.x" :y="CHART_H - CHART_PAD.bottom + 17"
                   text-anchor="middle"
-                  font-size="11" fill="#bbb" font-family="sans-serif"
+                  font-size="11" fill="var(--text-placeholder)" font-family="sans-serif"
                 >{{ tick.label }}</text>
               </template>
 
@@ -1016,13 +1022,13 @@ onUnmounted(() => {
           </div>
 
           <!-- Stats row -->
-          <div style="display:flex;gap:0;margin-top:14px;border:1px solid #f0f0f0;border-radius:4px;overflow:hidden">
+          <div style="display:flex;gap:0;margin-top:14px;border:1px solid var(--border-subtle);border-radius:4px;overflow:hidden">
             <div v-for="(stat, label) in { Min: histStats(histData).min, Max: histStats(histData).max, Avg: histStats(histData).avg, Current: histStats(histData).current }"
               :key="label"
-              style="flex:1;text-align:center;padding:10px 0;border-right:1px solid #f0f0f0"
+              style="flex:1;text-align:center;padding:10px 0;border-right:1px solid var(--border-subtle)"
               :style="label === 'Current' ? 'border-right:none' : ''"
             >
-              <div style="font-size:11px;color:#aaa;margin-bottom:2px">{{ label }}</div>
+              <div style="font-size:11px;color:var(--text-secondary);margin-bottom:2px">{{ label }}</div>
               <div style="font-size:14px;font-weight:600;font-family:monospace;color:#1890ff">
                 {{ histFmt(stat, histObj) }}
               </div>

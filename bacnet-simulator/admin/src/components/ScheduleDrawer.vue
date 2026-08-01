@@ -238,7 +238,7 @@ function objectLabel(o: SimObject): string {
     @close="emit('update:open', false)"
   >
     <template v-if="!formOpen">
-      <div style="font-size:12px;color:#888;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
         Writes scheduled values to one or more target properties on this device, using a weekly timetable
         plus date-based exceptions. Higher-priority operator writes (lower BACnet priority number) are
         never overridden.
@@ -252,20 +252,20 @@ function objectLabel(o: SimObject): string {
       </div>
 
       <a-spin :spinning="loading">
-        <div v-if="!list.length && !loading" style="text-align:center;color:#bbb;padding:40px 0;font-size:13px">
+        <div v-if="!list.length && !loading" style="text-align:center;color:var(--text-placeholder);padding:40px 0;font-size:13px">
           No schedules yet
         </div>
         <div
           v-for="sched in list" :key="sched.id"
-          style="border:1px solid #e8e8e8;border-radius:6px;padding:12px 14px;margin-bottom:10px"
+          style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px"
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
               <div style="font-weight:600;font-size:14px">{{ sched.name }}</div>
-              <div style="font-size:11px;color:#888;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 Controls <b>{{ targetLabel(sched) }}</b> · {{ sched.value_type }} · priority {{ sched.priority_for_writing }}
               </div>
-              <div style="font-size:11px;color:#aaa;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">
                 {{ sched.effective_start || sched.effective_end
                   ? `${sched.effective_start ?? 'always'} → ${sched.effective_end ?? 'always'}`
                   : 'always effective' }}
@@ -335,7 +335,7 @@ function objectLabel(o: SimObject): string {
           </a-col>
         </a-row>
 
-        <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px">
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px">
           Weekly Schedule
         </div>
         <a-collapse>
@@ -358,16 +358,16 @@ function objectLabel(o: SimObject): string {
           </a-collapse-panel>
         </a-collapse>
 
-        <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px">
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px">
           Exceptions
-          <span style="font-weight:400;color:#bbb;text-transform:none">
+          <span style="font-weight:400;color:var(--text-placeholder);text-transform:none">
             — override the weekly schedule on specific dates, or reuse a Calendar's date list (see the device's
             "Calendars" menu entry) across multiple schedules
           </span>
         </div>
         <div
           v-for="(exc, ei) in form.exceptions" :key="ei"
-          style="background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:10px;margin-bottom:10px"
+          style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px"
         >
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
             <a-select v-model:value="(exc.period as any).type" style="width:150px">

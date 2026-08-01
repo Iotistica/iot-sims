@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { theme } from 'ant-design-vue'
+import { isDark } from '../theme'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -17,7 +17,6 @@ import { Line, Bar, Doughnut } from 'vue-chartjs'
 import {
   ReloadOutlined,
   DownloadOutlined,
-  BulbOutlined,
   WifiOutlined,
   DisconnectOutlined,
 } from '@ant-design/icons-vue'
@@ -165,14 +164,6 @@ const overviewOfflineDevices = computed(() =>
 
 const filteredHistory = computed(() => history.value.slice(-timeWindowSec.value))
 
-// ─── Dark mode (scoped to this component only) ─────────────────────────────
-
-const darkMode = ref(false)
-const dashboardTheme = computed(() => ({
-  algorithm: darkMode.value ? theme.darkAlgorithm : theme.defaultAlgorithm,
-  token: { colorPrimary: '#1890ff', borderRadius: 4 },
-}))
-
 // ─── Export ─────────────────────────────────────────────────────────────────
 
 const exporting = ref(false)
@@ -188,8 +179,8 @@ async function doExport(format: 'csv' | 'json') {
 // ─── Chart helpers ──────────────────────────────────────────────────────────
 
 const chartOptionsBase = computed(() => {
-  const textColor = darkMode.value ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.65)'
-  const gridColor = darkMode.value ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)'
+  const textColor = isDark.value ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.65)'
+  const gridColor = isDark.value ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)'
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -350,8 +341,7 @@ const discoveryColumns = [
 </script>
 
 <template>
-  <a-config-provider :theme="dashboardTheme">
-    <div class="analytics-root" :class="{ dark: darkMode }">
+  <div class="analytics-root" :class="{ dark: isDark }">
       <!-- Toolbar -->
       <div class="toolbar">
         <a-space wrap>
@@ -388,10 +378,6 @@ const discoveryColumns = [
           <a-button size="small" :loading="exporting" @click="doExport('json')">
             <template #icon><DownloadOutlined /></template>
             JSON
-          </a-button>
-          <a-button size="small" :type="darkMode ? 'primary' : 'default'" @click="darkMode = !darkMode">
-            <template #icon><BulbOutlined /></template>
-            Dark mode
           </a-button>
         </a-space>
       </div>
@@ -545,8 +531,7 @@ const discoveryColumns = [
           </a-card>
         </section>
       </div>
-    </div>
-  </a-config-provider>
+  </div>
 </template>
 
 <style scoped>

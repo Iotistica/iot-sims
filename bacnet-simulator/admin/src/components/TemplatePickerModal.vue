@@ -297,15 +297,15 @@ async function apply() {
 
     <!-- User-saved templates -->
     <template v-if="userTemplates.length">
-      <div style="font-size:11px;font-weight:700;color:#8c8c8c;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">My Templates</div>
+      <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">My Templates</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
         <div
           v-for="tpl in userTemplates"
           :key="tpl.key"
           style="border:2px solid;border-radius:8px;padding:12px 14px;cursor:pointer;transition:all .15s;position:relative"
           :style="{
-            borderColor: selected === tpl.key ? '#1890ff' : '#e8e8e8',
-            background: selected === tpl.key ? '#e6f7ff' : 'white',
+            borderColor: selected === tpl.key ? '#1890ff' : 'var(--border)',
+            background: selected === tpl.key ? 'var(--selected-bg)' : 'var(--surface)',
           }"
           @click="selectTemplate(tpl.key)"
         >
@@ -322,18 +322,18 @@ async function apply() {
           <FolderOutlined
             :style="{
               fontSize: '22px',
-              color: selected === tpl.key ? '#1890ff' : '#8c8c8c',
+              color: selected === tpl.key ? '#1890ff' : 'var(--text-muted)',
               marginBottom: '6px',
               display: 'block',
             }"
           />
           <div style="font-weight:600;font-size:13px;margin-bottom:3px;padding-right:20px">{{ tpl.label }}</div>
-          <div style="font-size:11px;color:#888;line-height:1.4">{{ tpl.desc || 'Custom template' }}</div>
-          <div style="margin-top:6px;font-size:11px;color:#aaa">{{ tpl.objects.length }} objects · {{ tpl.createdAt }}</div>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.4">{{ tpl.desc || 'Custom template' }}</div>
+          <div style="margin-top:6px;font-size:11px;color:var(--text-secondary)">{{ tpl.objects.length }} objects · {{ tpl.createdAt }}</div>
         </div>
       </div>
       <a-divider style="margin:0 0 14px" />
-      <div style="font-size:11px;font-weight:700;color:#8c8c8c;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">Built-in Templates</div>
+      <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px">Built-in Templates</div>
     </template>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
@@ -342,8 +342,8 @@ async function apply() {
         :key="tpl.key"
         style="border:2px solid;border-radius:8px;padding:12px 14px;cursor:pointer;transition:all .15s;position:relative"
         :style="{
-          borderColor: selected === tpl.key ? '#1890ff' : suggestedKey === tpl.key ? '#91caff' : '#e8e8e8',
-          background: selected === tpl.key ? '#e6f7ff' : 'white',
+          borderColor: selected === tpl.key ? '#1890ff' : suggestedKey === tpl.key ? '#91caff' : 'var(--border)',
+          background: selected === tpl.key ? 'var(--selected-bg)' : 'var(--surface)',
         }"
         @click="selectTemplate(tpl.key)"
       >
@@ -356,14 +356,14 @@ async function apply() {
           :is="tpl.icon"
           :style="{
             fontSize: '22px',
-            color: selected === tpl.key ? '#1890ff' : suggestedKey === tpl.key ? '#4096ff' : '#8c8c8c',
+            color: selected === tpl.key ? '#1890ff' : suggestedKey === tpl.key ? '#4096ff' : 'var(--text-muted)',
             marginBottom: '6px',
             display: 'block',
           }"
         />
         <div style="font-weight:600;font-size:13px;margin-bottom:3px">{{ tpl.label }}</div>
-        <div style="font-size:11px;color:#888;line-height:1.4">{{ tpl.desc }}</div>
-        <div style="margin-top:6px;font-size:11px;color:#aaa">{{ tpl.objects.length }} objects</div>
+        <div style="font-size:11px;color:var(--text-muted);line-height:1.4">{{ tpl.desc }}</div>
+        <div style="margin-top:6px;font-size:11px;color:var(--text-secondary)">{{ tpl.objects.length }} objects</div>
       </div>
     </div>
 

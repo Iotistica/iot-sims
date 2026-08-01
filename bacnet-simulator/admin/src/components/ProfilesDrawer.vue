@@ -100,21 +100,21 @@ watch(() => props.open, (isOpen) => {
     </template>
 
     <a-spin :spinning="loading">
-      <div v-if="!profiles.length && !loading" style="text-align:center;color:#bbb;padding:60px 0;font-size:14px">
+      <div v-if="!profiles.length && !loading" style="text-align:center;color:var(--text-placeholder);padding:60px 0;font-size:14px">
         No profiles saved yet
       </div>
       <div
         v-for="p in profiles"
         :key="p.id"
-        style="border:1px solid #e8e8e8;border-radius:6px;padding:12px 14px;margin-bottom:10px;background:white"
+        style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px;background:var(--surface)"
       >
         <div style="display:flex;align-items:flex-start;gap:8px">
           <div style="flex:1;min-width:0">
             <div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
               {{ p.name }}
             </div>
-            <div v-if="p.description" style="font-size:12px;color:#888;margin-top:2px">{{ p.description }}</div>
-            <div style="font-size:11px;color:#bbb;margin-top:4px">
+            <div v-if="p.description" style="font-size:12px;color:var(--text-muted);margin-top:2px">{{ p.description }}</div>
+            <div style="font-size:11px;color:var(--text-placeholder);margin-top:4px">
               {{ p.device_count }} device{{ p.device_count !== 1 ? 's' : '' }} · {{ fmtDate(p.created_at) }}
             </div>
           </div>

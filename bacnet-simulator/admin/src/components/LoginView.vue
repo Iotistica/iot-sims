@@ -56,13 +56,13 @@ async function submit() {
 </script>
 
 <template>
-  <div style="height:100vh;display:flex;align-items:center;justify-content:center;background:#f5f5f5">
-    <div style="width:340px;padding:32px;background:white;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08)">
+  <div style="height:100vh;display:flex;align-items:center;justify-content:center;background:var(--surface-alt)">
+    <div style="width:340px;padding:32px;background:var(--surface);border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08)">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px">
         <IotisticaLogo :size="28" />
         <div>
           <div style="font-size:15px;font-weight:600">Iotistica</div>
-          <div style="font-size:12px;color:#999">BACnet Simulator</div>
+          <div style="font-size:12px;color:var(--text-muted)">BACnet Simulator</div>
         </div>
       </div>
 
@@ -72,7 +72,7 @@ async function submit() {
         <div style="font-size:16px;font-weight:600;margin-bottom:4px">
           {{ mode === 'setup' ? 'Create the admin account' : 'Sign in' }}
         </div>
-        <div v-if="mode === 'setup'" style="font-size:12px;color:#999;margin-bottom:16px">
+        <div v-if="mode === 'setup'" style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
           No accounts exist yet — this account will be the first login for this simulator instance.
         </div>
         <div v-else style="margin-bottom:16px" />

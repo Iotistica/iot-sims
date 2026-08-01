@@ -212,7 +212,7 @@ async function loadRecords() {
     @close="emit('update:open', false)"
   >
     <template v-if="!formOpen">
-      <div style="font-size:12px;color:#888;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
         Records a monitored object's value over time into a circular buffer. Polled logging samples on
         an interval; triggered logging only records when you (or the API) request a sample.
       </div>
@@ -225,23 +225,23 @@ async function loadRecords() {
       </div>
 
       <a-spin :spinning="loading">
-        <div v-if="!list.length && !loading" style="text-align:center;color:#bbb;padding:40px 0;font-size:13px">
+        <div v-if="!list.length && !loading" style="text-align:center;color:var(--text-placeholder);padding:40px 0;font-size:13px">
           No trend logs yet
         </div>
         <div
           v-for="tl in list" :key="tl.id"
-          style="border:1px solid #e8e8e8;border-radius:6px;padding:12px 14px;margin-bottom:10px"
+          style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px"
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
               <div style="font-weight:600;font-size:14px">{{ tl.name }}</div>
-              <div style="font-size:11px;color:#888;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 Monitors <b>{{ monitoredLabel(tl) }}</b> ·
                 {{ tl.logging_type === 'polled' ? `every ${tl.log_interval}s`
                    : tl.logging_type === 'cov' ? `on change (±${tl.cov_increment})`
                    : 'manual trigger' }}
               </div>
-              <div style="font-size:11px;color:#aaa;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">
                 {{ tl.record_count }}/{{ tl.buffer_size }} records
                 <span v-if="tl.stop_when_full && tl.record_count >= tl.buffer_size" style="color:#faad14">(full — logging stopped)</span>
                 · total {{ tl.total_record_count }} · {{ tl.enabled ? 'Enabled' : 'Disabled' }}
@@ -361,7 +361,7 @@ async function loadRecords() {
       :pagination="{ pageSize: 20 }"
     >
       <template #emptyText>
-        <div style="padding:24px;color:#bbb">No records yet</div>
+        <div style="padding:24px;color:var(--text-placeholder)">No records yet</div>
       </template>
     </a-table>
   </a-modal>

@@ -67,7 +67,7 @@ function save() {
           placeholder="Optional description"
         />
       </a-form-item>
-      <div style="font-size:12px;color:#8c8c8c">
+      <div style="font-size:12px;color:var(--text-muted)">
         {{ objects.length }} object{{ objects.length !== 1 ? 's' : '' }} will be saved
       </div>
     </a-form>

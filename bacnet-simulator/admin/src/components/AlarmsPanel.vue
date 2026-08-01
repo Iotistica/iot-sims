@@ -109,7 +109,7 @@ onUnmounted(() => {
           <a-tag :color="stateColor((record as AlarmLogEntry).to_state)">{{ (record as AlarmLogEntry).to_state }}</a-tag>
         </template>
         <template v-else-if="column.key === 'ack'">
-          <span v-if="!(record as AlarmLogEntry).ack_required" style="color:#bbb;font-size:12px">n/a</span>
+          <span v-if="!(record as AlarmLogEntry).ack_required" style="color:var(--text-placeholder);font-size:12px">n/a</span>
           <a-tag v-else-if="(record as AlarmLogEntry).acknowledged" color="default">
             Acked{{ (record as AlarmLogEntry).ack_by ? ` by ${(record as AlarmLogEntry).ack_by}` : '' }}
           </a-tag>
@@ -120,7 +120,7 @@ onUnmounted(() => {
         </template>
       </template>
       <template #emptyText>
-        <div style="padding:24px;color:#bbb">No alarms {{ unackedOnly ? '(unacknowledged)' : 'yet' }}</div>
+        <div style="padding:24px;color:var(--text-placeholder)">No alarms {{ unackedOnly ? '(unacknowledged)' : 'yet' }}</div>
       </template>
     </a-table>
   </div>

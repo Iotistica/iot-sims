@@ -158,7 +158,7 @@ function entrySummary(e: CalendarDateEntry): string {
     @close="emit('update:open', false)"
   >
     <template v-if="!formOpen">
-      <div style="font-size:12px;color:#888;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
         A device-scoped list of dates that a Schedule's exceptions can reference by name (calendarReference),
         instead of repeating the same dates inline in every schedule that needs them.
       </div>
@@ -168,17 +168,17 @@ function entrySummary(e: CalendarDateEntry): string {
       </a-button>
 
       <a-spin :spinning="loading">
-        <div v-if="!list.length && !loading" style="text-align:center;color:#bbb;padding:40px 0;font-size:13px">
+        <div v-if="!list.length && !loading" style="text-align:center;color:var(--text-placeholder);padding:40px 0;font-size:13px">
           No calendars yet
         </div>
         <div
           v-for="cal in list" :key="cal.id"
-          style="border:1px solid #e8e8e8;border-radius:6px;padding:12px 14px;margin-bottom:10px"
+          style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px"
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
               <div style="font-weight:600;font-size:14px">{{ cal.name }}</div>
-              <div style="font-size:11px;color:#888;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 {{ cal.date_list.length }} date{{ cal.date_list.length !== 1 ? 's' : '' }}
                 <span v-if="cal.date_list.length"> — {{ cal.date_list.slice(0, 3).map(entrySummary).join(', ') }}{{ cal.date_list.length > 3 ? ', …' : '' }}</span>
               </div>
@@ -206,12 +206,12 @@ function entrySummary(e: CalendarDateEntry): string {
           <a-input v-model:value="form.description" placeholder="Optional description" />
         </a-form-item>
 
-        <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px">
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px">
           Date List
         </div>
         <div
           v-for="(entry, i) in form.date_list" :key="i"
-          style="background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:10px;margin-bottom:8px"
+          style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px"
         >
           <div style="display:flex;gap:8px;align-items:center">
             <a-select v-model:value="(entry as any).type" style="width:140px">

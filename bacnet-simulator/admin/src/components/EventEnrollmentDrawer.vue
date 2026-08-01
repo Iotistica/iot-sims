@@ -196,7 +196,7 @@ function confirmDelete(ee: EventEnrollment) {
     @close="emit('update:open', false)"
   >
     <template v-if="!formOpen">
-      <div style="font-size:12px;color:#888;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
         Watches another point's value independently of that point's own alarm config — useful for a second
         threshold on the same point, or alarming on a point that has no intrinsic reporting of its own.
         Change of State monitors binary/multi-state points; Out of Range monitors analog points.
@@ -210,20 +210,20 @@ function confirmDelete(ee: EventEnrollment) {
       </div>
 
       <a-spin :spinning="loading">
-        <div v-if="!list.length && !loading" style="text-align:center;color:#bbb;padding:40px 0;font-size:13px">
+        <div v-if="!list.length && !loading" style="text-align:center;color:var(--text-placeholder);padding:40px 0;font-size:13px">
           No event enrollments yet
         </div>
         <div
           v-for="ee in list" :key="ee.id"
-          style="border:1px solid #e8e8e8;border-radius:6px;padding:12px 14px;margin-bottom:10px"
+          style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px"
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
               <div style="font-weight:600;font-size:14px">{{ ee.name }}</div>
-              <div style="font-size:11px;color:#888;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 Monitors <b>{{ monitoredLabel(ee) }}</b> · {{ ee.algorithm }}
               </div>
-              <div style="font-size:11px;color:#aaa;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">
                 {{ ee.enabled ? 'Enabled' : 'Disabled' }}
               </div>
             </div>

@@ -130,21 +130,21 @@ function confirmDelete(nc: NotificationClass) {
       </a-button>
 
       <a-spin :spinning="loading">
-        <div v-if="!list.length && !loading" style="text-align:center;color:#bbb;padding:40px 0;font-size:13px">
+        <div v-if="!list.length && !loading" style="text-align:center;color:var(--text-placeholder);padding:40px 0;font-size:13px">
           No notification classes yet — objects with alarming enabled won't route notifications until one exists.
         </div>
         <div
           v-for="nc in list" :key="nc.id"
-          style="border:1px solid #e8e8e8;border-radius:6px;padding:12px 14px;margin-bottom:10px"
+          style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px"
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
               <div style="font-weight:600;font-size:14px">{{ nc.name }}</div>
-              <div style="font-size:11px;color:#888;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 Priorities: {{ nc.priority_to_offnormal }} / {{ nc.priority_to_fault }} / {{ nc.priority_to_normal }}
                 (offnormal / fault / normal)
               </div>
-              <div style="font-size:11px;color:#aaa;margin-top:2px">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">
                 {{ nc.recipients.length }} recipient{{ nc.recipients.length !== 1 ? 's' : '' }}
               </div>
             </div>
@@ -167,7 +167,7 @@ function confirmDelete(nc: NotificationClass) {
           <a-input v-model:value="form.name" placeholder="e.g. Critical-Alarms" />
         </a-form-item>
 
-        <div style="font-size:11px;font-weight:600;color:#555;margin-bottom:6px">Priority (0-255, lower = more urgent)</div>
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px">Priority (0-255, lower = more urgent)</div>
         <a-row :gutter="8">
           <a-col :span="8">
             <a-form-item label="To Off-Normal">
@@ -190,13 +190,13 @@ function confirmDelete(nc: NotificationClass) {
           <a-checkbox-group v-model:value="form.ack_required_transitions" :options="TRANSITIONS" />
         </a-form-item>
 
-        <div style="font-size:11px;font-weight:600;color:#555;margin:12px 0 6px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin:12px 0 6px">
           Recipients
-          <span style="font-weight:400;color:#aaa">— network address to send Event Notifications to; recipients without an address are skipped on send but still visible in the Alarms log</span>
+          <span style="font-weight:400;color:var(--text-secondary)">— network address to send Event Notifications to; recipients without an address are skipped on send but still visible in the Alarms log</span>
         </div>
         <div
           v-for="(r, i) in form.recipients" :key="i"
-          style="display:flex;gap:8px;align-items:center;margin-bottom:8px;background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:8px"
+          style="display:flex;gap:8px;align-items:center;margin-bottom:8px;background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:8px"
         >
           <a-input v-model:value="r.address" placeholder="192.168.1.50:47808" style="flex:1" />
           <a-input-number v-model:value="r.process_identifier" :min="0" style="width:80px" title="Process ID" />

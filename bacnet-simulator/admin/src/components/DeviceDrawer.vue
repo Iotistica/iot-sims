@@ -255,7 +255,7 @@ async function save() {
 
       <a-collapse ghost style="margin-top:16px">
         <a-collapse-panel key="device-info" header="Device Info (advanced)">
-          <div style="font-size:11px;color:#888;margin-bottom:10px">
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
             Informational/cosmetic Device object properties some BACnet clients check — not enforced by the simulator itself.
           </div>
           <a-row :gutter="12">

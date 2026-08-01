@@ -359,7 +359,7 @@ async function save() {
       </a-form-item>
 
       <!-- Behavior params -->
-      <div style="background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:14px">
+      <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:14px">
         <!-- constant -->
         <a-form-item v-if="form.behavior === 'constant'" label="Value" style="margin-bottom:0">
           <a-input-number v-model:value="params.value" style="width:100%" :step="0.1" />
@@ -370,7 +370,7 @@ async function save() {
           <a-form-item label="Initial Value" style="margin-bottom:4px">
             <a-input-number v-model:value="params.value" style="width:100%" :step="0.1" />
           </a-form-item>
-          <div style="font-size:11px;color:#aaa">Can be overridden at runtime via "Set Value"</div>
+          <div style="font-size:11px;color:var(--text-secondary)">Can be overridden at runtime via "Set Value"</div>
         </template>
 
         <!-- sine -->
@@ -450,7 +450,7 @@ async function save() {
           <a-form-item label="Default value (before first block)" style="margin-bottom:10px">
             <a-input-number v-model:value="params.default" style="width:100%" :step="1" />
           </a-form-item>
-          <div style="font-size:11px;font-weight:600;color:#555;margin-bottom:6px">Time Blocks</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px">Time Blocks</div>
           <div
             v-for="(block, i) in params.blocks" :key="i"
             style="display:flex;gap:8px;align-items:center;margin-bottom:6px"
@@ -465,7 +465,7 @@ async function save() {
             <template #icon><PlusOutlined /></template>
             Add Time Block
           </a-button>
-          <div style="font-size:11px;color:#aaa;margin-top:6px">
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">
             Blocks fire at the given wall-clock time; value before the first block uses the default.
           </div>
         </template>
@@ -522,8 +522,8 @@ async function save() {
             </a-col>
           </a-row>
 
-          <div style="background:#f5f5f5;border-radius:4px;padding:10px;margin-bottom:10px">
-            <div style="font-size:11px;color:#888;margin-bottom:8px;font-weight:600">Base behavior params</div>
+          <div style="background:var(--surface-alt);border-radius:4px;padding:10px;margin-bottom:10px">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;font-weight:600">Base behavior params</div>
             <template v-if="params.base_behavior === 'constant'">
               <a-form-item label="Value" style="margin-bottom:0">
                 <a-input-number v-model:value="params.base_params.value" style="width:100%" :step="0.5" />
@@ -597,7 +597,7 @@ async function save() {
           <a-form-item v-if="params.fault_type !== 'spike'" label="Fault Duration (seconds)" style="margin-top:10px;margin-bottom:0">
             <a-input-number v-model:value="params.fault_duration_seconds" :min="1" :step="5" style="width:100%" />
           </a-form-item>
-          <div style="font-size:11px;color:#aaa;margin-top:6px">
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">
             spike = one bad reading; stuck = freeze at fault value; offline = drop to zero
           </div>
         </template>
@@ -629,11 +629,11 @@ async function save() {
       </a-form-item>
 
       <template v-if="showAlarmSection">
-        <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 10px">
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:20px 0 10px">
           Intrinsic Reporting (Alarms)
         </div>
         <a-spin :spinning="alarmCfgLoading">
-          <div style="background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:14px">
+          <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:14px">
             <a-form-item label="Enable alarming for this object" style="margin-bottom:12px">
               <a-switch v-model:checked="alarmCfg.enabled" />
             </a-form-item>
@@ -705,12 +705,12 @@ async function save() {
       </template>
 
       <template v-if="showPriorityArraySection">
-        <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 10px">
+        <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:20px 0 10px">
           Priority Array
         </div>
         <a-spin :spinning="paLoading">
-          <div style="background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:14px">
-            <div style="font-size:11px;color:#888;margin-bottom:10px">
+          <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:14px">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
               The real BACnet 16-slot priority array. The lowest-numbered non-null slot wins; the sim's own value
               always occupies priority 16 and is overwritten every tick — write a higher priority (1–15) here to
               simulate another client asserting control.
@@ -719,9 +719,9 @@ async function save() {
             <div v-if="priorityArray" style="max-height:260px;overflow:auto;margin-bottom:12px">
               <div
                 v-for="slot in 16" :key="slot"
-                style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #eee;font-size:12px"
+                style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle);font-size:12px"
               >
-                <span style="width:70px;color:#888">Priority {{ slot }}</span>
+                <span style="width:70px;color:var(--text-muted)">Priority {{ slot }}</span>
                 <span style="flex:1;font-family:monospace">
                   {{ priorityArray.priority_array[slot - 1] === null ? '—' : String(priorityArray.priority_array[slot - 1]) }}
                 </span>
@@ -736,9 +736,9 @@ async function save() {
                 </a-button>
               </div>
               <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">
-                <span style="width:70px;color:#888">Default</span>
+                <span style="width:70px;color:var(--text-muted)">Default</span>
                 <span style="flex:1;font-family:monospace">{{ priorityArray.relinquish_default }}</span>
-                <span style="font-size:11px;color:#bbb">used when all 16 slots are relinquished</span>
+                <span style="font-size:11px;color:var(--text-placeholder)">used when all 16 slots are relinquished</span>
               </div>
             </div>
 

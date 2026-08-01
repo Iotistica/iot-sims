@@ -1,0 +1,40 @@
+/* Shared dark/light palette for the admin app's own custom-styled chrome
+   (panel boxes, borders, muted text) — everything rendered by ant-design-vue
+   itself is handled separately by theme.ts's ConfigProvider algorithm.
+   Uses CSS custom properties so they keep resolving inside inline style=""
+   attributes and inside teleported Drawer/Modal content, both of which a
+   scoped .dark *class* on some in-page wrapper element would not reach. */
+
+:root {
+  --surface: #ffffff;
+  --surface-alt: #f5f5f5;
+  --panel-bg: #fafafa;
+  --border: #e8e8e8;
+  --border-subtle: #f0f0f0;
+  --text-primary: #222222;
+  --text-muted: #888888;
+  --text-secondary: #aaaaaa;
+  --text-placeholder: #bbbbbb;
+  --text-disabled: #cccccc;
+  --icon-disabled: #d9d9d9;
+  --selected-bg: #e6f7ff;
+}
+
+html.dark {
+  --surface: #1f1f1f;
+  --surface-alt: #262626;
+  --panel-bg: #1a1a1a;
+  --border: #303030;
+  --border-subtle: #303030;
+  --text-primary: rgba(255, 255, 255, 0.88);
+  --text-muted: rgba(255, 255, 255, 0.45);
+  --text-secondary: rgba(255, 255, 255, 0.4);
+  --text-placeholder: rgba(255, 255, 255, 0.3);
+  --text-disabled: rgba(255, 255, 255, 0.25);
+  --icon-disabled: rgba(255, 255, 255, 0.2);
+  --selected-bg: #111d2c;
+}
+
+html.dark body {
+  background: #141414;
+}

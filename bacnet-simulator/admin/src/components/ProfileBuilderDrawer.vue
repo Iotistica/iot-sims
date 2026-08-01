@@ -483,7 +483,7 @@ const TYPE_COLORS: Record<string, string> = {
             <span v-if="selectedDevice" class="panel-label" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">
               {{ selectedDevice.name }}
             </span>
-            <span v-else class="panel-label" style="color: #bbb; font-weight: 400">Select a device</span>
+            <span v-else class="panel-label" style="color: var(--text-placeholder); font-weight: 400">Select a device</span>
             <a-tag v-if="selectedDevice" size="small">{{ selectedDevice.objects.length }}</a-tag>
           </div>
 
@@ -503,7 +503,7 @@ const TYPE_COLORS: Record<string, string> = {
                   >
                     <div>
                       <div style="font-weight: 500">{{ tpl.label }}</div>
-                      <div style="font-size: 11px; color: #888">{{ tpl.desc }}</div>
+                      <div style="font-size: 11px; color: var(--text-muted)">{{ tpl.desc }}</div>
                     </div>
                   </a-menu-item>
                 </a-menu>
@@ -535,10 +535,10 @@ const TYPE_COLORS: Record<string, string> = {
                   </a-tag>
                 </template>
                 <template v-else-if="column.key === 'units'">
-                  <span style="font-size: 12px; color: #888">{{ record.units === 'no-units' ? '—' : record.units }}</span>
+                  <span style="font-size: 12px; color: var(--text-muted)">{{ record.units === 'no-units' ? '—' : record.units }}</span>
                 </template>
                 <template v-else-if="column.key === 'behavior'">
-                  <span style="font-size: 12px; color: #666">{{ record.behavior }}</span>
+                  <span style="font-size: 12px; color: var(--text-muted)">{{ record.behavior }}</span>
                 </template>
                 <template v-else-if="column.key === 'actions'">
                   <a-space :size="4">
@@ -556,14 +556,14 @@ const TYPE_COLORS: Record<string, string> = {
               </template>
 
               <template #emptyText>
-                <div style="padding: 32px 0; text-align: center; color: #bbb; font-size: 13px">
+                <div style="padding: 32px 0; text-align: center; color: var(--text-placeholder); font-size: 13px">
                   No objects — click <strong>Add Object</strong> or pick a <strong>Template</strong>
                 </div>
               </template>
             </a-table>
           </template>
 
-          <div v-else style="display: flex; align-items: center; justify-content: center; height: 200px; color: #bbb; font-size: 14px">
+          <div v-else style="display: flex; align-items: center; justify-content: center; height: 200px; color: var(--text-placeholder); font-size: 14px">
             Select a device on the left to add objects
           </div>
         </div>
@@ -573,7 +573,7 @@ const TYPE_COLORS: Record<string, string> = {
     <!-- ── Footer ───────────────────────────────────────────────────────────── -->
     <template #footer>
       <div style="display: flex; justify-content: space-between; align-items: center">
-        <span style="font-size: 12px; color: #888">
+        <span style="font-size: 12px; color: var(--text-muted)">
           {{ draftDevices.length }} device{{ draftDevices.length !== 1 ? 's' : '' }} ·
           {{ totalObjects }} object{{ totalObjects !== 1 ? 's' : '' }}
         </span>
@@ -619,8 +619,8 @@ const TYPE_COLORS: Record<string, string> = {
 .meta-bar {
   flex-shrink: 0;
   padding: 16px 24px;
-  border-bottom: 1px solid #e8e8e8;
-  background: #fafafa;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
   display: flex;
   align-items: flex-end;
 }
@@ -636,7 +636,7 @@ const TYPE_COLORS: Record<string, string> = {
 .device-panel {
   width: 230px;
   flex-shrink: 0;
-  border-right: 1px solid #e8e8e8;
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
 }
@@ -644,7 +644,7 @@ const TYPE_COLORS: Record<string, string> = {
 .panel-header {
   height: 44px;
   padding: 0 12px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -654,7 +654,7 @@ const TYPE_COLORS: Record<string, string> = {
 .panel-label {
   font-size: 12px;
   font-weight: 600;
-  color: #555;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -674,8 +674,8 @@ const TYPE_COLORS: Record<string, string> = {
   margin-bottom: 2px;
   transition: background 0.12s;
 }
-.device-item:hover { background: #f5f5f5; }
-.device-item--active { background: #e6f4ff; }
+.device-item:hover { background: var(--surface-alt); }
+.device-item--active { background: var(--selected-bg); }
 
 .device-item-body {
   flex: 1;
@@ -685,7 +685,7 @@ const TYPE_COLORS: Record<string, string> = {
 .device-name {
   font-size: 13px;
   font-weight: 500;
-  color: #222;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -693,7 +693,7 @@ const TYPE_COLORS: Record<string, string> = {
 
 .device-meta {
   font-size: 11px;
-  color: #aaa;
+  color: var(--text-secondary);
   margin-top: 1px;
 }
 
@@ -710,7 +710,7 @@ const TYPE_COLORS: Record<string, string> = {
 .device-footer {
   flex-shrink: 0;
   padding: 10px;
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* ── Object panel ──────────────────────────────────────────────────────────── */

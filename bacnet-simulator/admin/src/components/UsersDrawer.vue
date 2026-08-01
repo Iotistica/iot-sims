@@ -121,13 +121,13 @@ watch(() => props.open, (isOpen) => {
     </a-button>
 
     <a-spin :spinning="loading">
-      <div v-if="!users.length && !loading" style="text-align:center;color:#bbb;padding:60px 0;font-size:14px">
+      <div v-if="!users.length && !loading" style="text-align:center;color:var(--text-placeholder);padding:60px 0;font-size:14px">
         No users yet
       </div>
       <div
         v-for="u in users"
         :key="u.id"
-        style="border:1px solid #e8e8e8;border-radius:6px;padding:12px 14px;margin-bottom:10px;background:white"
+        style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px;background:var(--surface)"
       >
         <div style="display:flex;align-items:flex-start;gap:8px">
           <div style="flex:1;min-width:0">
@@ -135,7 +135,7 @@ watch(() => props.open, (isOpen) => {
               {{ u.username }}
               <a-tag v-if="currentUser?.id === u.id" color="blue" style="margin-left:4px;font-size:10px">you</a-tag>
             </div>
-            <div style="font-size:11px;color:#bbb;margin-top:4px">
+            <div style="font-size:11px;color:var(--text-placeholder);margin-top:4px">
               Created {{ fmtDate(u.created_at) }} · last login {{ fmtDate(u.last_login_at) }}
             </div>
           </div>
