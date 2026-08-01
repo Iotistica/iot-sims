@@ -37,6 +37,7 @@ import uvicorn
 import alarms
 import ede
 import bacnet_schedule
+import bacnet_calendar
 
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.analog import AnalogInputObject, AnalogOutputObject, AnalogValueObject
@@ -49,7 +50,9 @@ from bacpypes3.constructeddata import SequenceOf, Any as BACnetAny
 from bacpypes3.basetypes import (
     EngineeringUnits, BinaryPV, LoggingType, DeviceObjectPropertyReference,
     Reliability, LogRecord, LogRecordLogDatum, DateTime, StatusFlags,
+    PriorityValue, Segmentation, Polarity,
 )
+from bacpypes3.local.cmd import Commandable
 from bacpypes3.object import TrendLogObject as _TrendLogObjectSchema
 from bacpypes3.debugging import bacpypes_debugging, ModuleLogger
 from bacpypes3.errors import ExecutionError
@@ -88,7 +91,15 @@ VALID_OBJECT_TYPES = {
     "binary-input", "binary-output", "binary-value",
     "multi-state-input", "multi-state-output", "multi-state-value",
 }
+# Calendar (GH #18) is NOT part of this set — like Trend Log and Schedule, it
+# has its own DB table/CRUD/drawer rather than being shoehorned into the
+# generic objects table, since it has no units/behavior/number_of_states.
 MULTISTATE_TYPES = {"multi-state-input", "multi-state-output", "multi-state-value"}
+
+# Object types that are actually Commandable (real 16-slot priorityArray) in
+# this bacpypes3 version (GH #17) — note *-value objects are NOT Commandable
+# here despite being writable, so they have no priority array to expose.
+COMMANDABLE_TYPES = {"analog-output", "binary-output", "multi-state-output"}
 
 # Narrow, practical subset of BACnet's Reliability enum (GH #16) — enough to
 # exercise client-side fault handling without modeling every standard value.
@@ -96,6 +107,11 @@ VALID_RELIABILITY = {
     "no-fault-detected", "no-sensor", "over-range", "under-range",
     "open-loop", "shorted-loop", "unreliable-other", "multi-state-fault",
 }
+
+# Binary Input/Output Polarity (GH #19) — Binary Value has no such property
+# in bacpypes3's schema (matches real BACnet spec), so this only applies when
+# object_type is binary-input or binary-output.
+VALID_POLARITY = {"normal", "reverse"}
 
 VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault"}
 
@@ -158,7 +174,11 @@ class Database:
                     description TEXT NOT NULL DEFAULT '',
                     vendor_name TEXT NOT NULL DEFAULT 'Iotistica',
                     model_name TEXT NOT NULL DEFAULT 'BACnet Simulator',
-                    enabled INTEGER NOT NULL DEFAULT 1
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    firmware_revision TEXT NOT NULL DEFAULT 'N/A',
+                    protocol_revision INTEGER NOT NULL DEFAULT 22,
+                    max_apdu_length_accepted INTEGER NOT NULL DEFAULT 1024,
+                    segmentation_supported TEXT NOT NULL DEFAULT 'segmented-both'
                 );
 
                 CREATE TABLE IF NOT EXISTS objects (
@@ -174,6 +194,7 @@ class Database:
                     manual_value REAL,
                     number_of_states INTEGER NOT NULL DEFAULT 2,
                     reliability TEXT NOT NULL DEFAULT 'no-fault-detected',
+                    polarity TEXT NOT NULL DEFAULT 'normal',
                     UNIQUE(device_id, object_type, object_instance)
                 );
 
@@ -299,6 +320,15 @@ class Database:
                     object_id INTEGER NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
                     property_identifier TEXT NOT NULL DEFAULT 'present-value'
                 );
+
+                CREATE TABLE IF NOT EXISTS bacnet_calendars (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    date_list TEXT NOT NULL DEFAULT '[]',
+                    enabled INTEGER NOT NULL DEFAULT 1
+                );
             """)
             # Additive migration: number_of_states was added to the objects
             # table after it first shipped — backfill it on existing DBs
@@ -308,11 +338,24 @@ class Database:
                 conn.execute("ALTER TABLE objects ADD COLUMN number_of_states INTEGER NOT NULL DEFAULT 2")
             if "reliability" not in existing_cols:
                 conn.execute("ALTER TABLE objects ADD COLUMN reliability TEXT NOT NULL DEFAULT 'no-fault-detected'")
+            if "polarity" not in existing_cols:
+                conn.execute("ALTER TABLE objects ADD COLUMN polarity TEXT NOT NULL DEFAULT 'normal'")
             # Additive migration: cov_increment was added to trend_logs after
             # it first shipped (Phase 1) — backfill for existing DBs too.
             existing_tl_cols = {row[1] for row in conn.execute("PRAGMA table_info(trend_logs)")}
             if "cov_increment" not in existing_tl_cols:
                 conn.execute("ALTER TABLE trend_logs ADD COLUMN cov_increment REAL NOT NULL DEFAULT 1.0")
+            # Additive migration: Device object info properties (GH #19) were
+            # added after devices first shipped — backfill for existing DBs.
+            existing_dev_cols = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
+            if "firmware_revision" not in existing_dev_cols:
+                conn.execute("ALTER TABLE devices ADD COLUMN firmware_revision TEXT NOT NULL DEFAULT 'N/A'")
+            if "protocol_revision" not in existing_dev_cols:
+                conn.execute("ALTER TABLE devices ADD COLUMN protocol_revision INTEGER NOT NULL DEFAULT 22")
+            if "max_apdu_length_accepted" not in existing_dev_cols:
+                conn.execute("ALTER TABLE devices ADD COLUMN max_apdu_length_accepted INTEGER NOT NULL DEFAULT 1024")
+            if "segmentation_supported" not in existing_dev_cols:
+                conn.execute("ALTER TABLE devices ADD COLUMN segmentation_supported TEXT NOT NULL DEFAULT 'segmented-both'")
         log.info("Database ready at %s", self.path)
 
     def seed_default(self) -> None:
@@ -567,8 +610,10 @@ class Database:
     def create_device(self, data: dict) -> dict:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled) "
-                "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled)",
+                "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
+                "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported) "
+                "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
+                ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported)",
                 data,
             )
             conn.commit()
@@ -579,7 +624,9 @@ class Database:
             conn.execute(
                 "UPDATE devices SET device_instance=:device_instance, name=:name, "
                 "description=:description, vendor_name=:vendor_name, model_name=:model_name, "
-                "enabled=:enabled WHERE id=:id",
+                "enabled=:enabled, firmware_revision=:firmware_revision, protocol_revision=:protocol_revision, "
+                "max_apdu_length_accepted=:max_apdu_length_accepted, "
+                "segmentation_supported=:segmentation_supported WHERE id=:id",
                 {**data, "id": device_id},
             )
             conn.commit()
@@ -607,8 +654,8 @@ class Database:
     def create_object(self, device_id: int, data: dict) -> dict:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled, number_of_states, reliability) "
-                "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled, :number_of_states, :reliability)",
+                "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled, number_of_states, reliability, polarity) "
+                "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled, :number_of_states, :reliability, :polarity)",
                 {**data, "device_id": device_id},
             )
             conn.commit()
@@ -619,7 +666,8 @@ class Database:
             conn.execute(
                 "UPDATE objects SET object_type=:object_type, object_instance=:object_instance, "
                 "name=:name, units=:units, behavior=:behavior, behavior_params=:behavior_params, "
-                "enabled=:enabled, number_of_states=:number_of_states, reliability=:reliability WHERE id=:id",
+                "enabled=:enabled, number_of_states=:number_of_states, reliability=:reliability, "
+                "polarity=:polarity WHERE id=:id",
                 {**data, "id": obj_id},
             )
             conn.commit()
@@ -1065,6 +1113,54 @@ class Database:
             conn.commit()
             return cur.rowcount > 0
 
+    # ── BACnet Calendars (GH #18) ────────────────────────────────────────────────
+    # Referenced by name from a Schedule's exception_schedule JSON (see
+    # bacnet_schedule.build_exception_schedule) rather than by a DB foreign key —
+    # that keeps the reference portable across profile save/load the same way
+    # object_type+object_instance already does for schedule targets.
+
+    def get_calendars(self, device_id: Optional[int] = None) -> list[dict]:
+        with self._conn() as conn:
+            if device_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM bacnet_calendars WHERE device_id=? ORDER BY name", (device_id,)
+                )
+            else:
+                rows = conn.execute("SELECT * FROM bacnet_calendars ORDER BY device_id, name")
+            return [dict(r) for r in rows]
+
+    def get_calendar(self, calendar_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM bacnet_calendars WHERE id=?", (calendar_id,)).fetchone()
+            return dict(r) if r else None
+
+    def create_calendar(self, device_id: int, data: dict) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO bacnet_calendars (device_id, name, description, date_list, enabled) "
+                "VALUES (:device_id, :name, :description, :date_list, :enabled)",
+                {**data, "device_id": device_id},
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM bacnet_calendars WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def update_calendar(self, calendar_id: int, data: dict) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE bacnet_calendars SET name=:name, description=:description, "
+                "date_list=:date_list, enabled=:enabled WHERE id=:id",
+                {**data, "id": calendar_id},
+            )
+            conn.commit()
+            r = conn.execute("SELECT * FROM bacnet_calendars WHERE id=?", (calendar_id,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_calendar(self, calendar_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM bacnet_calendars WHERE id=?", (calendar_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
     # ── Profiles ──────────────────────────────────────────────────────────────
 
     def get_profiles(self) -> list[dict]:
@@ -1132,6 +1228,20 @@ class Database:
             sched.pop("device_id", None)
         dev["schedules"] = schedules
 
+    @staticmethod
+    def _attach_calendars(conn: sqlite3.Connection, dev: dict) -> None:
+        """Calendars need no portable-reference handling of their own — a
+        Schedule's calendarReference exceptions already store the calendar by
+        name (see bacnet_schedule.build_exception_schedule), which survives
+        the id reassignment on profile load without any extra work here."""
+        calendars = [dict(r) for r in conn.execute(
+            "SELECT * FROM bacnet_calendars WHERE device_id=?", (dev["id"],)
+        )]
+        for cal in calendars:
+            cal.pop("id", None)
+            cal.pop("device_id", None)
+        dev["calendars"] = calendars
+
     def save_profile(self, name: str, description: str) -> dict:
         with self._conn() as conn:
             devices = [dict(r) for r in conn.execute(
@@ -1144,6 +1254,7 @@ class Database:
                 )]
                 self._attach_trend_logs(conn, dev)
                 self._attach_schedules(conn, dev)
+                self._attach_calendars(conn, dev)
             data = json.dumps({"devices": devices})
             cur = conn.execute(
                 "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
@@ -1167,6 +1278,7 @@ class Database:
                 )]
                 self._attach_trend_logs(conn, dev)
                 self._attach_schedules(conn, dev)
+                self._attach_calendars(conn, dev)
             data = json.dumps({"devices": devices})
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
@@ -1187,11 +1299,20 @@ class Database:
                 objects = dev.pop("objects", [])
                 trend_logs = dev.pop("trend_logs", [])
                 schedules = dev.pop("schedules", [])
+                calendars = dev.pop("calendars", [])
                 dev.pop("id", None)
                 cur = conn.execute(
-                    "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled) "
-                    "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled)",
-                    dev,
+                    "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
+                    "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported) "
+                    "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
+                    ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported)",
+                    {
+                        **dev,
+                        "firmware_revision": dev.get("firmware_revision") or "N/A",
+                        "protocol_revision": dev.get("protocol_revision") or 22,
+                        "max_apdu_length_accepted": dev.get("max_apdu_length_accepted") or 1024,
+                        "segmentation_supported": dev.get("segmentation_supported") or "segmented-both",
+                    },
                 )
                 dev_id = cur.lastrowid
                 obj_lookup: dict[tuple[str, int], int] = {}
@@ -1201,15 +1322,16 @@ class Database:
                     obj_cur = conn.execute(
                         "INSERT OR IGNORE INTO objects "
                         "(device_id, object_type, object_instance, name, units, behavior, "
-                        "behavior_params, enabled, manual_value, number_of_states, reliability) "
+                        "behavior_params, enabled, manual_value, number_of_states, reliability, polarity) "
                         "VALUES (:device_id, :object_type, :object_instance, :name, :units, "
-                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability)",
+                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability, :polarity)",
                         {
                             **obj,
                             "device_id": dev_id,
                             "manual_value": obj.get("manual_value"),
                             "number_of_states": obj.get("number_of_states") or 2,
                             "reliability": obj.get("reliability") or "no-fault-detected",
+                            "polarity": obj.get("polarity") or "normal",
                         },
                     )
                     obj_id = obj_cur.lastrowid if obj_cur.lastrowid else conn.execute(
@@ -1278,6 +1400,19 @@ class Database:
                             "VALUES (?, ?, ?)",
                             (schedule_id, target_id, t.get("property_identifier", "present-value")),
                         )
+
+                for cal in calendars:
+                    conn.execute(
+                        "INSERT INTO bacnet_calendars (device_id, name, description, date_list, enabled) "
+                        "VALUES (:device_id, :name, :description, :date_list, :enabled)",
+                        {
+                            "device_id": dev_id,
+                            "name": cal.get("name", "Calendar"),
+                            "description": cal.get("description", ""),
+                            "date_list": cal.get("date_list", "[]"),
+                            "enabled": cal.get("enabled", 1),
+                        },
+                    )
             conn.commit()
             return True
 
@@ -2089,6 +2224,17 @@ def _apply_reliability(bacnet_obj: Any, reliability_str: str) -> None:
     bacnet_obj.statusFlags = StatusFlags([0, fault, 0, 0])
 
 
+def _apply_polarity(bacnet_obj: Any, polarity_str: str) -> None:
+    """Set Polarity (GH #19) on a constructed Binary Input/Output object.
+    Binary Value has no polarity property in bacpypes3's schema (matching
+    real BACnet spec — only physically-wired points have one), so this is
+    only ever called for binary-input/binary-output."""
+    try:
+        bacnet_obj.polarity = Polarity(polarity_str)
+    except Exception:
+        bacnet_obj.polarity = Polarity("normal")
+
+
 # ─── Sim Engine ───────────────────────────────────────────────────────────────
 
 class SimEngine:
@@ -2136,6 +2282,10 @@ class SimEngine:
         # the above, these don't need a runtime cache in tick() — bacpypes3's
         # ScheduleObject self-schedules its own next transition.
         self._schedule_objects: dict[int, Any] = {}
+        # calendar DB id → live bacnet_calendar.LocalCalendarObject (GH #18).
+        # presentValue has no self-scheduling hook like ScheduleObject does,
+        # so tick() refreshes it directly — see _refresh_calendar_present_values.
+        self._calendar_objects: dict[int, Any] = {}
         # simulation clock: whether tick() advances time / recomputes values.
         # Independent of self.app (the BACnet stack) — objects stay reachable
         # and hold their last value while paused/stopped.
@@ -2228,6 +2378,30 @@ class SimEngine:
                 self._objects[obj_row["id"]] = (bacnet_obj, behavior)
                 bacnet_ids.append(bacnet_obj.objectIdentifier)
 
+            # Calendars (GH #18) must be built before Schedules below, since a
+            # Schedule's exceptionSchedule may reference one by name.
+            calendars = await asyncio.to_thread(self.db.get_calendars, dev["id"])
+            calendar_phys_by_name: dict[str, int] = {}
+            for cal_idx, cal in enumerate(calendars):
+                if not cal["enabled"]:
+                    continue
+                try:
+                    entries = json.loads(cal["date_list"] or "[]")
+                    phys = slot * 1000 + cal_idx + 1
+                    cal_bacnet_obj = bacnet_calendar.LocalCalendarObject(
+                        objectIdentifier=("calendar", phys),
+                        objectName=f"{dev['name']}.{cal['name']}",
+                        description=cal.get("description", ""),
+                        presentValue=Boolean(bacnet_calendar.today_in_date_list(entries)),
+                        dateList=bacnet_calendar.build_date_list(entries),
+                    )
+                    self.app.add_object(cal_bacnet_obj)
+                    self._calendar_objects[cal["id"]] = cal_bacnet_obj
+                    calendar_phys_by_name[cal["name"]] = phys
+                    bacnet_ids.append(cal_bacnet_obj.objectIdentifier)
+                except Exception:
+                    log.exception("Failed to build calendar %r on device %r — skipping", cal["name"], dev["name"])
+
             trend_logs = await asyncio.to_thread(self.db.get_trend_logs, dev["id"])
             for tl_idx, tl in enumerate(trend_logs):
                 monitored = self._objects.get(tl["monitored_object_id"])
@@ -2292,7 +2466,7 @@ class SimEngine:
                             json.loads(sched["weekly_schedule"] or "{}"), value_type
                         ),
                         exceptionSchedule=bacnet_schedule.build_exception_schedule(
-                            json.loads(sched["exception_schedule"] or "[]"), value_type
+                            json.loads(sched["exception_schedule"] or "[]"), value_type, calendar_phys_by_name
                         ),
                         scheduleDefault=bacnet_schedule.default_value(value_type, default_raw),
                         listOfObjectPropertyReferences=SequenceOf(DeviceObjectPropertyReference)(obj_prop_refs),
@@ -2319,6 +2493,10 @@ class SimEngine:
             self.app.device_object = saved
 
     def _make_device_object(self, dev: dict) -> DeviceObject:
+        try:
+            segmentation = Segmentation(dev.get("segmentation_supported") or "segmented-both")
+        except Exception:
+            segmentation = Segmentation("segmented-both")
         return DeviceObject(
             objectIdentifier=f"device,{dev['device_instance']}",
             objectName=dev["name"],
@@ -2328,6 +2506,10 @@ class SimEngine:
             vendorName=dev.get("vendor_name", "Iotistica"),
             applicationSoftwareVersion="3.0",
             location=dev["name"],
+            firmwareRevision=dev.get("firmware_revision") or "N/A",
+            protocolRevision=Unsigned(dev.get("protocol_revision") or 22),
+            maxApduLengthAccepted=Unsigned(dev.get("max_apdu_length_accepted") or 1024),
+            segmentationSupported=segmentation,
         )
 
     def _create_object(self, obj_row: dict, slot: int, device_name: str = "") -> tuple[Any, Behavior]:
@@ -2380,6 +2562,7 @@ class SimEngine:
                 presentValue=BinaryPV("active" if active else "inactive"),
             )
             _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
+            _apply_polarity(bacnet_obj, obj_row.get("polarity") or "normal")
         elif otype in MULTISTATE_TYPES:
             _MULTISTATE_CLS = {
                 "multi-state-input":  MultiStateInputObject,
@@ -2406,6 +2589,8 @@ class SimEngine:
                 presentValue=BinaryPV("active" if active else "inactive"),
             )
             _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
+            if otype == "binary-input":
+                _apply_polarity(bacnet_obj, obj_row.get("polarity") or "normal")
         return bacnet_obj, behavior
 
     def _update_value(self, bacnet_obj: Any, otype: str, val: Any) -> None:
@@ -2509,6 +2694,20 @@ class SimEngine:
             })
 
         self._current_values = {"devices": list(snapshot.values()), "tick": self.state.elapsed_seconds}
+
+        # Calendar objects (GH #18) have no self-scheduling hook like Schedule
+        # does, so refresh presentValue here — cheap, and only cosmetic for a
+        # direct ReadProperty since Schedule's own calendarReference
+        # resolution reads dateList directly, not presentValue.
+        for cal_id, cal_bacnet_obj in self._calendar_objects.items():
+            cal_row = await asyncio.to_thread(self.db.get_calendar, cal_id)
+            if not cal_row:
+                continue
+            try:
+                entries = json.loads(cal_row["date_list"] or "[]")
+                cal_bacnet_obj.presentValue = Boolean(bacnet_calendar.today_in_date_list(entries))
+            except Exception:
+                log.exception("Failed to refresh calendar %r presentValue", cal_row.get("name"))
 
     async def _evaluate_alarm(
         self, obj_id: int, obj_row: dict, dev: dict, val: Any, cfg: dict, notification_classes: dict[int, dict],
@@ -2661,9 +2860,15 @@ class SimEngine:
                         self.app.delete_object(bacnet_obj)
                     except Exception:
                         pass
+                for bacnet_obj in list(self._calendar_objects.values()):
+                    try:
+                        self.app.delete_object(bacnet_obj)
+                    except Exception:
+                        pass
                 self._objects.clear()
                 self._trend_log_objects.clear()
                 self._schedule_objects.clear()
+                self._calendar_objects.clear()
                 self._prev_values.clear()
                 self._history.clear()
                 self._alarm_runtime.clear()
@@ -2701,9 +2906,15 @@ class SimEngine:
                     self.app.delete_object(bacnet_obj)
                 except Exception:
                     pass
+            for bacnet_obj in list(self._calendar_objects.values()):
+                try:
+                    self.app.delete_object(bacnet_obj)
+                except Exception:
+                    pass
             self._objects.clear()
             self._trend_log_objects.clear()
             self._schedule_objects.clear()
+            self._calendar_objects.clear()
             try:
                 await self.app.close()
             except Exception:
@@ -2753,6 +2964,60 @@ class SimEngine:
         new_b = ManualBehavior({"value": value})
         self._objects[obj_id] = (bacnet_obj, new_b)
         self._update_value(bacnet_obj, obj_row["object_type"], value)
+        return True
+
+    @staticmethod
+    def _priority_value_out(pv: PriorityValue) -> Any:
+        """Decode a PriorityValue slot to a plain Python value, or None if null."""
+        if pv._choice == "null":
+            return None
+        raw = getattr(pv, pv._choice)
+        return str(raw) == "active" if pv._choice == "enumerated" else raw
+
+    def get_priority_array(self, obj_id: int) -> Optional[dict]:
+        """Read all 16 priority-array slots + relinquish default (GH #17).
+        Returns None for object types with no real priority array — i.e.
+        everything except the three Commandable *-output types."""
+        if obj_id not in self._objects:
+            return None
+        bacnet_obj, _ = self._objects[obj_id]
+        if not isinstance(bacnet_obj, Commandable):
+            return None
+        cp = bacnet_obj.currentCommandPriority
+        rd = bacnet_obj.relinquishDefault
+        relinquish_default = str(rd) == "active" if isinstance(rd, BinaryPV) else \
+            (float(rd) if isinstance(rd, Real) else int(rd))
+        return {
+            "priority_array": [self._priority_value_out(pv) for pv in bacnet_obj.priorityArray],
+            "relinquish_default": relinquish_default,
+            "current_command_priority": int(cp.unsigned) if cp.unsigned is not None else None,
+        }
+
+    async def write_priority(self, obj_id: int, priority: int, value: Any) -> bool:
+        """Write (or, if value is None, relinquish) a specific priority-array
+        slot on a Commandable object (GH #17) — this is a direct priority-array
+        write, distinct from write_object()'s "the sim value" (priority 16)."""
+        if obj_id not in self._objects:
+            return False
+        bacnet_obj, _ = self._objects[obj_id]
+        if not isinstance(bacnet_obj, Commandable):
+            return False
+        if not (1 <= priority <= 16):
+            return False
+        obj_row = await asyncio.to_thread(self.db.get_object, obj_id)
+        if not obj_row:
+            return False
+        otype = obj_row["object_type"]
+        if value is None:
+            pv = PriorityValue(null=())
+        elif otype == "analog-output":
+            pv = PriorityValue(real=float(value))
+        elif otype == "multi-state-output":
+            pv = PriorityValue(unsigned=int(value))
+        else:
+            active = bool(value) if not isinstance(value, bool) else value
+            pv = PriorityValue(enumerated=BinaryPV("active" if active else "inactive"))
+        bacnet_obj.priorityArray[priority - 1] = pv
         return True
 
     def get_state(self) -> dict:
@@ -2808,6 +3073,9 @@ class SimEngine:
 
 # ─── FastAPI models ───────────────────────────────────────────────────────────
 
+VALID_SEGMENTATION = {"segmented-both", "segmented-transmit", "segmented-receive", "no-segmentation"}
+
+
 class DeviceCreate(BaseModel):
     device_instance: int = Field(..., ge=1, le=4194302)
     name: str = Field(..., min_length=1, max_length=100)
@@ -2815,6 +3083,14 @@ class DeviceCreate(BaseModel):
     vendor_name: str = "Iotistica"
     model_name: str = "BACnet Simulator"
     enabled: int = 1
+    firmware_revision: str = Field("N/A", max_length=50)
+    protocol_revision: int = Field(22, ge=0, le=255)
+    max_apdu_length_accepted: int = Field(1024, ge=50, le=1476)
+    segmentation_supported: str = "segmented-both"
+
+    def validate_device_info(self) -> None:
+        if self.segmentation_supported not in VALID_SEGMENTATION:
+            raise HTTPException(400, f"segmentation_supported must be one of: {sorted(VALID_SEGMENTATION)}")
 
 
 class DeviceUpdate(DeviceCreate):
@@ -2831,6 +3107,7 @@ class ObjectCreate(BaseModel):
     enabled: int = 1
     number_of_states: int = Field(2, ge=1, le=254)
     reliability: str = "no-fault-detected"
+    polarity: str = "normal"
 
     def validate_type(self):
         if self.object_type not in VALID_OBJECT_TYPES:
@@ -2839,6 +3116,8 @@ class ObjectCreate(BaseModel):
             raise HTTPException(400, f"Invalid behavior. Must be one of: {sorted(VALID_BEHAVIORS)}")
         if self.reliability not in VALID_RELIABILITY:
             raise HTTPException(400, f"Invalid reliability. Must be one of: {sorted(VALID_RELIABILITY)}")
+        if self.polarity not in VALID_POLARITY:
+            raise HTTPException(400, f"Invalid polarity. Must be one of: {sorted(VALID_POLARITY)}")
         try:
             json.loads(self.behavior_params)
         except Exception:
@@ -2933,6 +3212,23 @@ class ScheduleCreate(BaseModel):
 
 
 class ScheduleUpdate(ScheduleCreate):
+    pass
+
+
+class CalendarCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+    date_list: list = Field(default_factory=list)
+    enabled: int = 1
+
+    def validate_date_list(self) -> None:
+        try:
+            bacnet_calendar.validate_date_list(self.date_list)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+
+class CalendarUpdate(CalendarCreate):
     pass
 
 
@@ -3412,6 +3708,8 @@ async def meta():
         "behaviors": sorted(VALID_BEHAVIORS),
         "units": BACNET_UNITS,
         "reliability_options": sorted(VALID_RELIABILITY),
+        "polarity_options": sorted(VALID_POLARITY),
+        "segmentation_options": sorted(VALID_SEGMENTATION),
     }
 
 
@@ -3424,6 +3722,7 @@ async def list_devices():
 
 @api.post("/devices", status_code=201)
 async def create_device(body: DeviceCreate):
+    body.validate_device_info()
     try:
         device = await asyncio.to_thread(db.create_device, body.model_dump())
     except sqlite3.IntegrityError:
@@ -3444,6 +3743,7 @@ async def get_device(device_id: int):
 
 @api.put("/devices/{device_id}")
 async def update_device(device_id: int, body: DeviceUpdate):
+    body.validate_device_info()
     d = await asyncio.to_thread(db.get_device, device_id)
     if not d:
         raise HTTPException(404, "Device not found")
@@ -3564,6 +3864,40 @@ async def get_object_history(device_id: int, obj_id: int):
         raise HTTPException(404, "Object not found")
     hist = engine._history.get(obj_id, deque())
     return [{"ts": ts, "value": v} for ts, v in hist]
+
+
+@api.get("/devices/{device_id}/objects/{obj_id}/priority-array")
+async def get_priority_array(device_id: int, obj_id: int):
+    obj = await asyncio.to_thread(db.get_object, obj_id)
+    if not obj or obj["device_id"] != device_id:
+        raise HTTPException(404, "Object not found")
+    if obj["object_type"] not in COMMANDABLE_TYPES:
+        raise HTTPException(400, f"{obj['object_type']} has no BACnet priority array (not Commandable)")
+    result = engine.get_priority_array(obj_id)
+    if result is None:
+        raise HTTPException(409, "Object is not currently live in the running application")
+    return result
+
+
+class PriorityWrite(BaseModel):
+    value: Any = None  # None relinquishes the slot
+
+
+@api.put("/devices/{device_id}/objects/{obj_id}/priority-array/{priority}")
+async def write_priority_array(device_id: int, obj_id: int, priority: int, body: PriorityWrite):
+    if not (1 <= priority <= 16):
+        raise HTTPException(400, "priority must be between 1 and 16")
+    obj = await asyncio.to_thread(db.get_object, obj_id)
+    if not obj or obj["device_id"] != device_id:
+        raise HTTPException(404, "Object not found")
+    if obj["object_type"] not in COMMANDABLE_TYPES:
+        raise HTTPException(400, f"{obj['object_type']} has no BACnet priority array (not Commandable)")
+    ok = await engine.write_priority(obj_id, priority, body.value)
+    if not ok:
+        raise HTTPException(409, "Object is not currently live in the running application")
+    action = "relinquished" if body.value is None else f"set to {body.value}"
+    _log_event(device_id, "info", f"Priority array: {obj['name']} priority {priority} {action}")
+    return engine.get_priority_array(obj_id)
 
 
 # ── Profiles ──
@@ -4026,6 +4360,18 @@ async def _validate_schedule(device_id: int, body: ScheduleCreate) -> None:
                 f"target object {t.object_id} ({obj['object_type']}) doesn't match value_type "
                 f"'{body.value_type}' — expected one of: {allowed_types}",
             )
+    device_calendar_names = None
+    for exc in body.exception_schedule:
+        period = (exc or {}).get("period") or {}
+        if period.get("type") != "calendar-reference":
+            continue
+        if device_calendar_names is None:
+            device_calendar_names = {c["name"] for c in await asyncio.to_thread(db.get_calendars, device_id)}
+        if period.get("calendar_name") not in device_calendar_names:
+            raise HTTPException(
+                400,
+                f"exception references unknown calendar {period.get('calendar_name')!r} on this device",
+            )
 
 
 def _schedule_to_db(body: ScheduleCreate) -> dict:
@@ -4150,6 +4496,13 @@ async def evaluate_schedule(schedule_id: int):
                 ys, ms, ds = bacnet_schedule.parse_date_tuple(period["start"])
                 ye, me, de = bacnet_schedule.parse_date_tuple(period["end"])
                 match = (ys, ms, ds) <= (current_date[0], current_date[1], current_date[2]) <= (ye, me, de)
+            elif period.get("type") == "calendar-reference":
+                cal_row = next(
+                    (c for c in await asyncio.to_thread(db.get_calendars, sched["device_id"])
+                     if c["name"] == period.get("calendar_name")),
+                    None,
+                )
+                match = bool(cal_row) and bacnet_calendar.today_in_date_list(json.loads(cal_row["date_list"] or "[]"))
             else:
                 match = False
         except Exception:
@@ -4172,6 +4525,82 @@ async def evaluate_schedule(schedule_id: int):
         "matching_exception": matching_exception,
         "next_transition": next_dt.isoformat(),
     }
+
+
+# ── BACnet Calendars (GH #18) ──
+
+def _calendar_to_api(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "device_id": row["device_id"],
+        "name": row["name"],
+        "description": row["description"],
+        "date_list": json.loads(row["date_list"] or "[]"),
+        "enabled": bool(row["enabled"]),
+    }
+
+
+@api.get("/devices/{device_id}/calendars")
+async def list_calendars(device_id: int):
+    rows = await asyncio.to_thread(db.get_calendars, device_id)
+    return [_calendar_to_api(r) for r in rows]
+
+
+@api.post("/devices/{device_id}/calendars", status_code=201)
+async def create_calendar(device_id: int, body: CalendarCreate):
+    body.validate_date_list()
+    d = await asyncio.to_thread(db.get_device, device_id)
+    if not d:
+        raise HTTPException(404, "Device not found")
+    existing_names = {c["name"] for c in await asyncio.to_thread(db.get_calendars, device_id)}
+    if body.name in existing_names:
+        raise HTTPException(409, f"Calendar {body.name!r} already exists on this device — names must be "
+                                  "unique since Schedules reference calendars by name")
+    row = await asyncio.to_thread(
+        db.create_calendar, device_id,
+        {"name": body.name, "description": body.description,
+         "date_list": json.dumps(body.date_list), "enabled": 1 if body.enabled else 0},
+    )
+    asyncio.create_task(engine.reload())
+    return _calendar_to_api(row)
+
+
+@api.get("/calendars/{calendar_id}")
+async def get_calendar(calendar_id: int):
+    row = await asyncio.to_thread(db.get_calendar, calendar_id)
+    if not row:
+        raise HTTPException(404, "Calendar not found")
+    return _calendar_to_api(row)
+
+
+@api.put("/calendars/{calendar_id}")
+async def update_calendar(calendar_id: int, body: CalendarUpdate):
+    body.validate_date_list()
+    existing = await asyncio.to_thread(db.get_calendar, calendar_id)
+    if not existing:
+        raise HTTPException(404, "Calendar not found")
+    other_names = {
+        c["name"] for c in await asyncio.to_thread(db.get_calendars, existing["device_id"])
+        if c["id"] != calendar_id
+    }
+    if body.name in other_names:
+        raise HTTPException(409, f"Calendar {body.name!r} already exists on this device — names must be "
+                                  "unique since Schedules reference calendars by name")
+    row = await asyncio.to_thread(
+        db.update_calendar, calendar_id,
+        {"name": body.name, "description": body.description,
+         "date_list": json.dumps(body.date_list), "enabled": 1 if body.enabled else 0},
+    )
+    asyncio.create_task(engine.reload())
+    return _calendar_to_api(row)
+
+
+@api.delete("/calendars/{calendar_id}", status_code=204)
+async def delete_calendar(calendar_id: int):
+    deleted = await asyncio.to_thread(db.delete_calendar, calendar_id)
+    if not deleted:
+        raise HTTPException(404, "Calendar not found")
+    asyncio.create_task(engine.reload())
 
 
 # ── State + reload ──

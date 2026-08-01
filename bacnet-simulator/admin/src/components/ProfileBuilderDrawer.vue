@@ -18,7 +18,7 @@ const emit = defineEmits<{
 
 // ── Meta (fetched once) ───────────────────────────────────────────────────────
 
-const meta = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [] })
+const meta = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [] })
 
 async function fetchMeta() {
   if (meta.value.object_types.length) return
@@ -301,6 +301,7 @@ async function copyFromLive() {
             enabled: !!o.enabled,
             number_of_states: o.number_of_states,
             reliability: o.reliability,
+            polarity: o.polarity,
           })),
         }
       }),
@@ -348,6 +349,7 @@ async function saveProfile() {
           manual_value: null,
           number_of_states: o.number_of_states,
           reliability: o.reliability,
+          polarity: o.polarity,
         })),
       })),
     }
@@ -594,6 +596,7 @@ const TYPE_COLORS: Record<string, string> = {
   <DeviceDrawer
     v-model:open="deviceDrawerOpen"
     :device="null"
+    :meta="meta"
     :draft-mode="true"
     :draft-device="editingDevice"
     :existing-instances="existingInstances"

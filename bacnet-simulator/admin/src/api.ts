@@ -1,4 +1,4 @@
-import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation } from './types'
+import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation, PriorityArrayInfo, Calendar } from './types'
 import { authToken, logout } from './auth'
 
 function authHeaders(): Record<string, string> {
@@ -107,6 +107,12 @@ export const api = {
       req(`/devices/${did}/objects/${oid}/value`, { method: 'POST', body: JSON.stringify({ value }) }),
     history: (did: number, oid: number) =>
       req<HistoryPoint[]>(`/devices/${did}/objects/${oid}/history`),
+    priorityArray: (did: number, oid: number) =>
+      req<PriorityArrayInfo>(`/devices/${did}/objects/${oid}/priority-array`),
+    writePriority: (did: number, oid: number, priority: number, value: unknown) =>
+      req<PriorityArrayInfo>(`/devices/${did}/objects/${oid}/priority-array/${priority}`, {
+        method: 'PUT', body: JSON.stringify({ value }),
+      }),
   },
 
   profiles: {
@@ -185,6 +191,15 @@ export const api = {
     enable:   (id: number) => req<{ ok: boolean }>(`/schedules/${id}/enable`, { method: 'POST' }),
     disable:  (id: number) => req<{ ok: boolean }>(`/schedules/${id}/disable`, { method: 'POST' }),
     evaluate: (id: number) => req<ScheduleEvaluation>(`/schedules/${id}/evaluate`, { method: 'POST' }),
+  },
+
+  calendars: {
+    list:   (deviceId: number)                          => req<Calendar[]>(`/devices/${deviceId}/calendars`),
+    create: (deviceId: number, b: Omit<Calendar, 'id' | 'device_id' | 'enabled'> & { enabled: number }) =>
+      req<Calendar>(`/devices/${deviceId}/calendars`, { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<Calendar, 'id' | 'device_id' | 'enabled'> & { enabled: number }) =>
+      req<Calendar>(`/calendars/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del: (id: number) => req<null>(`/calendars/${id}`, { method: 'DELETE' }),
   },
 
   analytics: {

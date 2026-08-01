@@ -6,6 +6,10 @@ export interface Device {
   vendor_name: string
   model_name: string
   enabled: number
+  firmware_revision: string
+  protocol_revision: number
+  max_apdu_length_accepted: number
+  segmentation_supported: string
 }
 
 export interface SimObject {
@@ -21,6 +25,7 @@ export interface SimObject {
   manual_value: number | null
   number_of_states: number
   reliability: string
+  polarity: string
 }
 
 export interface Meta {
@@ -28,6 +33,14 @@ export interface Meta {
   behaviors: string[]
   units: string[]
   reliability_options: string[]
+  polarity_options: string[]
+  segmentation_options: string[]
+}
+
+export interface PriorityArrayInfo {
+  priority_array: (number | boolean | null)[]  // 16 slots, index 0 = priority 1
+  relinquish_default: number | boolean
+  current_command_priority: number | null
 }
 
 export interface Health {
@@ -133,6 +146,7 @@ export interface ScheduleException {
   period:
     | { type: 'date'; date: string }
     | { type: 'date-range'; start: string; end: string }
+    | { type: 'calendar-reference'; calendar_name: string }
   priority: number
   entries: ScheduleTimeValue[]
 }
@@ -171,6 +185,20 @@ export interface ScheduleEvaluation {
   next_transition: string | null
 }
 
+export type CalendarDateEntry =
+  | { type: 'date'; date: string }
+  | { type: 'date-range'; start: string; end: string }
+  | { type: 'weekday'; month: number | null; week_of_month: number | null; day_of_week: number | null }
+
+export interface Calendar {
+  id: number
+  device_id: number
+  name: string
+  description: string
+  date_list: CalendarDateEntry[]
+  enabled: boolean
+}
+
 export interface Profile {
   id: number
   name: string
@@ -203,6 +231,7 @@ export interface DraftObject {
   enabled: boolean
   number_of_states?: number
   reliability?: string
+  polarity?: string
 }
 
 export interface DraftDevice {

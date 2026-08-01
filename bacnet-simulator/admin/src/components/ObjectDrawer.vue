@@ -3,7 +3,7 @@ import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
-import type { SimObject, Meta, NotificationClass } from '../types'
+import type { SimObject, Meta, NotificationClass, PriorityArrayInfo } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -40,6 +40,7 @@ const form = reactive({
   enabled: true,
   number_of_states: 2,
   reliability: 'no-fault-detected',
+  polarity: 'normal',
 })
 const params = ref<any>({ value: 0 })
 
@@ -49,6 +50,8 @@ const isAnalog = computed(() => form.object_type.startsWith('analog'))
 const isBinary = computed(() => form.object_type.startsWith('binary'))
 const isMultistate = computed(() => form.object_type.startsWith('multi-state'))
 const showAlarmSection = computed(() => !props.draftMode && !!props.object && (isAnalog.value || isBinary.value || isMultistate.value))
+// Polarity (GH #19) only exists on Binary Input/Output in bacpypes3's schema — not Binary Value.
+const showPolarity = computed(() => form.object_type === 'binary-input' || form.object_type === 'binary-output')
 
 const ALARM_TRANSITIONS = [
   { label: 'To Off-Normal', value: 'to-offnormal' },
@@ -154,6 +157,53 @@ async function removeAlarmConfig() {
   }
 }
 
+// ── Priority Array (GH #17) — only the three Commandable *-output types have a real one ──
+
+const COMMANDABLE_TYPES = ['analog-output', 'binary-output', 'multi-state-output']
+const showPriorityArraySection = computed(() => !props.draftMode && !!props.object && COMMANDABLE_TYPES.includes(form.object_type))
+
+const priorityArray = ref<PriorityArrayInfo | null>(null)
+const paLoading = ref(false)
+const paWriting = ref<number | null>(null)
+const paWriteSlot = ref(1)
+const paWriteValue = ref<number>(0)
+const paWriteActive = ref(true)
+
+async function loadPriorityArray() {
+  if (!props.deviceId || !props.object) return
+  paLoading.value = true
+  try {
+    priorityArray.value = await api.objects.priorityArray(props.deviceId, props.object.id)
+  } catch (e: unknown) {
+    priorityArray.value = null
+    message.error((e as Error).message ?? 'Failed to load priority array')
+  } finally {
+    paLoading.value = false
+  }
+}
+
+async function writePriority(priority: number, value: unknown) {
+  if (!props.deviceId || !props.object) return
+  paWriting.value = priority
+  try {
+    priorityArray.value = await api.objects.writePriority(props.deviceId, props.object.id, priority, value)
+    message.success(value === null ? `Priority ${priority} relinquished` : `Priority ${priority} set`)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to write priority')
+  } finally {
+    paWriting.value = null
+  }
+}
+
+function submitPriorityWrite() {
+  const value = isBinary.value ? paWriteActive.value : paWriteValue.value
+  writePriority(paWriteSlot.value, value)
+}
+
+function relinquishPriority(priority: number) {
+  writePriority(priority, null)
+}
+
 function addScheduleBlock() {
   if (!Array.isArray(params.value.blocks)) params.value.blocks = []
   params.value = { ...params.value, blocks: [...params.value.blocks, { start: '12:00', value: 0 }] }
@@ -196,6 +246,7 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
       enabled: !!src.enabled,
       number_of_states: src.number_of_states ?? 2,
       reliability: src.reliability ?? 'no-fault-detected',
+      polarity: src.polarity ?? 'normal',
     })
     try {
       const raw = src.behavior_params
@@ -205,7 +256,7 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
     Object.assign(form, {
       object_type: props.meta.object_types[0] ?? 'analog-input',
       object_instance: 1, name: '', units: 'no-units', behavior: 'constant', enabled: true,
-      number_of_states: 2, reliability: 'no-fault-detected',
+      number_of_states: 2, reliability: 'no-fault-detected', polarity: 'normal',
     })
     params.value = { value: 0 }
   }
@@ -213,6 +264,12 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
 
   resetAlarmCfg()
   if (!props.draftMode && props.object) loadAlarmSection()
+
+  priorityArray.value = null
+  paWriteSlot.value = 1
+  paWriteValue.value = 0
+  paWriteActive.value = true
+  if (showPriorityArraySection.value) loadPriorityArray()
 })
 
 async function save() {
@@ -544,6 +601,17 @@ async function save() {
         </a-select>
       </a-form-item>
 
+      <a-form-item
+        v-if="showPolarity"
+        label="Polarity"
+        style="margin-top:16px;margin-bottom:0"
+        tooltip="Reverse polarity means the physical/electrical state is inverted relative to the logical active/inactive presentValue — informational for BACnet clients, purely cosmetic in this simulator."
+      >
+        <a-select v-model:value="form.polarity">
+          <a-select-option v-for="p in meta.polarity_options" :key="p" :value="p">{{ p }}</a-select-option>
+        </a-select>
+      </a-form-item>
+
       <template v-if="showAlarmSection">
         <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 10px">
           Intrinsic Reporting (Alarms)
@@ -616,6 +684,63 @@ async function save() {
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
             <a-button v-if="alarmCfgExists" danger size="small" @click="removeAlarmConfig">Remove Alarm Config</a-button>
             <a-button type="primary" size="small" :loading="alarmCfgSaving" @click="saveAlarmConfig">Save Alarm Config</a-button>
+          </div>
+        </a-spin>
+      </template>
+
+      <template v-if="showPriorityArraySection">
+        <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 10px">
+          Priority Array
+        </div>
+        <a-spin :spinning="paLoading">
+          <div style="background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:14px">
+            <div style="font-size:11px;color:#888;margin-bottom:10px">
+              The real BACnet 16-slot priority array. The lowest-numbered non-null slot wins; the sim's own value
+              always occupies priority 16 and is overwritten every tick — write a higher priority (1–15) here to
+              simulate another client asserting control.
+            </div>
+
+            <div v-if="priorityArray" style="max-height:260px;overflow:auto;margin-bottom:12px">
+              <div
+                v-for="slot in 16" :key="slot"
+                style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #eee;font-size:12px"
+              >
+                <span style="width:70px;color:#888">Priority {{ slot }}</span>
+                <span style="flex:1;font-family:monospace">
+                  {{ priorityArray.priority_array[slot - 1] === null ? '—' : String(priorityArray.priority_array[slot - 1]) }}
+                </span>
+                <a-tag v-if="priorityArray.current_command_priority === slot" color="processing" style="margin-right:0">In control</a-tag>
+                <a-button
+                  v-if="priorityArray.priority_array[slot - 1] !== null"
+                  size="small" type="text" danger
+                  :loading="paWriting === slot"
+                  @click="relinquishPriority(slot)"
+                >
+                  Relinquish
+                </a-button>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">
+                <span style="width:70px;color:#888">Default</span>
+                <span style="flex:1;font-family:monospace">{{ priorityArray.relinquish_default }}</span>
+                <span style="font-size:11px;color:#bbb">used when all 16 slots are relinquished</span>
+              </div>
+            </div>
+
+            <a-row :gutter="8" align="middle">
+              <a-col :span="7">
+                <a-input-number v-model:value="paWriteSlot" :min="1" :max="15" style="width:100%" addon-before="Priority" />
+              </a-col>
+              <a-col :span="isBinary ? 9 : 11">
+                <a-input-number v-if="!isBinary" v-model:value="paWriteValue" style="width:100%" :step="isMultistate ? 1 : 0.1" placeholder="Value" />
+                <a-radio-group v-else v-model:value="paWriteActive" style="width:100%">
+                  <a-radio-button :value="true" style="width:50%;text-align:center">Active</a-radio-button>
+                  <a-radio-button :value="false" style="width:50%;text-align:center">Inactive</a-radio-button>
+                </a-radio-group>
+              </a-col>
+              <a-col :span="isBinary ? 8 : 6">
+                <a-button block :loading="paWriting !== null" @click="submitPriorityWrite">Write</a-button>
+              </a-col>
+            </a-row>
           </div>
         </a-spin>
       </template>

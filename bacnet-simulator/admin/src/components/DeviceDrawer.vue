@@ -3,11 +3,12 @@ import { ref, reactive, computed, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
-import type { Device } from '../types'
+import type { Device, Meta } from '../types'
 
 const props = defineProps<{
   open: boolean
   device: Device | null
+  meta: Meta
   existingInstances?: number[]
   draftMode?: boolean
   draftDevice?: Record<string, any> | null
@@ -26,6 +27,10 @@ const form = reactive({
   vendor_name: 'Iotistica',
   model_name: 'BACnet Simulator',
   enabled: true,
+  firmware_revision: 'N/A',
+  protocol_revision: 22,
+  max_apdu_length_accepted: 1024,
+  segmentation_supported: 'segmented-both',
 })
 
 // ── Import points from EDE (only offered when adding a new, non-draft device) ──
@@ -136,9 +141,16 @@ watch(() => props.open, (v) => {
       vendor_name: src.vendor_name,
       model_name: src.model_name,
       enabled: !!src.enabled,
+      firmware_revision: src.firmware_revision ?? 'N/A',
+      protocol_revision: src.protocol_revision ?? 22,
+      max_apdu_length_accepted: src.max_apdu_length_accepted ?? 1024,
+      segmentation_supported: src.segmentation_supported ?? 'segmented-both',
     })
   } else {
-    Object.assign(form, { device_instance: nextFreeInstance(), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true })
+    Object.assign(form, {
+      device_instance: nextFreeInstance(), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true,
+      firmware_revision: 'N/A', protocol_revision: 22, max_apdu_length_accepted: 1024, segmentation_supported: 'segmented-both',
+    })
   }
 })
 
@@ -240,6 +252,40 @@ async function save() {
       <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
         <a-switch v-model:checked="form.enabled" />
       </a-form-item>
+
+      <a-collapse ghost style="margin-top:16px">
+        <a-collapse-panel key="device-info" header="Device Info (advanced)">
+          <div style="font-size:11px;color:#888;margin-bottom:10px">
+            Informational/cosmetic Device object properties some BACnet clients check — not enforced by the simulator itself.
+          </div>
+          <a-row :gutter="12">
+            <a-col :span="12">
+              <a-form-item label="Firmware Revision">
+                <a-input v-model:value="form.firmware_revision" placeholder="N/A" />
+              </a-form-item>
+            </a-col>
+            <a-col :span="12">
+              <a-form-item label="Protocol Revision">
+                <a-input-number v-model:value="form.protocol_revision" :min="0" :max="255" style="width:100%" />
+              </a-form-item>
+            </a-col>
+          </a-row>
+          <a-row :gutter="12">
+            <a-col :span="12">
+              <a-form-item label="Max APDU Length Accepted">
+                <a-input-number v-model:value="form.max_apdu_length_accepted" :min="50" :max="1476" style="width:100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :span="12">
+              <a-form-item label="Segmentation Supported">
+                <a-select v-model:value="form.segmentation_supported">
+                  <a-select-option v-for="s in meta.segmentation_options" :key="s" :value="s">{{ s }}</a-select-option>
+                </a-select>
+              </a-form-item>
+            </a-col>
+          </a-row>
+        </a-collapse-panel>
+      </a-collapse>
 
       <a-form-item
         v-if="!device && !draftMode"

@@ -17,10 +17,11 @@ import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
 import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
+import CalendarDrawer from './components/CalendarDrawer.vue'
 import type { Device, SimObject, Meta, Health, HistoryPoint } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
 const activeView = ref<'devices' | 'analytics' | 'alarms'>('devices')
@@ -29,7 +30,7 @@ const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices:
 const simActionLoading = ref(false)
 const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a', paused: '#faad14', stopped: '#ff4d4f' }
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
-const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [] })
+const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [] })
 const devices = ref<Device[]>([])
 const deviceSearch = ref('')
 const filteredDevices = computed(() => {
@@ -170,6 +171,10 @@ async function duplicateDevice(d: Device) {
       vendor_name:     d.vendor_name,
       model_name:      d.model_name,
       enabled:         d.enabled,
+      firmware_revision:        d.firmware_revision,
+      protocol_revision:        d.protocol_revision,
+      max_apdu_length_accepted: d.max_apdu_length_accepted,
+      segmentation_supported:   d.segmentation_supported,
     })
     const srcObjects = await api.objects.list(d.id)
     for (const obj of srcObjects) {
@@ -183,6 +188,7 @@ async function duplicateDevice(d: Device) {
         enabled:          obj.enabled,
         number_of_states: obj.number_of_states,
         reliability:      obj.reliability,
+        polarity:         obj.polarity,
       })
     }
     await loadDevices()
@@ -244,6 +250,13 @@ const scheduleDevice = ref<Device | null>(null)
 function openSchedules(d: Device) {
   scheduleDevice.value = d
   scheduleDrawerOpen.value = true
+}
+
+const calendarDrawerOpen = ref(false)
+const calendarDevice = ref<Device | null>(null)
+function openCalendars(d: Device) {
+  calendarDevice.value = d
+  calendarDrawerOpen.value = true
 }
 
 function importDeviceEde(d: Device) {
@@ -724,6 +737,9 @@ onUnmounted(() => {
                     <a-menu-item key="schedules" @click="openSchedules(d)">
                       <CalendarOutlined /> Schedules
                     </a-menu-item>
+                    <a-menu-item key="calendars" @click="openCalendars(d)">
+                      <ScheduleOutlined /> Calendars
+                    </a-menu-item>
                   </a-menu>
                 </template>
               </a-dropdown>
@@ -829,6 +845,7 @@ onUnmounted(() => {
     <DeviceDrawer
       v-model:open="deviceDrawerOpen"
       :device="editingDevice"
+      :meta="meta"
       :existing-instances="devices.map(d => d.device_instance)"
       @saved="onDeviceSaved"
     />
@@ -862,6 +879,9 @@ onUnmounted(() => {
 
     <!-- Schedules drawer -->
     <ScheduleDrawer v-model:open="scheduleDrawerOpen" :device="scheduleDevice" />
+
+    <!-- Calendars drawer -->
+    <CalendarDrawer v-model:open="calendarDrawerOpen" :device="calendarDevice" />
 
     <!-- Save as template -->
     <SaveTemplateModal

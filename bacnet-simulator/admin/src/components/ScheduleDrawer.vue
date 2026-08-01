@@ -3,7 +3,7 @@ import { ref, reactive, computed, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { PlusOutlined, EditOutlined, DeleteOutlined, MinusCircleOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
-import type { Device, SimObject, Schedule, ScheduleTimeValue, ScheduleException } from '../types'
+import type { Device, SimObject, Schedule, ScheduleTimeValue, ScheduleException, Calendar } from '../types'
 
 const props = defineProps<{ open: boolean; device: Device | null }>()
 const emit = defineEmits<{ 'update:open': [v: boolean] }>()
@@ -26,6 +26,7 @@ const TARGET_TYPES_FOR: Record<string, string[]> = {
 
 const list = ref<Schedule[]>([])
 const allObjects = ref<SimObject[]>([])
+const allCalendars = ref<Calendar[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const editing = ref<Schedule | null>(null)
@@ -61,12 +62,14 @@ async function load() {
   if (!props.device) return
   loading.value = true
   try {
-    const [scheds, objects] = await Promise.all([
+    const [scheds, objects, calendars] = await Promise.all([
       api.schedules.list(props.device.id),
       api.objects.list(props.device.id),
+      api.calendars.list(props.device.id),
     ])
     list.value = scheds
     allObjects.value = objects
+    allCalendars.value = calendars
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Failed to load schedules')
   } finally {
@@ -357,23 +360,37 @@ function objectLabel(o: SimObject): string {
 
         <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px">
           Exceptions
-          <span style="font-weight:400;color:#bbb;text-transform:none">— override the weekly schedule on specific dates</span>
+          <span style="font-weight:400;color:#bbb;text-transform:none">
+            — override the weekly schedule on specific dates, or reuse a Calendar's date list (see the device's
+            "Calendars" menu entry) across multiple schedules
+          </span>
         </div>
         <div
           v-for="(exc, ei) in form.exceptions" :key="ei"
           style="background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:10px;margin-bottom:10px"
         >
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-            <a-select v-model:value="(exc.period as any).type" style="width:130px">
+            <a-select v-model:value="(exc.period as any).type" style="width:150px">
               <a-select-option value="date">Single date</a-select-option>
               <a-select-option value="date-range">Date range</a-select-option>
+              <a-select-option value="calendar-reference">Reference Calendar</a-select-option>
             </a-select>
             <template v-if="exc.period.type === 'date'">
               <a-input v-model:value="(exc.period as any).date" placeholder="YYYY-MM-DD" style="width:130px;font-family:monospace" />
             </template>
-            <template v-else>
+            <template v-else-if="exc.period.type === 'date-range'">
               <a-input v-model:value="(exc.period as any).start" placeholder="Start YYYY-MM-DD" style="width:130px;font-family:monospace" />
               <a-input v-model:value="(exc.period as any).end" placeholder="End YYYY-MM-DD" style="width:130px;font-family:monospace" />
+            </template>
+            <template v-else>
+              <a-select
+                v-model:value="(exc.period as any).calendar_name"
+                placeholder="Choose a calendar"
+                style="width:180px"
+                :not-found-content="allCalendars.length ? undefined : 'No calendars on this device yet'"
+              >
+                <a-select-option v-for="cal in allCalendars" :key="cal.name" :value="cal.name">{{ cal.name }}</a-select-option>
+              </a-select>
             </template>
             <a-input-number v-model:value="exc.priority" :min="1" :max="16" style="width:90px" title="Priority (1 = highest)" />
             <div style="flex:1" />

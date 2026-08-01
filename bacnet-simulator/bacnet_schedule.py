@@ -27,8 +27,21 @@ Deferred (narrow scope, matching the rest of GH #7):
     construct as a real instance in this version (same class of issue as
     `Any()` needed a workaround for in ede.py); every entry here carries an
     explicit value instead of "revert to previous".
-  - Recurring weekday-pattern exceptions (BACnetWeekNDay) — only single-date
-    and inclusive date-range exceptions are supported.
+  - Recurring weekday-pattern exceptions inline on a Schedule (BACnetWeekNDay)
+    — only single-date and inclusive date-range *inline* exceptions are
+    supported. Weekday patterns are supported when referencing a Calendar
+    object instead (see calendar_phys_by_name below and bacnet_calendar.py,
+    GH #18) — bacpypes3's own ScheduleObject.eval() resolves calendarReference
+    exceptions by reading the referenced Calendar's dateList directly.
+
+GH #18 adds calendarReference support: an exception can reference a Calendar
+object on the same device by name (`{"period": {"type": "calendar-reference",
+"calendar_name": "..."}}`) instead of repeating inline dates. The name is
+resolved to that calendar's live BACnet objectIdentifier via
+calendar_phys_by_name, built by the engine in the same per-device
+construction pass that builds the Calendar objects themselves (see
+SimEngine.start()/reload() in bacnet_simulator.py) — so calendars must be
+constructed before the Schedule that references them.
 """
 from __future__ import annotations
 
@@ -42,7 +55,7 @@ from bacpypes3.basetypes import (
     DailySchedule, TimeValue, DateRange, DeviceObjectPropertyReference,
     SpecialEvent, SpecialEventPeriod, CalendarEntry,
 )
-from bacpypes3.primitivedata import Time, Date, Real, Boolean, Unsigned
+from bacpypes3.primitivedata import Time, Date, Real, Boolean, Unsigned, ObjectIdentifier
 
 DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 VALUE_TYPES = ("real", "boolean", "unsigned")
@@ -88,22 +101,30 @@ def build_weekly_schedule(weekly: dict, value_type: str):
     return ArrayOf(DailySchedule)(days)
 
 
-def build_exception_schedule(exceptions: list, value_type: str) -> Optional[Any]:
+def build_exception_schedule(
+    exceptions: list, value_type: str, calendar_phys_by_name: Optional[dict] = None,
+) -> Optional[Any]:
     if not exceptions:
         return None
+    calendar_phys_by_name = calendar_phys_by_name or {}
     events = []
     for exc in exceptions:
         period = exc.get("period") or {}
         ptype = period.get("type")
         if ptype == "date":
             y, m, d = parse_date_tuple(period["date"])
-            calendar_entry = CalendarEntry(date=Date((y, m, d, 255)))
+            period_kwargs = {"calendarEntry": CalendarEntry(date=Date((y, m, d, 255)))}
         elif ptype == "date-range":
             ys, ms, ds = parse_date_tuple(period["start"])
             ye, me, de = parse_date_tuple(period["end"])
-            calendar_entry = CalendarEntry(dateRange=DateRange(
+            period_kwargs = {"calendarEntry": CalendarEntry(dateRange=DateRange(
                 startDate=Date((ys, ms, ds, 255)), endDate=Date((ye, me, de, 255)),
-            ))
+            ))}
+        elif ptype == "calendar-reference":
+            phys = calendar_phys_by_name.get(period.get("calendar_name"))
+            if phys is None:
+                continue  # referenced calendar missing/disabled/renamed — skip, matching schedule targets' behavior
+            period_kwargs = {"calendarReference": ObjectIdentifier(("calendar", phys))}
         else:
             continue
         time_values = [
@@ -111,7 +132,7 @@ def build_exception_schedule(exceptions: list, value_type: str) -> Optional[Any]
             for e in exc.get("entries", [])
         ]
         events.append(SpecialEvent(
-            period=SpecialEventPeriod(calendarEntry=calendar_entry),
+            period=SpecialEventPeriod(**period_kwargs),
             listOfTimeValues=time_values,
             eventPriority=Unsigned(max(1, min(16, int(exc.get("priority", 1))))),
         ))
