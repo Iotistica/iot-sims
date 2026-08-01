@@ -22,12 +22,13 @@
 #>
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot  = Split-Path -Parent (Split-Path -Parent $scriptDir)
-$python    = Join-Path $repoRoot ".venv\Scripts\python.exe"
+# iot-sims has no venv of its own — this reuses the iotistica repo's venv,
+# which already has bacpypes3==0.0.91 and the rest of requirements.txt installed.
+$python    = "C:\Users\Dan\iotistica\.venv\Scripts\python.exe"
 $sim       = Join-Path $scriptDir "bacnet_simulator.py"
 
 if (-not (Test-Path $python)) {
-    Write-Error "venv not found at $python — run: python -m venv .venv && .venv\Scripts\pip install bacpypes3==0.0.91"
+    Write-Error "venv not found at $python — run: python -m venv .venv && .venv\Scripts\pip install -r requirements.txt (from bacnet-simulator\)"
     exit 1
 }
 

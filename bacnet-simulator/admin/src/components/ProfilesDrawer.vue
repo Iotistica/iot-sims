@@ -51,6 +51,14 @@ function exportProfile(p: Profile) {
   window.open(`/profiles/${p.id}/export`, '_blank')
 }
 
+async function exportProfileEde(p: Profile) {
+  try {
+    await api.profiles.exportEde(p.id, p.name)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Export failed')
+  }
+}
+
 function confirmDelete(p: Profile) {
   Modal.confirm({
     title: `Delete "${p.name}"?`,
@@ -115,6 +123,7 @@ watch(() => props.open, (isOpen) => {
             <a-button size="small" title="Export as JSON" @click="exportProfile(p)">
               <template #icon><DownloadOutlined /></template>
             </a-button>
+            <a-button size="small" title="Export as EDE" @click="exportProfileEde(p)">EDE</a-button>
             <a-button size="small" danger title="Delete" @click="confirmDelete(p)">
               <template #icon><DeleteOutlined /></template>
             </a-button>

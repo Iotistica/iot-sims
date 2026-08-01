@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type { Device } from '../types'
 
@@ -26,6 +27,55 @@ const form = reactive({
   model_name: 'BACnet Simulator',
   enabled: true,
 })
+
+// ── Import points from EDE (only offered when adding a new, non-draft device) ──
+
+const edeFile = ref<File | null>(null)
+const edeFileName = ref('')
+const edeFileInput = ref<HTMLInputElement>()
+
+function onEdeFileChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  ;(e.target as HTMLInputElement).value = ''
+  if (!file) return
+
+  const reader = new FileReader()
+  reader.onload = () => {
+    const text = reader.result as string
+    const lines = text.split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith('#'))
+    if (lines.length < 2) { message.error('No data rows found in that EDE file'); return }
+
+    const header = lines[0].split(';').map(h => h.trim().toLowerCase())
+    const idx = header.indexOf('device-instance')
+    const instances = new Set<number>()
+    if (idx !== -1) {
+      for (const line of lines.slice(1)) {
+        const n = Number(line.split(';')[idx]?.trim())
+        if (Number.isFinite(n)) instances.add(n)
+      }
+    }
+    if (instances.size > 1) {
+      message.warning('This EDE file covers multiple devices — add each device separately, or use project-level EDE import (Open Project → Import → EDE) instead.')
+      return
+    }
+
+    edeFile.value = file
+    edeFileName.value = file.name
+
+    const [instance] = instances
+    if (instance !== undefined) {
+      if ((props.existingInstances ?? []).includes(instance)) {
+        message.warning(`Device instance ${instance} from the file is already in use — keeping ${form.device_instance}.`)
+      } else {
+        form.device_instance = instance
+      }
+    }
+    if (!form.name.trim()) {
+      form.name = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim()
+    }
+  }
+  reader.readAsText(file)
+}
 
 function nextFreeInstance(): number {
   const taken = new Set(props.existingInstances ?? [])
@@ -75,6 +125,8 @@ async function loadVendors() {
 watch(() => props.open, (v) => {
   if (!v) return
   loadVendors()
+  edeFile.value = null
+  edeFileName.value = ''
   const src = props.draftMode ? props.draftDevice : props.device
   if (src) {
     Object.assign(form, {
@@ -104,8 +156,16 @@ async function save() {
       await api.devices.update(props.device.id, body)
       message.success('Device updated')
     } else {
-      await api.devices.create(body)
+      const created = await api.devices.create(body)
       message.success('Device created')
+      if (edeFile.value) {
+        try {
+          const result = await api.devices.importEde(created.id, edeFile.value)
+          message.success(`${result.objects_imported} object${result.objects_imported !== 1 ? 's' : ''} imported from EDE`)
+        } catch (e: unknown) {
+          message.error(`Device created, but EDE import failed: ${(e as Error).message}`)
+        }
+      }
     }
     emit('update:open', false)
     emit('saved')
@@ -179,6 +239,18 @@ async function save() {
 
       <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
         <a-switch v-model:checked="form.enabled" />
+      </a-form-item>
+
+      <a-form-item
+        v-if="!device && !draftMode"
+        label="Import points from EDE (optional)"
+        style="margin-top:16px;margin-bottom:0"
+      >
+        <input ref="edeFileInput" type="file" accept=".ede,.csv,text/csv" style="display:none" @change="onEdeFileChange" />
+        <a-button block @click="edeFileInput?.click()">
+          <template #icon><UploadOutlined /></template>
+          {{ edeFileName || 'Choose EDE file…' }}
+        </a-button>
       </a-form-item>
     </a-form>
 

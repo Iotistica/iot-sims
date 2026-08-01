@@ -235,7 +235,7 @@ class PicsParser:
             elif detected_headings:
                 previous_heading = detected_headings[-1]
 
-            return results
+        return results
     
     @staticmethod
     def _normalize_object(obj: PicsObject) -> None:

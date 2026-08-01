@@ -27,23 +27,36 @@ from typing import Any, Optional, Union
 import bcrypt
 import jwt
 import psutil
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
 
+import alarms
+import ede
+import bacnet_schedule
+
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.analog import AnalogInputObject, AnalogOutputObject, AnalogValueObject
 from bacpypes3.local.binary import BinaryInputObject, BinaryOutputObject, BinaryValueObject
+from bacpypes3.local.multistate import MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject
+from bacpypes3.local.object import Object as LocalObject
 from bacpypes3.app import Application
-from bacpypes3.primitivedata import Real, ObjectIdentifier
-from bacpypes3.basetypes import EngineeringUnits, BinaryPV
+from bacpypes3.primitivedata import Real, ObjectIdentifier, Unsigned, Boolean, Date, Time
+from bacpypes3.constructeddata import SequenceOf, Any as BACnetAny
+from bacpypes3.basetypes import (
+    EngineeringUnits, BinaryPV, LoggingType, DeviceObjectPropertyReference,
+    Reliability, LogRecord, LogRecordLogDatum, DateTime, StatusFlags,
+)
+from bacpypes3.object import TrendLogObject as _TrendLogObjectSchema
 from bacpypes3.debugging import bacpypes_debugging, ModuleLogger
+from bacpypes3.errors import ExecutionError
 from bacpypes3.local.networkport import NetworkPortObject
 from bacpypes3.apdu import (
     ReadPropertyACK,
+    ReadRangeACK,
     SimpleAckPDU,
     ErrorPDU,
     RejectPDU,
@@ -73,12 +86,21 @@ BACNET_PORT = int(os.environ.get("BACNET_PORT", "47808"))
 VALID_OBJECT_TYPES = {
     "analog-input", "analog-output", "analog-value",
     "binary-input", "binary-output", "binary-value",
+    "multi-state-input", "multi-state-output", "multi-state-value",
+}
+MULTISTATE_TYPES = {"multi-state-input", "multi-state-output", "multi-state-value"}
+
+# Narrow, practical subset of BACnet's Reliability enum (GH #16) — enough to
+# exercise client-side fault handling without modeling every standard value.
+VALID_RELIABILITY = {
+    "no-fault-detected", "no-sensor", "over-range", "under-range",
+    "open-loop", "shorted-loop", "unreliable-other", "multi-state-fault",
 }
 
 VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault"}
 
 BACNET_UNITS = [
-    "no-units", "degrees-celsius", "degrees-fahrenheit", "kelvin",
+    "no-units", "degrees-celsius", "degrees-fahrenheit", "degrees-kelvin",
     "percent", "parts-per-million", "kilowatts", "watts", "kilowatt-hours",
     "amperes", "volts", "cubic-feet-per-minute", "liters-per-second",
     "pascals", "kilopascals", "bars", "cubic-meters-per-hour",
@@ -150,6 +172,8 @@ class Database:
                     behavior_params TEXT NOT NULL DEFAULT '{"value":0}',
                     enabled INTEGER NOT NULL DEFAULT 1,
                     manual_value REAL,
+                    number_of_states INTEGER NOT NULL DEFAULT 2,
+                    reliability TEXT NOT NULL DEFAULT 'no-fault-detected',
                     UNIQUE(device_id, object_type, object_instance)
                 );
 
@@ -169,7 +193,126 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     last_login_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS notification_classes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    priority_to_offnormal INTEGER NOT NULL DEFAULT 100,
+                    priority_to_fault INTEGER NOT NULL DEFAULT 100,
+                    priority_to_normal INTEGER NOT NULL DEFAULT 100,
+                    ack_required_transitions TEXT NOT NULL DEFAULT '["to-offnormal","to-fault"]',
+                    recipients TEXT NOT NULL DEFAULT '[]'
+                );
+
+                CREATE TABLE IF NOT EXISTS object_alarm_configs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    object_id INTEGER NOT NULL UNIQUE REFERENCES objects(id) ON DELETE CASCADE,
+                    notification_class_id INTEGER REFERENCES notification_classes(id) ON DELETE SET NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    event_enable TEXT NOT NULL DEFAULT '["to-offnormal","to-fault","to-normal"]',
+                    notify_type TEXT NOT NULL DEFAULT 'alarm',
+                    time_delay INTEGER NOT NULL DEFAULT 0,
+                    time_delay_normal INTEGER NOT NULL DEFAULT 0,
+                    params TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS alarm_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    object_id INTEGER REFERENCES objects(id) ON DELETE CASCADE,
+                    device_id INTEGER NOT NULL,
+                    object_name TEXT NOT NULL,
+                    from_state TEXT NOT NULL,
+                    to_state TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    value TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL DEFAULT '',
+                    ts TEXT NOT NULL DEFAULT (datetime('now')),
+                    ack_required INTEGER NOT NULL DEFAULT 0,
+                    acknowledged INTEGER NOT NULL DEFAULT 0,
+                    ack_ts TEXT,
+                    ack_by TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS event_enrollments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    monitored_object_id INTEGER NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+                    algorithm TEXT NOT NULL DEFAULT 'change-of-state',
+                    event_parameters TEXT NOT NULL DEFAULT '{}',
+                    notification_class_id INTEGER REFERENCES notification_classes(id) ON DELETE SET NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    event_enable TEXT NOT NULL DEFAULT '["to-offnormal","to-fault","to-normal"]',
+                    notify_type TEXT NOT NULL DEFAULT 'event',
+                    time_delay INTEGER NOT NULL DEFAULT 0,
+                    time_delay_normal INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS trend_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    monitored_object_id INTEGER NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+                    logging_type TEXT NOT NULL DEFAULT 'polled',
+                    log_interval INTEGER NOT NULL DEFAULT 60,
+                    cov_increment REAL NOT NULL DEFAULT 1.0,
+                    buffer_size INTEGER NOT NULL DEFAULT 1000,
+                    stop_when_full INTEGER NOT NULL DEFAULT 0,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    record_count INTEGER NOT NULL DEFAULT 0,
+                    total_record_count INTEGER NOT NULL DEFAULT 0,
+                    last_sampled_at REAL
+                );
+
+                CREATE TABLE IF NOT EXISTS trend_log_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trend_log_id INTEGER NOT NULL REFERENCES trend_logs(id) ON DELETE CASCADE,
+                    sequence_number INTEGER NOT NULL,
+                    ts TEXT NOT NULL DEFAULT (datetime('now')),
+                    value TEXT NOT NULL,
+                    status_flags TEXT NOT NULL DEFAULT '[]'
+                );
+                CREATE INDEX IF NOT EXISTS idx_trend_records_log_seq ON trend_log_records(trend_log_id, sequence_number);
+                CREATE INDEX IF NOT EXISTS idx_trend_records_log_ts ON trend_log_records(trend_log_id, ts);
+
+                CREATE TABLE IF NOT EXISTS bacnet_schedules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    value_type TEXT NOT NULL DEFAULT 'real',
+                    schedule_default TEXT NOT NULL DEFAULT '0',
+                    effective_start TEXT,
+                    effective_end TEXT,
+                    weekly_schedule TEXT NOT NULL DEFAULT '{}',
+                    exception_schedule TEXT NOT NULL DEFAULT '[]',
+                    priority_for_writing INTEGER NOT NULL DEFAULT 10
+                        CHECK(priority_for_writing >= 1 AND priority_for_writing <= 16),
+                    enabled INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS bacnet_schedule_targets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schedule_id INTEGER NOT NULL REFERENCES bacnet_schedules(id) ON DELETE CASCADE,
+                    object_id INTEGER NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+                    property_identifier TEXT NOT NULL DEFAULT 'present-value'
+                );
             """)
+            # Additive migration: number_of_states was added to the objects
+            # table after it first shipped — backfill it on existing DBs
+            # instead of requiring a fresh one.
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(objects)")}
+            if "number_of_states" not in existing_cols:
+                conn.execute("ALTER TABLE objects ADD COLUMN number_of_states INTEGER NOT NULL DEFAULT 2")
+            if "reliability" not in existing_cols:
+                conn.execute("ALTER TABLE objects ADD COLUMN reliability TEXT NOT NULL DEFAULT 'no-fault-detected'")
+            # Additive migration: cov_increment was added to trend_logs after
+            # it first shipped (Phase 1) — backfill for existing DBs too.
+            existing_tl_cols = {row[1] for row in conn.execute("PRAGMA table_info(trend_logs)")}
+            if "cov_increment" not in existing_tl_cols:
+                conn.execute("ALTER TABLE trend_logs ADD COLUMN cov_increment REAL NOT NULL DEFAULT 1.0")
         log.info("Database ready at %s", self.path)
 
     def seed_default(self) -> None:
@@ -464,8 +607,8 @@ class Database:
     def create_object(self, device_id: int, data: dict) -> dict:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled) "
-                "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled)",
+                "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled, number_of_states, reliability) "
+                "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled, :number_of_states, :reliability)",
                 {**data, "device_id": device_id},
             )
             conn.commit()
@@ -476,7 +619,7 @@ class Database:
             conn.execute(
                 "UPDATE objects SET object_type=:object_type, object_instance=:object_instance, "
                 "name=:name, units=:units, behavior=:behavior, behavior_params=:behavior_params, "
-                "enabled=:enabled WHERE id=:id",
+                "enabled=:enabled, number_of_states=:number_of_states, reliability=:reliability WHERE id=:id",
                 {**data, "id": obj_id},
             )
             conn.commit()
@@ -504,6 +647,424 @@ class Database:
             conn.commit()
             return cur.rowcount > 0
 
+    def import_ede_objects(self, device_id: int, objects: list[dict]) -> int:
+        """Upsert EDE rows into an existing device, keyed on (object_type,
+        object_instance) — matches the objects table's UNIQUE constraint."""
+        with self._conn() as conn:
+            for obj in objects:
+                conn.execute(
+                    "INSERT INTO objects "
+                    "(device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled) "
+                    "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled) "
+                    "ON CONFLICT(device_id, object_type, object_instance) DO UPDATE SET "
+                    "name=excluded.name, units=excluded.units, behavior=excluded.behavior, "
+                    "behavior_params=excluded.behavior_params, enabled=excluded.enabled",
+                    {**obj, "device_id": device_id},
+                )
+            conn.commit()
+            return len(objects)
+
+    # ── Alarms: Notification Classes ────────────────────────────────────────────
+
+    def get_notification_classes(self, device_id: Optional[int] = None) -> list[dict]:
+        with self._conn() as conn:
+            if device_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM notification_classes WHERE device_id=? ORDER BY name", (device_id,)
+                )
+            else:
+                rows = conn.execute("SELECT * FROM notification_classes ORDER BY device_id, name")
+            return [dict(r) for r in rows]
+
+    def get_notification_class(self, nc_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM notification_classes WHERE id=?", (nc_id,)).fetchone()
+            return dict(r) if r else None
+
+    def create_notification_class(self, device_id: int, data: dict) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO notification_classes "
+                "(device_id, name, priority_to_offnormal, priority_to_fault, priority_to_normal, "
+                "ack_required_transitions, recipients) "
+                "VALUES (:device_id, :name, :priority_to_offnormal, :priority_to_fault, :priority_to_normal, "
+                ":ack_required_transitions, :recipients)",
+                {**data, "device_id": device_id},
+            )
+            conn.commit()
+            return dict(conn.execute(
+                "SELECT * FROM notification_classes WHERE id=?", (cur.lastrowid,)
+            ).fetchone())
+
+    def update_notification_class(self, nc_id: int, data: dict) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE notification_classes SET name=:name, "
+                "priority_to_offnormal=:priority_to_offnormal, priority_to_fault=:priority_to_fault, "
+                "priority_to_normal=:priority_to_normal, ack_required_transitions=:ack_required_transitions, "
+                "recipients=:recipients WHERE id=:id",
+                {**data, "id": nc_id},
+            )
+            conn.commit()
+            r = conn.execute("SELECT * FROM notification_classes WHERE id=?", (nc_id,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_notification_class(self, nc_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM notification_classes WHERE id=?", (nc_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    # ── Alarms: per-object intrinsic reporting config ───────────────────────────
+
+    def get_alarm_config(self, object_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute(
+                "SELECT * FROM object_alarm_configs WHERE object_id=?", (object_id,)
+            ).fetchone()
+            return dict(r) if r else None
+
+    def set_alarm_config(self, object_id: int, data: dict) -> dict:
+        """Upsert the intrinsic-reporting config for one object."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO object_alarm_configs "
+                "(object_id, notification_class_id, enabled, event_enable, notify_type, "
+                "time_delay, time_delay_normal, params) "
+                "VALUES (:object_id, :notification_class_id, :enabled, :event_enable, :notify_type, "
+                ":time_delay, :time_delay_normal, :params) "
+                "ON CONFLICT(object_id) DO UPDATE SET "
+                "notification_class_id=excluded.notification_class_id, enabled=excluded.enabled, "
+                "event_enable=excluded.event_enable, notify_type=excluded.notify_type, "
+                "time_delay=excluded.time_delay, time_delay_normal=excluded.time_delay_normal, "
+                "params=excluded.params",
+                {**data, "object_id": object_id},
+            )
+            conn.commit()
+            return dict(conn.execute(
+                "SELECT * FROM object_alarm_configs WHERE object_id=?", (object_id,)
+            ).fetchone())
+
+    def delete_alarm_config(self, object_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM object_alarm_configs WHERE object_id=?", (object_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_all_alarm_configs(self) -> list[dict]:
+        """Every enabled intrinsic-reporting config, joined with its object row —
+        used once per tick so the engine doesn't have to query per-object."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT oac.*, o.device_id AS obj_device_id, o.object_type, o.object_instance, "
+                "o.name AS object_name "
+                "FROM object_alarm_configs oac JOIN objects o ON o.id = oac.object_id "
+                "WHERE oac.enabled = 1"
+            )
+            return [dict(r) for r in rows]
+
+    # ── Alarms: event log ────────────────────────────────────────────────────────
+
+    def log_alarm(self, entry: dict) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO alarm_log "
+                "(object_id, device_id, object_name, from_state, to_state, priority, value, "
+                "message, ack_required) "
+                "VALUES (:object_id, :device_id, :object_name, :from_state, :to_state, :priority, "
+                ":value, :message, :ack_required)",
+                entry,
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM alarm_log WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def get_alarm_log(self, limit: int = 200, unacked_only: bool = False) -> list[dict]:
+        with self._conn() as conn:
+            query = "SELECT * FROM alarm_log"
+            if unacked_only:
+                query += " WHERE ack_required=1 AND acknowledged=0"
+            query += " ORDER BY id DESC LIMIT ?"
+            return [dict(r) for r in conn.execute(query, (limit,))]
+
+    def ack_alarm(self, alarm_id: int, ack_by: str) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE alarm_log SET acknowledged=1, ack_ts=datetime('now'), ack_by=? WHERE id=?",
+                (ack_by, alarm_id),
+            )
+            conn.commit()
+            r = conn.execute("SELECT * FROM alarm_log WHERE id=?", (alarm_id,)).fetchone()
+            return dict(r) if r else None
+
+    # ── Alarms: Event Enrollments (Algorithmic Reporting) ───────────────────────
+
+    def get_event_enrollments(self, device_id: Optional[int] = None) -> list[dict]:
+        with self._conn() as conn:
+            if device_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM event_enrollments WHERE device_id=? ORDER BY name", (device_id,)
+                )
+            else:
+                rows = conn.execute("SELECT * FROM event_enrollments ORDER BY device_id, name")
+            return [dict(r) for r in rows]
+
+    def get_event_enrollment(self, ee_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM event_enrollments WHERE id=?", (ee_id,)).fetchone()
+            return dict(r) if r else None
+
+    def create_event_enrollment(self, device_id: int, data: dict) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO event_enrollments "
+                "(device_id, name, monitored_object_id, algorithm, event_parameters, "
+                "notification_class_id, enabled, event_enable, notify_type, time_delay, time_delay_normal) "
+                "VALUES (:device_id, :name, :monitored_object_id, :algorithm, :event_parameters, "
+                ":notification_class_id, :enabled, :event_enable, :notify_type, :time_delay, :time_delay_normal)",
+                {**data, "device_id": device_id},
+            )
+            conn.commit()
+            return dict(conn.execute(
+                "SELECT * FROM event_enrollments WHERE id=?", (cur.lastrowid,)
+            ).fetchone())
+
+    def update_event_enrollment(self, ee_id: int, data: dict) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE event_enrollments SET name=:name, monitored_object_id=:monitored_object_id, "
+                "algorithm=:algorithm, event_parameters=:event_parameters, "
+                "notification_class_id=:notification_class_id, enabled=:enabled, "
+                "event_enable=:event_enable, notify_type=:notify_type, time_delay=:time_delay, "
+                "time_delay_normal=:time_delay_normal WHERE id=:id",
+                {**data, "id": ee_id},
+            )
+            conn.commit()
+            r = conn.execute("SELECT * FROM event_enrollments WHERE id=?", (ee_id,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_event_enrollment(self, ee_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM event_enrollments WHERE id=?", (ee_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_all_event_enrollments(self) -> list[dict]:
+        """Every enabled enrollment joined with its monitored object row —
+        used once per tick, mirroring get_all_alarm_configs()."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ee.*, o.object_type, o.object_instance, o.name AS object_name, "
+                "o.units AS object_units "
+                "FROM event_enrollments ee JOIN objects o ON o.id = ee.monitored_object_id "
+                "WHERE ee.enabled = 1"
+            )
+            return [dict(r) for r in rows]
+
+    # ── Trend Logs ───────────────────────────────────────────────────────────────
+
+    def get_trend_logs(self, device_id: Optional[int] = None) -> list[dict]:
+        with self._conn() as conn:
+            if device_id is not None:
+                rows = conn.execute("SELECT * FROM trend_logs WHERE device_id=? ORDER BY name", (device_id,))
+            else:
+                rows = conn.execute("SELECT * FROM trend_logs ORDER BY device_id, name")
+            return [dict(r) for r in rows]
+
+    def get_trend_log(self, tl_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM trend_logs WHERE id=?", (tl_id,)).fetchone()
+            return dict(r) if r else None
+
+    def create_trend_log(self, device_id: int, data: dict) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO trend_logs "
+                "(device_id, name, description, monitored_object_id, logging_type, log_interval, "
+                "cov_increment, buffer_size, stop_when_full, enabled) "
+                "VALUES (:device_id, :name, :description, :monitored_object_id, :logging_type, :log_interval, "
+                ":cov_increment, :buffer_size, :stop_when_full, :enabled)",
+                {**data, "device_id": device_id},
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM trend_logs WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def update_trend_log(self, tl_id: int, data: dict) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE trend_logs SET name=:name, description=:description, "
+                "monitored_object_id=:monitored_object_id, logging_type=:logging_type, "
+                "log_interval=:log_interval, cov_increment=:cov_increment, buffer_size=:buffer_size, "
+                "stop_when_full=:stop_when_full, enabled=:enabled WHERE id=:id",
+                {**data, "id": tl_id},
+            )
+            conn.commit()
+            r = conn.execute("SELECT * FROM trend_logs WHERE id=?", (tl_id,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_trend_log(self, tl_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM trend_logs WHERE id=?", (tl_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_all_trend_logs(self) -> list[dict]:
+        """Every enabled trend log joined with its monitored object row —
+        used once per tick, mirroring get_all_alarm_configs()."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT tl.*, o.object_type, o.object_instance, o.name AS object_name "
+                "FROM trend_logs tl JOIN objects o ON o.id = tl.monitored_object_id "
+                "WHERE tl.enabled = 1"
+            )
+            return [dict(r) for r in rows]
+
+    def add_trend_record(self, trend_log_id: int, value: Any, status_flags: str = "[]") -> Optional[int]:
+        """Append a sample, enforcing the circular-buffer/stop-when-full
+        semantics. Returns the new record's sequence number, or None if the
+        buffer is full and stop_when_full is set."""
+        with self._conn() as conn:
+            cfg = conn.execute("SELECT * FROM trend_logs WHERE id=?", (trend_log_id,)).fetchone()
+            if not cfg:
+                return None
+            if cfg["record_count"] >= cfg["buffer_size"]:
+                if cfg["stop_when_full"]:
+                    return None
+                conn.execute(
+                    "DELETE FROM trend_log_records WHERE id = ("
+                    "SELECT id FROM trend_log_records WHERE trend_log_id=? ORDER BY sequence_number ASC LIMIT 1)",
+                    (trend_log_id,),
+                )
+                new_count = cfg["record_count"]
+            else:
+                new_count = cfg["record_count"] + 1
+            next_seq = cfg["total_record_count"] + 1
+            conn.execute(
+                "INSERT INTO trend_log_records (trend_log_id, sequence_number, value, status_flags) "
+                "VALUES (?, ?, ?, ?)",
+                (trend_log_id, next_seq, str(value), status_flags),
+            )
+            conn.execute(
+                "UPDATE trend_logs SET record_count=?, total_record_count=?, last_sampled_at=? WHERE id=?",
+                (new_count, next_seq, time.time(), trend_log_id),
+            )
+            conn.commit()
+            return next_seq
+
+    def get_trend_log_records(
+        self, trend_log_id: int, from_ts: Optional[str] = None, to_ts: Optional[str] = None,
+        start_sequence: Optional[int] = None, limit: int = 200, order: str = "asc",
+    ) -> list[dict]:
+        with self._conn() as conn:
+            query = "SELECT * FROM trend_log_records WHERE trend_log_id=?"
+            params: list[Any] = [trend_log_id]
+            if from_ts:
+                query += " AND ts >= ?"
+                params.append(from_ts)
+            if to_ts:
+                query += " AND ts <= ?"
+                params.append(to_ts)
+            if start_sequence is not None:
+                query += " AND sequence_number >= ?"
+                params.append(start_sequence)
+            query += f" ORDER BY sequence_number {'DESC' if order == 'desc' else 'ASC'} LIMIT ?"
+            params.append(limit)
+            return [dict(r) for r in conn.execute(query, params)]
+
+    def clear_trend_log_records(self, trend_log_id: int) -> bool:
+        """Clears the buffer but keeps total_record_count monotonic, matching
+        real BACnet Trend Log clear-buffer semantics (sequence numbers never
+        reuse, even across a clear)."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM trend_log_records WHERE trend_log_id=?", (trend_log_id,))
+            cur = conn.execute("UPDATE trend_logs SET record_count=0 WHERE id=?", (trend_log_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    # ── BACnet Schedules ─────────────────────────────────────────────────────────
+    # Note: unlike alarms/trend logs, schedules don't need per-tick evaluation —
+    # bacnet_schedule.LocalScheduleObject (built on bacpypes3's own
+    # ScheduleObject) self-schedules its own next transition via asyncio, so
+    # the engine only needs to (re)construct them on start()/reload().
+
+    def get_schedules(self, device_id: Optional[int] = None) -> list[dict]:
+        with self._conn() as conn:
+            if device_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM bacnet_schedules WHERE device_id=? ORDER BY name", (device_id,)
+                )
+            else:
+                rows = conn.execute("SELECT * FROM bacnet_schedules ORDER BY device_id, name")
+            return [dict(r) for r in rows]
+
+    def get_schedule(self, schedule_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM bacnet_schedules WHERE id=?", (schedule_id,)).fetchone()
+            return dict(r) if r else None
+
+    def get_schedule_targets(self, schedule_id: int) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT t.*, o.object_type, o.object_instance, o.name AS object_name "
+                "FROM bacnet_schedule_targets t JOIN objects o ON o.id = t.object_id "
+                "WHERE t.schedule_id=?",
+                (schedule_id,),
+            )
+            return [dict(r) for r in rows]
+
+    def _set_schedule_targets(self, conn: sqlite3.Connection, schedule_id: int, targets: list[dict]) -> None:
+        conn.execute("DELETE FROM bacnet_schedule_targets WHERE schedule_id=?", (schedule_id,))
+        for t in targets:
+            conn.execute(
+                "INSERT INTO bacnet_schedule_targets (schedule_id, object_id, property_identifier) "
+                "VALUES (?, ?, ?)",
+                (schedule_id, t["object_id"], t.get("property_identifier", "present-value")),
+            )
+
+    def create_schedule(self, device_id: int, data: dict, targets: list[dict]) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO bacnet_schedules "
+                "(device_id, name, description, value_type, schedule_default, effective_start, "
+                "effective_end, weekly_schedule, exception_schedule, priority_for_writing, enabled) "
+                "VALUES (:device_id, :name, :description, :value_type, :schedule_default, :effective_start, "
+                ":effective_end, :weekly_schedule, :exception_schedule, :priority_for_writing, :enabled)",
+                {**data, "device_id": device_id},
+            )
+            schedule_id = cur.lastrowid
+            self._set_schedule_targets(conn, schedule_id, targets)
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM bacnet_schedules WHERE id=?", (schedule_id,)).fetchone())
+
+    def update_schedule(self, schedule_id: int, data: dict, targets: list[dict]) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE bacnet_schedules SET name=:name, description=:description, "
+                "value_type=:value_type, schedule_default=:schedule_default, "
+                "effective_start=:effective_start, effective_end=:effective_end, "
+                "weekly_schedule=:weekly_schedule, exception_schedule=:exception_schedule, "
+                "priority_for_writing=:priority_for_writing, enabled=:enabled WHERE id=:id",
+                {**data, "id": schedule_id},
+            )
+            self._set_schedule_targets(conn, schedule_id, targets)
+            conn.commit()
+            r = conn.execute("SELECT * FROM bacnet_schedules WHERE id=?", (schedule_id,)).fetchone()
+            return dict(r) if r else None
+
+    def set_schedule_enabled(self, schedule_id: int, enabled: bool) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE bacnet_schedules SET enabled=? WHERE id=?", (1 if enabled else 0, schedule_id)
+            )
+            conn.commit()
+            r = conn.execute("SELECT * FROM bacnet_schedules WHERE id=?", (schedule_id,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_schedule(self, schedule_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM bacnet_schedules WHERE id=?", (schedule_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
     # ── Profiles ──────────────────────────────────────────────────────────────
 
     def get_profiles(self) -> list[dict]:
@@ -517,6 +1078,60 @@ class Database:
             r = conn.execute("SELECT * FROM profiles WHERE id=?", (profile_id,)).fetchone()
             return dict(r) if r else None
 
+    @staticmethod
+    def _attach_trend_logs(conn: sqlite3.Connection, dev: dict) -> None:
+        """Snapshot this device's trend logs for a profile, replacing the
+        live monitored_object_id with a portable (object_type, object_instance)
+        reference — object ids are reassigned on load, so a raw id wouldn't
+        survive the round trip."""
+        trend_logs = [dict(r) for r in conn.execute(
+            "SELECT * FROM trend_logs WHERE device_id=?", (dev["id"],)
+        )]
+        for tl in trend_logs:
+            mon = conn.execute(
+                "SELECT object_type, object_instance FROM objects WHERE id=?",
+                (tl.pop("monitored_object_id"),),
+            ).fetchone()
+            tl["monitored_object_ref"] = (
+                {"object_type": mon["object_type"], "object_instance": mon["object_instance"]}
+                if mon else None
+            )
+            tl.pop("id", None)
+            tl.pop("device_id", None)
+            # Historical records aren't part of a profile snapshot, only config.
+            tl.pop("record_count", None)
+            tl.pop("total_record_count", None)
+            tl.pop("last_sampled_at", None)
+        dev["trend_logs"] = trend_logs
+
+    @staticmethod
+    def _attach_schedules(conn: sqlite3.Connection, dev: dict) -> None:
+        """Same portable-reference approach as _attach_trend_logs, but for
+        each schedule's (potentially multiple) target object references."""
+        schedules = [dict(r) for r in conn.execute(
+            "SELECT * FROM bacnet_schedules WHERE device_id=?", (dev["id"],)
+        )]
+        for sched in schedules:
+            targets = conn.execute(
+                "SELECT object_id, property_identifier FROM bacnet_schedule_targets WHERE schedule_id=?",
+                (sched["id"],),
+            )
+            portable_targets = []
+            for t in targets:
+                mon = conn.execute(
+                    "SELECT object_type, object_instance FROM objects WHERE id=?", (t["object_id"],)
+                ).fetchone()
+                if mon:
+                    portable_targets.append({
+                        "object_type": mon["object_type"],
+                        "object_instance": mon["object_instance"],
+                        "property_identifier": t["property_identifier"],
+                    })
+            sched["targets"] = portable_targets
+            sched.pop("id", None)
+            sched.pop("device_id", None)
+        dev["schedules"] = schedules
+
     def save_profile(self, name: str, description: str) -> dict:
         with self._conn() as conn:
             devices = [dict(r) for r in conn.execute(
@@ -527,6 +1142,8 @@ class Database:
                     "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance",
                     (dev["id"],),
                 )]
+                self._attach_trend_logs(conn, dev)
+                self._attach_schedules(conn, dev)
             data = json.dumps({"devices": devices})
             cur = conn.execute(
                 "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
@@ -548,6 +1165,8 @@ class Database:
                     "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance",
                     (dev["id"],),
                 )]
+                self._attach_trend_logs(conn, dev)
+                self._attach_schedules(conn, dev)
             data = json.dumps({"devices": devices})
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
@@ -566,6 +1185,8 @@ class Database:
             conn.commit()
             for dev in payload.get("devices", []):
                 objects = dev.pop("objects", [])
+                trend_logs = dev.pop("trend_logs", [])
+                schedules = dev.pop("schedules", [])
                 dev.pop("id", None)
                 cur = conn.execute(
                     "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled) "
@@ -573,17 +1194,90 @@ class Database:
                     dev,
                 )
                 dev_id = cur.lastrowid
+                obj_lookup: dict[tuple[str, int], int] = {}
                 for obj in objects:
                     obj.pop("id", None)
                     obj.pop("device_id", None)
-                    conn.execute(
+                    obj_cur = conn.execute(
                         "INSERT OR IGNORE INTO objects "
                         "(device_id, object_type, object_instance, name, units, behavior, "
-                        "behavior_params, enabled, manual_value) "
+                        "behavior_params, enabled, manual_value, number_of_states, reliability) "
                         "VALUES (:device_id, :object_type, :object_instance, :name, :units, "
-                        ":behavior, :behavior_params, :enabled, :manual_value)",
-                        {**obj, "device_id": dev_id, "manual_value": obj.get("manual_value")},
+                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability)",
+                        {
+                            **obj,
+                            "device_id": dev_id,
+                            "manual_value": obj.get("manual_value"),
+                            "number_of_states": obj.get("number_of_states") or 2,
+                            "reliability": obj.get("reliability") or "no-fault-detected",
+                        },
                     )
+                    obj_id = obj_cur.lastrowid if obj_cur.lastrowid else conn.execute(
+                        "SELECT id FROM objects WHERE device_id=? AND object_type=? AND object_instance=?",
+                        (dev_id, obj["object_type"], obj["object_instance"]),
+                    ).fetchone()[0]
+                    obj_lookup[(obj["object_type"], obj["object_instance"])] = obj_id
+
+                for tl in trend_logs:
+                    ref = tl.pop("monitored_object_ref", None)
+                    if not ref:
+                        continue
+                    mon_id = obj_lookup.get((ref["object_type"], ref["object_instance"]))
+                    if mon_id is None:
+                        continue
+                    conn.execute(
+                        "INSERT INTO trend_logs "
+                        "(device_id, name, description, monitored_object_id, logging_type, log_interval, "
+                        "cov_increment, buffer_size, stop_when_full, enabled) "
+                        "VALUES (:device_id, :name, :description, :monitored_object_id, :logging_type, "
+                        ":log_interval, :cov_increment, :buffer_size, :stop_when_full, :enabled)",
+                        {
+                            "device_id": dev_id,
+                            "name": tl.get("name", "Trend Log"),
+                            "description": tl.get("description", ""),
+                            "monitored_object_id": mon_id,
+                            "logging_type": tl.get("logging_type", "polled"),
+                            "log_interval": tl.get("log_interval", 60),
+                            "cov_increment": tl.get("cov_increment", 1.0),
+                            "buffer_size": tl.get("buffer_size", 1000),
+                            "stop_when_full": tl.get("stop_when_full", 0),
+                            "enabled": tl.get("enabled", 1),
+                        },
+                    )
+
+                for sched in schedules:
+                    portable_targets = sched.pop("targets", [])
+                    sched_cur = conn.execute(
+                        "INSERT INTO bacnet_schedules "
+                        "(device_id, name, description, value_type, schedule_default, effective_start, "
+                        "effective_end, weekly_schedule, exception_schedule, priority_for_writing, enabled) "
+                        "VALUES (:device_id, :name, :description, :value_type, :schedule_default, "
+                        ":effective_start, :effective_end, :weekly_schedule, :exception_schedule, "
+                        ":priority_for_writing, :enabled)",
+                        {
+                            "device_id": dev_id,
+                            "name": sched.get("name", "Schedule"),
+                            "description": sched.get("description", ""),
+                            "value_type": sched.get("value_type", "real"),
+                            "schedule_default": sched.get("schedule_default", "0"),
+                            "effective_start": sched.get("effective_start"),
+                            "effective_end": sched.get("effective_end"),
+                            "weekly_schedule": sched.get("weekly_schedule", "{}"),
+                            "exception_schedule": sched.get("exception_schedule", "[]"),
+                            "priority_for_writing": sched.get("priority_for_writing", 10),
+                            "enabled": sched.get("enabled", 1),
+                        },
+                    )
+                    schedule_id = sched_cur.lastrowid
+                    for t in portable_targets:
+                        target_id = obj_lookup.get((t["object_type"], t["object_instance"]))
+                        if target_id is None:
+                            continue
+                        conn.execute(
+                            "INSERT INTO bacnet_schedule_targets (schedule_id, object_id, property_identifier) "
+                            "VALUES (?, ?, ?)",
+                            (schedule_id, target_id, t.get("property_identifier", "present-value")),
+                        )
             conn.commit()
             return True
 
@@ -808,8 +1502,13 @@ class ManualBehavior(Behavior):
         return self._value
 
 
-class ScheduleBehavior(Behavior):
-    """Returns different values based on time-of-day blocks (occupied/unoccupied scheduling)."""
+class DailyPatternBehavior(Behavior):
+    """Returns different values based on time-of-day blocks (occupied/unoccupied
+    scheduling). Not to be confused with a real BACnet Schedule object (see
+    bacnet_schedule.py) — this is purely a value-simulation behavior, stored
+    under the historical behavior name "schedule" for backward compatibility
+    with existing profiles/seed data, but renamed at the Python-class level
+    now that real BACnet Schedule objects exist too."""
 
     @staticmethod
     def _parse_time(t: str) -> float:
@@ -913,7 +1612,7 @@ def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> 
     if behavior == "manual":
         return ManualBehavior(params, manual_value)
     if behavior == "schedule":
-        return ScheduleBehavior(params)
+        return DailyPatternBehavior(params)
     if behavior == "ramp":
         return RampBehavior(params)
     if behavior == "fault":
@@ -955,6 +1654,89 @@ def _resolve_base_ip() -> str:
     except Exception:
         pass
     return "0.0.0.0"
+
+
+# ─── Trend Log (BACnet wire exposure + ReadRange) ─────────────────────────────
+# TrendLogObject has no bacpypes3.local implementation (unlike analog/binary/
+# multi-state) — it's schema-only, so the "local" mixin here just makes it
+# addressable/readable via the standard Object machinery. All the actual
+# logging behavior (sampling, circular buffer) lives in SimEngine/Database;
+# this class only carries the read-only, BACnet-wire-visible snapshot of it.
+class LocalTrendLogObject(LocalObject, _TrendLogObjectSchema):
+    pass
+
+
+def _bacnet_datetime(ts: str) -> DateTime:
+    """Parse a 'YYYY-MM-DD HH:MM:SS' SQLite timestamp into a BACnet DateTime."""
+    d = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+    return DateTime(
+        date=Date((d.year - 1900, d.month, d.day, d.isoweekday())),
+        time=Time((d.hour, d.minute, d.second, 0)),
+    )
+
+
+def _parse_trend_value(value_str: str, otype: str) -> Any:
+    if otype in ("binary-input", "binary-output", "binary-value"):
+        return value_str == "True"
+    if otype in MULTISTATE_TYPES:
+        return int(round(float(value_str)))
+    return float(value_str)
+
+
+def _build_log_record(record: dict, otype: str) -> LogRecord:
+    value = _parse_trend_value(record["value"], otype)
+    if otype in ("binary-input", "binary-output", "binary-value"):
+        datum = LogRecordLogDatum(booleanValue=Boolean(value))
+    elif otype in MULTISTATE_TYPES:
+        datum = LogRecordLogDatum(unsignedValue=Unsigned(value))
+    else:
+        datum = LogRecordLogDatum(realValue=Real(value))
+    return LogRecord(
+        timestamp=_bacnet_datetime(record["ts"]),
+        logDatum=datum,
+        statusFlags=[0, 0, 0, 0],
+    )
+
+
+def _slice_trend_records(records: list[dict], range_: Any) -> tuple[list[dict], bool, bool]:
+    """Apply a BACnet ReadRange Range choice (byPosition/bySequenceNumber/
+    byTime) to an ascending-by-sequence-number list of records. Returns
+    (selected, is_first, is_last) — is_first/is_last describe whether the
+    selection includes the buffer's oldest/newest record (for resultFlags).
+    No range at all (range_ is None) returns everything."""
+    if not records:
+        return [], True, True
+
+    if range_ is None:
+        return records, True, True
+
+    def _apply(idx: int, count: int) -> list[dict]:
+        if count >= 0:
+            return records[idx: idx + count]
+        end = idx + 1
+        start = max(0, end + count)
+        return records[start:end]
+
+    selected: list[dict] = []
+    if range_.byPosition is not None:
+        idx = max(0, min(len(records) - 1, range_.byPosition.referenceIndex - 1))
+        selected = _apply(idx, int(range_.byPosition.count))
+    elif range_.bySequenceNumber is not None:
+        ref_seq = range_.bySequenceNumber.referenceSequenceNumber
+        idx = next((i for i, r in enumerate(records) if r["sequence_number"] >= ref_seq), len(records) - 1)
+        selected = _apply(idx, int(range_.bySequenceNumber.count))
+    elif range_.byTime is not None:
+        ref_dt = range_.byTime.referenceTime
+        ref_ts = f"{ref_dt.date[0] + 1900:04d}-{ref_dt.date[1]:02d}-{ref_dt.date[2]:02d} " \
+                 f"{ref_dt.time[0]:02d}:{ref_dt.time[1]:02d}:{ref_dt.time[2]:02d}"
+        idx = next((i for i, r in enumerate(records) if r["ts"] >= ref_ts), len(records) - 1)
+        selected = _apply(idx, int(range_.byTime.count))
+    else:
+        selected = records
+
+    is_first = bool(selected) and selected[0]["sequence_number"] == records[0]["sequence_number"]
+    is_last = bool(selected) and selected[-1]["sequence_number"] == records[-1]["sequence_number"]
+    return selected, is_first, is_last
 
 
 @bacpypes_debugging
@@ -1130,11 +1912,7 @@ class SimApplication(Application):
             return
 
         # Resolve to DB id by object identity
-        db_id: Optional[int] = None
-        for did, (bobj, _) in self._sim_engine._objects.items():
-            if bobj is obj:
-                db_id = did
-                break
+        db_id = self._sim_engine.db_id_for_bacnet_object(obj)
         if db_id is None:
             await super().do_WritePropertyRequest(apdu)
             return
@@ -1145,7 +1923,10 @@ class SimApplication(Application):
             return
 
         otype = obj_row["object_type"]
-        WRITABLE = {"analog-output", "analog-value", "binary-output", "binary-value"}
+        WRITABLE = {
+            "analog-output", "analog-value", "binary-output", "binary-value",
+            "multi-state-output", "multi-state-value",
+        }
         if otype not in WRITABLE:
             await super().do_WritePropertyRequest(apdu)
             return
@@ -1154,6 +1935,8 @@ class SimApplication(Application):
         try:
             if "analog" in otype:
                 value: Any = float(apdu.propertyValue.cast_out(Real))
+            elif otype in MULTISTATE_TYPES:
+                value = int(apdu.propertyValue.cast_out(Unsigned))
             else:
                 bpv = apdu.propertyValue.cast_out(BinaryPV)
                 value = (str(bpv) == "active")
@@ -1166,6 +1949,75 @@ class SimApplication(Application):
         # Persist to DB and update in-memory sim
         await self._sim_engine.write_object(db_id, value)
         await self.response(SimpleAckPDU(context=apdu))
+
+    async def do_ReadRangeRequest(self, apdu) -> None:
+        """Serve BACnet ReadRange for Trend Log objects' Log_Buffer property
+        (by position, by sequence number, by time, or the whole buffer if
+        no range is given) — see _slice_trend_records(). Every other
+        object/property falls through to bacpypes3's own handling, which is
+        unimplemented (raises NotImplementedError), same as before this
+        override existed."""
+        pending_key = (str(apdu.pduSource), apdu.apduInvokeID)
+        metrics.pending[pending_key] = {
+            "service": "ReadRange", "objid": str(apdu.objectIdentifier), "started": time.monotonic(),
+        }
+        metrics.requests_total += 1
+        metrics.requests_by_service["ReadRange"] += 1
+        metrics.reads_total += 1
+        metrics.requests_unicast += 1
+        metrics.clients_seen[str(apdu.pduSource)] = time.time()
+
+        if self._sim_engine is None:
+            await super().do_ReadRangeRequest(apdu)
+            return
+
+        objid = apdu.objectIdentifier
+        tl_id = None
+        for tlid, bobj in self._sim_engine._trend_log_objects.items():
+            if bobj.objectIdentifier == objid:
+                tl_id = tlid
+                break
+        if tl_id is None:
+            await super().do_ReadRangeRequest(apdu)
+            return
+
+        prop = apdu.propertyIdentifier
+        try:
+            prop_code = int(prop)
+        except Exception:
+            prop_code = getattr(prop, "value", None)
+        if prop_code != 131:  # log-buffer
+            raise ExecutionError(errorClass="property", errorCode="unknownProperty")
+
+        tl_cfg = await asyncio.to_thread(self._sim_engine.db.get_trend_log, tl_id)
+        if not tl_cfg or not tl_cfg["enabled"]:
+            raise ExecutionError(errorClass="object", errorCode="unknownObject")
+
+        monitored = await asyncio.to_thread(self._sim_engine.db.get_object, tl_cfg["monitored_object_id"])
+        otype = monitored["object_type"] if monitored else "analog-input"
+
+        all_records = await asyncio.to_thread(
+            self._sim_engine.db.get_trend_log_records, tl_id, limit=tl_cfg["buffer_size"], order="asc"
+        )
+        try:
+            selected, is_first, is_last = _slice_trend_records(all_records, apdu.range)
+        except Exception as e:
+            raise ExecutionError(errorClass="property", errorCode="invalidArrayIndex") from e
+
+        log_records = [_build_log_record(r, otype) for r in selected]
+        item_data = BACnetAny(SequenceOf(LogRecord)(log_records))
+
+        resp = ReadRangeACK(
+            objectIdentifier=objid,
+            propertyIdentifier=prop,
+            propertyArrayIndex=apdu.propertyArrayIndex,
+            resultFlags=[is_first, is_last, not is_last],
+            itemCount=len(log_records),
+            itemData=item_data,
+            firstSequenceNumber=selected[0]["sequence_number"] if selected else 1,
+            context=apdu,
+        )
+        await self.response(resp)
 
     async def response(self, apdu) -> None:  # type: ignore[override]
         # Every outcome — success, reject, abort, or protocol error — passes
@@ -1222,6 +2074,21 @@ class SimApplication(Application):
         await super().response(apdu)
 
 
+def _apply_reliability(bacnet_obj: Any, reliability_str: str) -> None:
+    """Force a specific Reliability value (GH #16) on a constructed analog/
+    binary/multi-state object, for testing client-side fault handling. Also
+    sets the statusFlags.fault bit, matching what real BACnet clients
+    actually key off of — Reliability alone is often not surfaced in a
+    client's UI, but the fault status bit almost always is."""
+    try:
+        reliability = Reliability(reliability_str)
+    except Exception:
+        reliability = Reliability("no-fault-detected")
+    bacnet_obj.reliability = reliability
+    fault = 0 if str(reliability) == "no-fault-detected" else 1
+    bacnet_obj.statusFlags = StatusFlags([0, fault, 0, 0])
+
+
 # ─── Sim Engine ───────────────────────────────────────────────────────────────
 
 class SimEngine:
@@ -1252,6 +2119,23 @@ class SimEngine:
         self._prev_values: dict[int, Any] = {}  # kept for history only
         # object DB id → rolling 1-hour history (720 ticks × 5 s), never persisted
         self._history: dict[int, deque] = {}
+        # object DB id → intrinsic-reporting runtime state (not persisted — a
+        # restart starts every object back at "normal", an acceptable
+        # simulator simplification; see alarms.py)
+        self._alarm_runtime: dict[int, alarms.AlarmRuntime] = {}
+        # event_enrollment DB id → algorithmic-reporting runtime state (same
+        # not-persisted simplification as _alarm_runtime above)
+        self._enrollment_runtime: dict[int, alarms.AlarmRuntime] = {}
+        # trend_log DB id → last value actually recorded, for COV-triggered
+        # logging (not persisted — same simplification as the above)
+        self._trend_log_last_value: dict[int, Any] = {}
+        # trend_log DB id → live bacpypes3 TrendLogObject, once exposed on
+        # the BACnet wire (see _create_trend_log_objects())
+        self._trend_log_objects: dict[int, Any] = {}
+        # schedule DB id → live bacnet_schedule.LocalScheduleObject. Unlike
+        # the above, these don't need a runtime cache in tick() — bacpypes3's
+        # ScheduleObject self-schedules its own next transition.
+        self._schedule_objects: dict[int, Any] = {}
         # simulation clock: whether tick() advances time / recomputes values.
         # Independent of self.app (the BACnet stack) — objects stay reachable
         # and hold their last value while paused/stopped.
@@ -1344,6 +2228,83 @@ class SimEngine:
                 self._objects[obj_row["id"]] = (bacnet_obj, behavior)
                 bacnet_ids.append(bacnet_obj.objectIdentifier)
 
+            trend_logs = await asyncio.to_thread(self.db.get_trend_logs, dev["id"])
+            for tl_idx, tl in enumerate(trend_logs):
+                monitored = self._objects.get(tl["monitored_object_id"])
+                if monitored is None:
+                    continue  # monitored object disabled/missing — skip exposing on the wire
+                monitored_objid = monitored[0].objectIdentifier
+                records = await asyncio.to_thread(
+                    self.db.get_trend_log_records, tl["id"], limit=tl["buffer_size"], order="asc"
+                )
+                log_buffer = SequenceOf(LogRecord)(
+                    [_build_log_record(r, monitored_objid[0]) for r in records]
+                )
+                tl_bacnet_obj = LocalTrendLogObject(
+                    objectIdentifier=("trend-log", slot * 1000 + tl_idx + 1),
+                    objectName=f"{dev['name']}.{tl['name']}",
+                    description=tl.get("description", ""),
+                    enable=Boolean(bool(tl["enabled"])),
+                    stopWhenFull=Boolean(bool(tl["stop_when_full"])),
+                    bufferSize=Unsigned(tl["buffer_size"]),
+                    logBuffer=log_buffer,
+                    recordCount=Unsigned(tl["record_count"]),
+                    totalRecordCount=Unsigned(tl["total_record_count"]),
+                    loggingType=LoggingType(tl["logging_type"]),
+                    statusFlags=[0, 0, 0, 0],
+                    reliability=Reliability("no-fault-detected"),
+                    logDeviceObjectProperty=DeviceObjectPropertyReference(
+                        objectIdentifier=monitored_objid,
+                        propertyIdentifier="present-value",
+                    ),
+                    logInterval=Unsigned(tl.get("log_interval") or 0),
+                )
+                self.app.add_object(tl_bacnet_obj)
+                self._trend_log_objects[tl["id"]] = tl_bacnet_obj
+                bacnet_ids.append(tl_bacnet_obj.objectIdentifier)
+
+            schedules = await asyncio.to_thread(self.db.get_schedules, dev["id"])
+            for sched_idx, sched in enumerate(schedules):
+                if not sched["enabled"]:
+                    continue  # same convention as disabled regular objects: not built at all
+                targets = await asyncio.to_thread(self.db.get_schedule_targets, sched["id"])
+                obj_prop_refs = []
+                for t in targets:
+                    target_entry = self._objects.get(t["object_id"])
+                    if target_entry is None:
+                        continue  # target object disabled/missing — skip that reference
+                    obj_prop_refs.append(DeviceObjectPropertyReference(
+                        objectIdentifier=target_entry[0].objectIdentifier,
+                        propertyIdentifier=t.get("property_identifier", "present-value"),
+                    ))
+                try:
+                    value_type = sched.get("value_type", "real")
+                    default_raw = json.loads(sched["schedule_default"] or "0")
+                    sched_bacnet_obj = bacnet_schedule.LocalScheduleObject(
+                        objectIdentifier=("schedule", slot * 1000 + sched_idx + 1),
+                        objectName=f"{dev['name']}.{sched['name']}",
+                        description=sched.get("description", ""),
+                        presentValue=bacnet_schedule.default_value(value_type, default_raw),
+                        effectivePeriod=bacnet_schedule.build_effective_period(
+                            sched.get("effective_start"), sched.get("effective_end")
+                        ),
+                        weeklySchedule=bacnet_schedule.build_weekly_schedule(
+                            json.loads(sched["weekly_schedule"] or "{}"), value_type
+                        ),
+                        exceptionSchedule=bacnet_schedule.build_exception_schedule(
+                            json.loads(sched["exception_schedule"] or "[]"), value_type
+                        ),
+                        scheduleDefault=bacnet_schedule.default_value(value_type, default_raw),
+                        listOfObjectPropertyReferences=SequenceOf(DeviceObjectPropertyReference)(obj_prop_refs),
+                        priorityForWriting=Unsigned(sched["priority_for_writing"]),
+                    )
+                    sched_bacnet_obj._value_type = value_type
+                    self.app.add_object(sched_bacnet_obj)
+                    self._schedule_objects[sched["id"]] = sched_bacnet_obj
+                    bacnet_ids.append(sched_bacnet_obj.objectIdentifier)
+                except Exception:
+                    log.exception("Failed to build schedule %r on device %r — skipping", sched["name"], dev["name"])
+
             dev_obj.objectList = bacnet_ids
             self.app._virtual_object_lists[dev["device_instance"]] = bacnet_ids
             log.info("Device %d (%s): %d objects", dev["device_instance"], dev["name"], len(objects))
@@ -1404,6 +2365,7 @@ class SimEngine:
                 presentValue=Real(float(val)),
                 units=units,
             )
+            _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
         elif otype == "binary-output":
             # Pass presentValue= in the constructor so Commandable.__init__ can set
             # relinquishDefault from it (line 87 in bacpypes3/local/cmd.py).
@@ -1417,6 +2379,24 @@ class SimEngine:
                 objectName=obj_name,
                 presentValue=BinaryPV("active" if active else "inactive"),
             )
+            _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
+        elif otype in MULTISTATE_TYPES:
+            _MULTISTATE_CLS = {
+                "multi-state-input":  MultiStateInputObject,
+                "multi-state-output": MultiStateOutputObject,
+                "multi-state-value":  MultiStateValueObject,
+            }
+            n_states = max(1, int(obj_row.get("number_of_states") or 2))
+            state = max(1, min(n_states, round(float(val))))
+            # Same reasoning as binary-output above — multi-state-output is
+            # Commandable too, so presentValue must be passed at construction.
+            bacnet_obj = _MULTISTATE_CLS[otype](
+                objectIdentifier=f"{otype},{phys}",
+                objectName=obj_name,
+                presentValue=Unsigned(state),
+                numberOfStates=Unsigned(n_states),
+            )
+            _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
         else:
             active = bool(val) if not isinstance(val, bool) else val
             cls = _BINARY_CLS.get(otype, BinaryInputObject)
@@ -1425,6 +2405,7 @@ class SimEngine:
                 objectName=obj_name,
                 presentValue=BinaryPV("active" if active else "inactive"),
             )
+            _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
         return bacnet_obj, behavior
 
     def _update_value(self, bacnet_obj: Any, otype: str, val: Any) -> None:
@@ -1433,6 +2414,10 @@ class SimEngine:
         elif otype == "binary-output":
             active = bool(val) if not isinstance(val, bool) else val
             bacnet_obj.presentValue = BinaryPV("active" if active else "inactive")  # triggers recalculating() via priorityArray
+        elif otype in MULTISTATE_TYPES:
+            n_states = int(bacnet_obj.numberOfStates)
+            state = max(1, min(n_states, round(float(val))))
+            bacnet_obj.presentValue = Unsigned(state)
         else:
             active = bool(val) if not isinstance(val, bool) else val
             bacnet_obj.presentValue = BinaryPV("active" if active else "inactive")
@@ -1448,6 +2433,21 @@ class SimEngine:
         snapshot: dict[int, dict] = {}
         devices = await asyncio.to_thread(self.db.get_devices)
         dev_map = {d["id"]: d for d in devices}
+
+        alarm_configs = {c["object_id"]: c for c in await asyncio.to_thread(self.db.get_all_alarm_configs)}
+        event_enrollments = await asyncio.to_thread(self.db.get_all_event_enrollments)
+        enrollments_by_object: dict[int, list[dict]] = {}
+        for ee in event_enrollments:
+            enrollments_by_object.setdefault(ee["monitored_object_id"], []).append(ee)
+        notification_classes = (
+            {nc["id"]: nc for nc in await asyncio.to_thread(self.db.get_notification_classes)}
+            if alarm_configs or event_enrollments else {}
+        )
+        trend_logs = await asyncio.to_thread(self.db.get_all_trend_logs)
+        trend_logs_by_object: dict[int, list[dict]] = {}
+        for tl in trend_logs:
+            trend_logs_by_object.setdefault(tl["monitored_object_id"], []).append(tl)
+        now = time.time()
 
         for obj_id, (bacnet_obj, behavior) in self._objects.items():
             obj_row = await asyncio.to_thread(self.db.get_object, obj_id)
@@ -1472,6 +2472,23 @@ class SimEngine:
             val = new_b.compute(self.state)
             self._update_value(bacnet_obj, obj_row["object_type"], val)
 
+            cfg = alarm_configs.get(obj_id)
+            if cfg is not None:
+                await self._evaluate_alarm(obj_id, obj_row, dev, val, cfg, notification_classes)
+
+            for enrollment in enrollments_by_object.get(obj_id, []):
+                await self._evaluate_enrollment(enrollment, obj_row, dev, val, notification_classes)
+
+            for tl in trend_logs_by_object.get(obj_id, []):
+                if tl["logging_type"] == "polled":
+                    if now - (tl["last_sampled_at"] or 0) >= tl["log_interval"]:
+                        await self._sample_trend_log(tl["id"], val)
+                elif tl["logging_type"] == "cov":
+                    last = self._trend_log_last_value.get(tl["id"])
+                    if last is None or self._trend_log_value_changed(val, last, tl["cov_increment"]):
+                        await self._sample_trend_log(tl["id"], val)
+                        self._trend_log_last_value[tl["id"]] = val
+
             self._prev_values[obj_id] = val
 
             # Append to rolling history (1 h, never persisted)
@@ -1493,6 +2510,135 @@ class SimEngine:
 
         self._current_values = {"devices": list(snapshot.values()), "tick": self.state.elapsed_seconds}
 
+    async def _evaluate_alarm(
+        self, obj_id: int, obj_row: dict, dev: dict, val: Any, cfg: dict, notification_classes: dict[int, dict],
+    ) -> None:
+        """Advance one object's intrinsic-reporting state machine and, on a
+        confirmed transition, log it and (best-effort) notify the object's
+        Notification Class recipients. See alarms.py for the algorithm."""
+        runtime = self._alarm_runtime.setdefault(obj_id, alarms.AlarmRuntime())
+        try:
+            params = json.loads(cfg["params"] or "{}")
+        except (TypeError, ValueError):
+            params = {}
+        transition = alarms.evaluate(
+            obj_row["object_type"], val, params, runtime,
+            self.state.elapsed_seconds, cfg["time_delay"], cfg["time_delay_normal"],
+        )
+        if transition is None:
+            return
+        from_state, to_state = transition
+
+        tname = alarms.transition_name(to_state)
+        try:
+            event_enable = json.loads(cfg["event_enable"] or "[]")
+        except (TypeError, ValueError):
+            event_enable = []
+        if tname not in event_enable:
+            return
+
+        nc = notification_classes.get(cfg["notification_class_id"])
+        priority = 100
+        ack_required = False
+        if nc is not None:
+            priority = {
+                "to-offnormal": nc["priority_to_offnormal"],
+                "to-fault": nc["priority_to_fault"],
+                "to-normal": nc["priority_to_normal"],
+            }.get(tname, 100)
+            try:
+                ack_list = json.loads(nc["ack_required_transitions"] or "[]")
+            except (TypeError, ValueError):
+                ack_list = []
+            ack_required = tname in ack_list
+
+        detail = alarms.describe_transition(obj_row["object_type"], val, params, from_state, to_state, obj_row.get("units", ""))
+        message = f"{obj_row['name']} transitioned {from_state} → {to_state}: {detail}"
+        await asyncio.to_thread(self.db.log_alarm, {
+            "object_id": obj_id,
+            "device_id": dev["id"],
+            "object_name": obj_row["name"],
+            "from_state": from_state,
+            "to_state": to_state,
+            "priority": priority,
+            "value": str(val),
+            "message": message,
+            "ack_required": 1 if ack_required else 0,
+        })
+        log_level = "info" if to_state == "normal" else "error" if to_state == "fault" else "warn"
+        _log_event(dev["id"], log_level, f"Alarm: {message}")
+
+        if nc is not None and self.app is not None:
+            asyncio.create_task(alarms.send_event_notification(
+                self.app, dev["device_instance"], obj_row, nc,
+                from_state, to_state, priority, ack_required,
+            ))
+
+    async def _evaluate_enrollment(
+        self, enrollment: dict, obj_row: dict, dev: dict, val: Any, notification_classes: dict[int, dict],
+    ) -> None:
+        """Same shape as _evaluate_alarm(), but for an Event Enrollment
+        watching obj_row's present-value independently of obj_row's own
+        alarm config — see alarms.evaluate_enrollment()."""
+        runtime = self._enrollment_runtime.setdefault(enrollment["id"], alarms.AlarmRuntime())
+        try:
+            params = json.loads(enrollment["event_parameters"] or "{}")
+        except (TypeError, ValueError):
+            params = {}
+        transition = alarms.evaluate_enrollment(
+            enrollment["algorithm"], obj_row["object_type"], val, params, runtime,
+            self.state.elapsed_seconds, enrollment["time_delay"], enrollment["time_delay_normal"],
+        )
+        if transition is None:
+            return
+        from_state, to_state = transition
+
+        tname = alarms.transition_name(to_state)
+        try:
+            event_enable = json.loads(enrollment["event_enable"] or "[]")
+        except (TypeError, ValueError):
+            event_enable = []
+        if tname not in event_enable:
+            return
+
+        nc = notification_classes.get(enrollment["notification_class_id"])
+        priority = 100
+        ack_required = False
+        if nc is not None:
+            priority = {
+                "to-offnormal": nc["priority_to_offnormal"],
+                "to-fault": nc["priority_to_fault"],
+                "to-normal": nc["priority_to_normal"],
+            }.get(tname, 100)
+            try:
+                ack_list = json.loads(nc["ack_required_transitions"] or "[]")
+            except (TypeError, ValueError):
+                ack_list = []
+            ack_required = tname in ack_list
+
+        detail = alarms.describe_transition(obj_row["object_type"], val, params, from_state, to_state, obj_row.get("units", ""))
+        message = f"[{enrollment['name']}] {obj_row['name']} transitioned {from_state} → {to_state}: {detail}"
+
+        await asyncio.to_thread(self.db.log_alarm, {
+            "object_id": obj_row["id"],
+            "device_id": dev["id"],
+            "object_name": f"{enrollment['name']} ({obj_row['name']})",
+            "from_state": from_state,
+            "to_state": to_state,
+            "priority": priority,
+            "value": str(val),
+            "message": message,
+            "ack_required": 1 if ack_required else 0,
+        })
+        log_level = "info" if to_state == "normal" else "error" if to_state == "fault" else "warn"
+        _log_event(dev["id"], log_level, f"Alarm: {message}")
+
+        if nc is not None and self.app is not None:
+            asyncio.create_task(alarms.send_event_notification(
+                self.app, dev["device_instance"], obj_row, nc,
+                from_state, to_state, priority, ack_required,
+            ))
+
     async def reload(self) -> None:
         """Rebuild the BACnet stack from DB (called after config changes)."""
         async with self._reload_lock:
@@ -1503,9 +2649,26 @@ class SimEngine:
                         self.app.delete_object(bacnet_obj)
                     except Exception:
                         pass
+                for bacnet_obj in list(self._trend_log_objects.values()):
+                    try:
+                        self.app.delete_object(bacnet_obj)
+                    except Exception:
+                        pass
+                for bacnet_obj in list(self._schedule_objects.values()):
+                    if getattr(bacnet_obj, "_interpret_schedule_handle", None):
+                        bacnet_obj._interpret_schedule_handle.cancel()
+                    try:
+                        self.app.delete_object(bacnet_obj)
+                    except Exception:
+                        pass
                 self._objects.clear()
+                self._trend_log_objects.clear()
+                self._schedule_objects.clear()
                 self._prev_values.clear()
                 self._history.clear()
+                self._alarm_runtime.clear()
+                self._enrollment_runtime.clear()
+                self._trend_log_last_value.clear()
                 self._current_values = {}
                 # Explicitly close the bacpypes3 socket before dropping the reference.
                 # BinaryOutputObject↔PriorityArray form a circular reference that delays
@@ -1526,7 +2689,21 @@ class SimEngine:
                     self.app.delete_object(bacnet_obj)
                 except Exception:
                     pass
+            for bacnet_obj in list(self._trend_log_objects.values()):
+                try:
+                    self.app.delete_object(bacnet_obj)
+                except Exception:
+                    pass
+            for bacnet_obj in list(self._schedule_objects.values()):
+                if getattr(bacnet_obj, "_interpret_schedule_handle", None):
+                    bacnet_obj._interpret_schedule_handle.cancel()
+                try:
+                    self.app.delete_object(bacnet_obj)
+                except Exception:
+                    pass
             self._objects.clear()
+            self._trend_log_objects.clear()
+            self._schedule_objects.clear()
             try:
                 await self.app.close()
             except Exception:
@@ -1581,6 +2758,53 @@ class SimEngine:
     def get_state(self) -> dict:
         return self._current_values
 
+    def get_object_value(self, obj_id: int) -> Any:
+        """Best-effort current live value for a manual Trend Log trigger —
+        _prev_values is refreshed every tick while the clock is running."""
+        return self._prev_values.get(obj_id)
+
+    def db_id_for_bacnet_object(self, bacnet_obj: Any) -> Optional[int]:
+        """Reverse lookup: given a live bacpypes3 object, find the DB row id
+        that owns it. Used by both incoming WriteProperty requests and
+        Schedule objects' present_value_changed() (see bacnet_schedule.py)."""
+        for did, (bobj, _) in self._objects.items():
+            if bobj is bacnet_obj:
+                return did
+        return None
+
+    @staticmethod
+    def _trend_log_value_changed(value: Any, last: Any, cov_increment: float) -> bool:
+        if isinstance(value, bool) or isinstance(last, bool):
+            return bool(value) != bool(last)
+        try:
+            return abs(float(value) - float(last)) >= cov_increment
+        except (TypeError, ValueError):
+            return value != last
+
+    async def _sample_trend_log(self, tl_id: int, val: Any) -> Optional[int]:
+        """Append a record and, if this trend log is exposed on the BACnet
+        wire, refresh its recordCount/totalRecordCount so a ReadProperty
+        reflects the latest buffer state without waiting for a reload().
+        Returns the new sequence number, or None if the buffer was full
+        with stop_when_full set."""
+        seq = await asyncio.to_thread(self.db.add_trend_record, tl_id, val)
+        if seq is None:
+            return None
+        bacnet_obj = self._trend_log_objects.get(tl_id)
+        if bacnet_obj is not None:
+            cfg = await asyncio.to_thread(self.db.get_trend_log, tl_id)
+            if cfg:
+                bacnet_obj.recordCount = Unsigned(cfg["record_count"])
+                bacnet_obj.totalRecordCount = Unsigned(cfg["total_record_count"])
+        return seq
+
+    def refresh_trend_log_buffer_empty(self, tl_id: int) -> None:
+        """Reflect a cleared record buffer on the BACnet-wire object, if any."""
+        bacnet_obj = self._trend_log_objects.get(tl_id)
+        if bacnet_obj is not None:
+            bacnet_obj.logBuffer = SequenceOf(LogRecord)([])
+            bacnet_obj.recordCount = Unsigned(0)
+
 
 # ─── FastAPI models ───────────────────────────────────────────────────────────
 
@@ -1605,12 +2829,16 @@ class ObjectCreate(BaseModel):
     behavior: str = "constant"
     behavior_params: str = '{"value":0}'
     enabled: int = 1
+    number_of_states: int = Field(2, ge=1, le=254)
+    reliability: str = "no-fault-detected"
 
     def validate_type(self):
         if self.object_type not in VALID_OBJECT_TYPES:
             raise HTTPException(400, f"Invalid object_type. Must be one of: {sorted(VALID_OBJECT_TYPES)}")
         if self.behavior not in VALID_BEHAVIORS:
             raise HTTPException(400, f"Invalid behavior. Must be one of: {sorted(VALID_BEHAVIORS)}")
+        if self.reliability not in VALID_RELIABILITY:
+            raise HTTPException(400, f"Invalid reliability. Must be one of: {sorted(VALID_RELIABILITY)}")
         try:
             json.loads(self.behavior_params)
         except Exception:
@@ -1623,6 +2851,89 @@ class ObjectUpdate(ObjectCreate):
 
 class SetValueRequest(BaseModel):
     value: Any
+
+
+class NotificationClassCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    priority_to_offnormal: int = Field(100, ge=0, le=255)
+    priority_to_fault: int = Field(100, ge=0, le=255)
+    priority_to_normal: int = Field(100, ge=0, le=255)
+    ack_required_transitions: list[str] = Field(default_factory=lambda: ["to-offnormal", "to-fault"])
+    recipients: list[dict] = Field(default_factory=list)
+
+
+class NotificationClassUpdate(NotificationClassCreate):
+    pass
+
+
+class AlarmConfigSet(BaseModel):
+    notification_class_id: Optional[int] = None
+    enabled: int = 1
+    event_enable: list[str] = Field(default_factory=lambda: ["to-offnormal", "to-fault", "to-normal"])
+    notify_type: str = "alarm"
+    time_delay: int = Field(0, ge=0)
+    time_delay_normal: int = Field(0, ge=0)
+    params: dict = Field(default_factory=dict)
+
+
+class AckAlarmRequest(BaseModel):
+    ack_by: Optional[str] = None
+
+
+class EventEnrollmentCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    monitored_object_id: int
+    algorithm: str = "change-of-state"
+    event_parameters: dict = Field(default_factory=dict)
+    notification_class_id: Optional[int] = None
+    enabled: int = 1
+    event_enable: list[str] = Field(default_factory=lambda: ["to-offnormal", "to-fault", "to-normal"])
+    notify_type: str = "event"
+    time_delay: int = Field(0, ge=0)
+    time_delay_normal: int = Field(0, ge=0)
+
+
+class EventEnrollmentUpdate(EventEnrollmentCreate):
+    pass
+
+
+class TrendLogCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+    monitored_object_id: int
+    logging_type: str = "polled"
+    log_interval: int = Field(60, ge=1)
+    cov_increment: float = Field(1.0, ge=0)
+    buffer_size: int = Field(1000, ge=1, le=100000)
+    stop_when_full: int = 0
+    enabled: int = 1
+
+
+class TrendLogUpdate(TrendLogCreate):
+    pass
+
+
+class ScheduleTargetSpec(BaseModel):
+    object_id: int
+    property_identifier: str = "present-value"
+
+
+class ScheduleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+    value_type: str = "real"
+    schedule_default: Any = 0
+    effective_start: Optional[str] = None
+    effective_end: Optional[str] = None
+    weekly_schedule: dict = Field(default_factory=dict)
+    exception_schedule: list = Field(default_factory=list)
+    priority_for_writing: int = Field(10, ge=1, le=16)
+    enabled: int = 1
+    targets: list[ScheduleTargetSpec] = Field(default_factory=list)
+
+
+class ScheduleUpdate(ScheduleCreate):
+    pass
 
 
 class ProfileCreate(BaseModel):
@@ -2100,6 +3411,7 @@ async def meta():
         "object_types": sorted(VALID_OBJECT_TYPES),
         "behaviors": sorted(VALID_BEHAVIORS),
         "units": BACNET_UNITS,
+        "reliability_options": sorted(VALID_RELIABILITY),
     }
 
 
@@ -2309,6 +3621,557 @@ async def export_profile(profile_id: int):
 @api.post("/profiles/import", status_code=201)
 async def import_profile(body: ProfileImport):
     return await asyncio.to_thread(db.import_profile, body.name, body.description, body.data)
+
+
+# ── EDE import/export ──
+
+def _ede_response(devices: list[dict], project_name: str) -> Response:
+    content = ede.devices_to_ede(devices, project_name)
+    filename = (project_name or "export").replace(" ", "_") + ".ede"
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api.get("/devices/{device_id}/export/ede")
+async def export_device_ede(device_id: int):
+    dev = await asyncio.to_thread(db.get_device, device_id)
+    if not dev:
+        raise HTTPException(404, "Device not found")
+    dev["objects"] = await asyncio.to_thread(db.get_objects, device_id)
+    return _ede_response([dev], dev["name"])
+
+
+@api.get("/profiles/{profile_id}/export/ede")
+async def export_profile_ede(profile_id: int):
+    row = await asyncio.to_thread(db.get_profile, profile_id)
+    if not row:
+        raise HTTPException(404, "Profile not found")
+    data = json.loads(row["data"])
+    return _ede_response(data.get("devices", []), row["name"])
+
+
+@api.post("/devices/{device_id}/import/ede")
+async def import_device_ede(device_id: int, file: UploadFile = File(...)):
+    if not await asyncio.to_thread(db.get_device, device_id):
+        raise HTTPException(404, "Device not found")
+    text = (await file.read()).decode("utf-8", errors="replace")
+    rows = ede.parse_ede_rows(text)
+    instances = sorted({row["device_instance"] for row in rows})
+    if len(instances) > 1:
+        raise HTTPException(
+            400,
+            f"This EDE file covers {len(instances)} devices (instances {instances}) — "
+            "importing it into a single device would merge them and could overwrite "
+            "points that collide by object type/instance. Use the project-level EDE "
+            "import instead so each device is created separately.",
+        )
+    objects = [
+        {k: v for k, v in row.items() if k != "device_instance"}
+        for row in rows
+    ]
+    count = await asyncio.to_thread(db.import_ede_objects, device_id, objects)
+    asyncio.create_task(engine.reload())
+    return {"ok": True, "objects_imported": count}
+
+
+@api.post("/profiles/import/ede", status_code=201)
+async def import_profile_ede(
+    name: str = Form(...),
+    description: str = Form(""),
+    device_name: str = Form(""),
+    file: UploadFile = File(...),
+):
+    text = (await file.read()).decode("utf-8", errors="replace")
+    rows = ede.parse_ede_rows(text)
+    if not rows:
+        raise HTTPException(400, "No valid EDE rows found in file")
+    data = ede.rows_to_devices(rows, device_name)
+    return await asyncio.to_thread(db.import_profile, name, description, data)
+
+
+# ── Alarms & Notification Classes (BACnet Intrinsic Reporting, Phase 1) ──
+
+def _nc_to_api(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "device_id": row["device_id"],
+        "name": row["name"],
+        "priority_to_offnormal": row["priority_to_offnormal"],
+        "priority_to_fault": row["priority_to_fault"],
+        "priority_to_normal": row["priority_to_normal"],
+        "ack_required_transitions": json.loads(row["ack_required_transitions"] or "[]"),
+        "recipients": json.loads(row["recipients"] or "[]"),
+    }
+
+
+def _nc_to_db(body: NotificationClassCreate) -> dict:
+    return {
+        "name": body.name,
+        "priority_to_offnormal": body.priority_to_offnormal,
+        "priority_to_fault": body.priority_to_fault,
+        "priority_to_normal": body.priority_to_normal,
+        "ack_required_transitions": json.dumps(body.ack_required_transitions),
+        "recipients": json.dumps(body.recipients),
+    }
+
+
+def _alarm_cfg_to_api(row: dict) -> dict:
+    return {
+        "object_id": row["object_id"],
+        "notification_class_id": row["notification_class_id"],
+        "enabled": bool(row["enabled"]),
+        "event_enable": json.loads(row["event_enable"] or "[]"),
+        "notify_type": row["notify_type"],
+        "time_delay": row["time_delay"],
+        "time_delay_normal": row["time_delay_normal"],
+        "params": json.loads(row["params"] or "{}"),
+    }
+
+
+@api.get("/devices/{device_id}/notification-classes")
+async def list_notification_classes(device_id: int):
+    rows = await asyncio.to_thread(db.get_notification_classes, device_id)
+    return [_nc_to_api(r) for r in rows]
+
+
+@api.post("/devices/{device_id}/notification-classes", status_code=201)
+async def create_notification_class(device_id: int, body: NotificationClassCreate):
+    if not await asyncio.to_thread(db.get_device, device_id):
+        raise HTTPException(404, "Device not found")
+    row = await asyncio.to_thread(db.create_notification_class, device_id, _nc_to_db(body))
+    return _nc_to_api(row)
+
+
+@api.put("/notification-classes/{nc_id}")
+async def update_notification_class(nc_id: int, body: NotificationClassUpdate):
+    row = await asyncio.to_thread(db.update_notification_class, nc_id, _nc_to_db(body))
+    if not row:
+        raise HTTPException(404, "Notification class not found")
+    return _nc_to_api(row)
+
+
+@api.delete("/notification-classes/{nc_id}", status_code=204)
+async def delete_notification_class(nc_id: int):
+    deleted = await asyncio.to_thread(db.delete_notification_class, nc_id)
+    if not deleted:
+        raise HTTPException(404, "Notification class not found")
+
+
+@api.get("/devices/{device_id}/objects/{obj_id}/alarm-config")
+async def get_object_alarm_config(device_id: int, obj_id: int):
+    row = await asyncio.to_thread(db.get_alarm_config, obj_id)
+    return _alarm_cfg_to_api(row) if row else None
+
+
+@api.put("/devices/{device_id}/objects/{obj_id}/alarm-config")
+async def set_object_alarm_config(device_id: int, obj_id: int, body: AlarmConfigSet):
+    obj = await asyncio.to_thread(db.get_object, obj_id)
+    if not obj or obj["device_id"] != device_id:
+        raise HTTPException(404, "Object not found")
+    data = {
+        "notification_class_id": body.notification_class_id,
+        "enabled": 1 if body.enabled else 0,
+        "event_enable": json.dumps(body.event_enable),
+        "notify_type": body.notify_type,
+        "time_delay": body.time_delay,
+        "time_delay_normal": body.time_delay_normal,
+        "params": json.dumps(body.params),
+    }
+    row = await asyncio.to_thread(db.set_alarm_config, obj_id, data)
+    return _alarm_cfg_to_api(row)
+
+
+@api.delete("/devices/{device_id}/objects/{obj_id}/alarm-config", status_code=204)
+async def delete_object_alarm_config(device_id: int, obj_id: int):
+    await asyncio.to_thread(db.delete_alarm_config, obj_id)
+
+
+@api.get("/alarms")
+async def list_alarms(limit: int = 200, unacked_only: bool = False):
+    return await asyncio.to_thread(db.get_alarm_log, limit, unacked_only)
+
+
+@api.post("/alarms/{alarm_id}/ack")
+async def ack_alarm(alarm_id: int, body: AckAlarmRequest, current_user: dict = Depends(get_current_user)):
+    row = await asyncio.to_thread(db.ack_alarm, alarm_id, body.ack_by or current_user["username"])
+    if not row:
+        raise HTTPException(404, "Alarm not found")
+    return row
+
+
+# ── Event Enrollments (Algorithmic Reporting, Phase 3) ──
+
+def _ee_to_api(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "device_id": row["device_id"],
+        "name": row["name"],
+        "monitored_object_id": row["monitored_object_id"],
+        "algorithm": row["algorithm"],
+        "event_parameters": json.loads(row["event_parameters"] or "{}"),
+        "notification_class_id": row["notification_class_id"],
+        "enabled": bool(row["enabled"]),
+        "event_enable": json.loads(row["event_enable"] or "[]"),
+        "notify_type": row["notify_type"],
+        "time_delay": row["time_delay"],
+        "time_delay_normal": row["time_delay_normal"],
+    }
+
+
+def _ee_to_db(body: EventEnrollmentCreate) -> dict:
+    return {
+        "name": body.name,
+        "monitored_object_id": body.monitored_object_id,
+        "algorithm": body.algorithm,
+        "event_parameters": json.dumps(body.event_parameters),
+        "notification_class_id": body.notification_class_id,
+        "enabled": 1 if body.enabled else 0,
+        "event_enable": json.dumps(body.event_enable),
+        "notify_type": body.notify_type,
+        "time_delay": body.time_delay,
+        "time_delay_normal": body.time_delay_normal,
+    }
+
+
+async def _validate_enrollment(device_id: int, body: EventEnrollmentCreate) -> None:
+    if body.algorithm not in alarms.ENROLLMENT_ALGORITHMS:
+        raise HTTPException(400, f"Unknown algorithm. Must be one of: {sorted(alarms.ENROLLMENT_ALGORITHMS)}")
+    obj = await asyncio.to_thread(db.get_object, body.monitored_object_id)
+    if not obj or obj["device_id"] != device_id:
+        raise HTTPException(400, "monitored_object_id must be an object on this device")
+    otype = obj["object_type"]
+    if body.algorithm == "change-of-state" and otype not in (alarms.BINARY_TYPES | alarms.MULTISTATE_TYPES):
+        raise HTTPException(
+            400,
+            "Change-of-State enrollments can only monitor binary-*/multi-state-* objects "
+            "(analog uses the Out-of-Range algorithm instead)",
+        )
+    if body.algorithm == "out-of-range" and otype not in alarms.ANALOG_TYPES:
+        raise HTTPException(400, "Out-of-Range enrollments can only monitor analog-* objects")
+
+
+@api.get("/devices/{device_id}/event-enrollments")
+async def list_event_enrollments(device_id: int):
+    rows = await asyncio.to_thread(db.get_event_enrollments, device_id)
+    return [_ee_to_api(r) for r in rows]
+
+
+@api.post("/devices/{device_id}/event-enrollments", status_code=201)
+async def create_event_enrollment(device_id: int, body: EventEnrollmentCreate):
+    if not await asyncio.to_thread(db.get_device, device_id):
+        raise HTTPException(404, "Device not found")
+    await _validate_enrollment(device_id, body)
+    row = await asyncio.to_thread(db.create_event_enrollment, device_id, _ee_to_db(body))
+    return _ee_to_api(row)
+
+
+@api.put("/event-enrollments/{ee_id}")
+async def update_event_enrollment(ee_id: int, body: EventEnrollmentUpdate):
+    existing = await asyncio.to_thread(db.get_event_enrollment, ee_id)
+    if not existing:
+        raise HTTPException(404, "Event enrollment not found")
+    await _validate_enrollment(existing["device_id"], body)
+    row = await asyncio.to_thread(db.update_event_enrollment, ee_id, _ee_to_db(body))
+    return _ee_to_api(row)
+
+
+@api.delete("/event-enrollments/{ee_id}", status_code=204)
+async def delete_event_enrollment(ee_id: int):
+    deleted = await asyncio.to_thread(db.delete_event_enrollment, ee_id)
+    if not deleted:
+        raise HTTPException(404, "Event enrollment not found")
+
+
+# ── Trend Logs (Phase 1: config, circular buffer, polled + manual sampling) ──
+
+async def _validate_trend_log(device_id: int, body: TrendLogCreate) -> None:
+    if body.logging_type not in ("polled", "cov", "triggered"):
+        raise HTTPException(400, 'logging_type must be "polled", "cov", or "triggered"')
+    obj = await asyncio.to_thread(db.get_object, body.monitored_object_id)
+    if not obj or obj["device_id"] != device_id:
+        raise HTTPException(400, "monitored_object_id must be an object on this device")
+
+
+@api.get("/devices/{device_id}/trend-logs")
+async def list_trend_logs(device_id: int):
+    return await asyncio.to_thread(db.get_trend_logs, device_id)
+
+
+@api.post("/devices/{device_id}/trend-logs", status_code=201)
+async def create_trend_log(device_id: int, body: TrendLogCreate):
+    if not await asyncio.to_thread(db.get_device, device_id):
+        raise HTTPException(404, "Device not found")
+    await _validate_trend_log(device_id, body)
+    tl = await asyncio.to_thread(db.create_trend_log, device_id, body.model_dump())
+    asyncio.create_task(engine.reload())
+    return tl
+
+
+@api.get("/trend-logs/{tl_id}")
+async def get_trend_log(tl_id: int):
+    tl = await asyncio.to_thread(db.get_trend_log, tl_id)
+    if not tl:
+        raise HTTPException(404, "Trend log not found")
+    return tl
+
+
+@api.put("/trend-logs/{tl_id}")
+async def update_trend_log(tl_id: int, body: TrendLogUpdate):
+    existing = await asyncio.to_thread(db.get_trend_log, tl_id)
+    if not existing:
+        raise HTTPException(404, "Trend log not found")
+    await _validate_trend_log(existing["device_id"], body)
+    tl = await asyncio.to_thread(db.update_trend_log, tl_id, body.model_dump())
+    asyncio.create_task(engine.reload())
+    return tl
+
+
+@api.delete("/trend-logs/{tl_id}", status_code=204)
+async def delete_trend_log(tl_id: int):
+    deleted = await asyncio.to_thread(db.delete_trend_log, tl_id)
+    if not deleted:
+        raise HTTPException(404, "Trend log not found")
+    asyncio.create_task(engine.reload())
+
+
+@api.get("/trend-logs/{tl_id}/records")
+async def get_trend_log_records(
+    tl_id: int,
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = None,
+    start_sequence: Optional[int] = None,
+    limit: int = Query(200, le=5000),
+    order: str = "asc",
+):
+    if not await asyncio.to_thread(db.get_trend_log, tl_id):
+        raise HTTPException(404, "Trend log not found")
+    return await asyncio.to_thread(
+        db.get_trend_log_records, tl_id, from_, to, start_sequence, limit, order
+    )
+
+
+@api.post("/trend-logs/{tl_id}/trigger")
+async def trigger_trend_log(tl_id: int):
+    tl = await asyncio.to_thread(db.get_trend_log, tl_id)
+    if not tl:
+        raise HTTPException(404, "Trend log not found")
+    value = engine.get_object_value(tl["monitored_object_id"])
+    if value is None:
+        raise HTTPException(409, "Monitored object has no live value yet (simulator not ticked)")
+    seq = await engine._sample_trend_log(tl["id"], value)
+    if seq is None:
+        raise HTTPException(409, "Buffer is full and stop_when_full is set")
+    return {"ok": True, "sequence_number": seq, "value": value}
+
+
+@api.post("/trend-logs/{tl_id}/clear")
+async def clear_trend_log(tl_id: int):
+    ok = await asyncio.to_thread(db.clear_trend_log_records, tl_id)
+    if not ok:
+        raise HTTPException(404, "Trend log not found")
+    engine.refresh_trend_log_buffer_empty(tl_id)
+    return {"ok": True}
+
+
+# ── BACnet Schedules (Phase 3) ──
+
+_SCHEDULE_TARGET_TYPES = {
+    "real": ("analog-input", "analog-output", "analog-value"),
+    "boolean": ("binary-input", "binary-output", "binary-value"),
+    "unsigned": ("multi-state-input", "multi-state-output", "multi-state-value"),
+}
+
+
+def _schedule_to_api(row: dict, targets: list[dict]) -> dict:
+    return {
+        "id": row["id"],
+        "device_id": row["device_id"],
+        "name": row["name"],
+        "description": row["description"],
+        "value_type": row["value_type"],
+        "schedule_default": json.loads(row["schedule_default"]),
+        "effective_start": row["effective_start"],
+        "effective_end": row["effective_end"],
+        "weekly_schedule": json.loads(row["weekly_schedule"] or "{}"),
+        "exception_schedule": json.loads(row["exception_schedule"] or "[]"),
+        "priority_for_writing": row["priority_for_writing"],
+        "enabled": bool(row["enabled"]),
+        "targets": [
+            {
+                "object_id": t["object_id"],
+                "property_identifier": t["property_identifier"],
+                "object_name": t["object_name"],
+                "object_type": t["object_type"],
+                "object_instance": t["object_instance"],
+            }
+            for t in targets
+        ],
+    }
+
+
+async def _validate_schedule(device_id: int, body: ScheduleCreate) -> None:
+    if body.value_type not in _SCHEDULE_TARGET_TYPES:
+        raise HTTPException(400, f"value_type must be one of: {sorted(_SCHEDULE_TARGET_TYPES)}")
+    allowed_types = _SCHEDULE_TARGET_TYPES[body.value_type]
+    for t in body.targets:
+        obj = await asyncio.to_thread(db.get_object, t.object_id)
+        if not obj or obj["device_id"] != device_id:
+            raise HTTPException(400, f"target object {t.object_id} must belong to this device")
+        if obj["object_type"] not in allowed_types:
+            raise HTTPException(
+                400,
+                f"target object {t.object_id} ({obj['object_type']}) doesn't match value_type "
+                f"'{body.value_type}' — expected one of: {allowed_types}",
+            )
+
+
+def _schedule_to_db(body: ScheduleCreate) -> dict:
+    return {
+        "name": body.name,
+        "description": body.description,
+        "value_type": body.value_type,
+        "schedule_default": json.dumps(body.schedule_default),
+        "effective_start": body.effective_start,
+        "effective_end": body.effective_end,
+        "weekly_schedule": json.dumps(body.weekly_schedule),
+        "exception_schedule": json.dumps(body.exception_schedule),
+        "priority_for_writing": body.priority_for_writing,
+        "enabled": 1 if body.enabled else 0,
+    }
+
+
+@api.get("/devices/{device_id}/schedules")
+async def list_schedules(device_id: int):
+    rows = await asyncio.to_thread(db.get_schedules, device_id)
+    out = []
+    for r in rows:
+        targets = await asyncio.to_thread(db.get_schedule_targets, r["id"])
+        out.append(_schedule_to_api(r, targets))
+    return out
+
+
+@api.post("/devices/{device_id}/schedules", status_code=201)
+async def create_schedule(device_id: int, body: ScheduleCreate):
+    if not await asyncio.to_thread(db.get_device, device_id):
+        raise HTTPException(404, "Device not found")
+    await _validate_schedule(device_id, body)
+    row = await asyncio.to_thread(
+        db.create_schedule, device_id, _schedule_to_db(body),
+        [t.model_dump() for t in body.targets],
+    )
+    asyncio.create_task(engine.reload())
+    return _schedule_to_api(row, await asyncio.to_thread(db.get_schedule_targets, row["id"]))
+
+
+@api.get("/schedules/{schedule_id}")
+async def get_schedule(schedule_id: int):
+    row = await asyncio.to_thread(db.get_schedule, schedule_id)
+    if not row:
+        raise HTTPException(404, "Schedule not found")
+    return _schedule_to_api(row, await asyncio.to_thread(db.get_schedule_targets, schedule_id))
+
+
+@api.put("/schedules/{schedule_id}")
+async def update_schedule(schedule_id: int, body: ScheduleUpdate):
+    existing = await asyncio.to_thread(db.get_schedule, schedule_id)
+    if not existing:
+        raise HTTPException(404, "Schedule not found")
+    await _validate_schedule(existing["device_id"], body)
+    row = await asyncio.to_thread(
+        db.update_schedule, schedule_id, _schedule_to_db(body),
+        [t.model_dump() for t in body.targets],
+    )
+    asyncio.create_task(engine.reload())
+    return _schedule_to_api(row, await asyncio.to_thread(db.get_schedule_targets, schedule_id))
+
+
+@api.delete("/schedules/{schedule_id}", status_code=204)
+async def delete_schedule(schedule_id: int):
+    deleted = await asyncio.to_thread(db.delete_schedule, schedule_id)
+    if not deleted:
+        raise HTTPException(404, "Schedule not found")
+    asyncio.create_task(engine.reload())
+
+
+@api.post("/schedules/{schedule_id}/enable")
+async def enable_schedule(schedule_id: int):
+    row = await asyncio.to_thread(db.set_schedule_enabled, schedule_id, True)
+    if not row:
+        raise HTTPException(404, "Schedule not found")
+    asyncio.create_task(engine.reload())
+    return {"ok": True}
+
+
+@api.post("/schedules/{schedule_id}/disable")
+async def disable_schedule(schedule_id: int):
+    row = await asyncio.to_thread(db.set_schedule_enabled, schedule_id, False)
+    if not row:
+        raise HTTPException(404, "Schedule not found")
+    asyncio.create_task(engine.reload())
+    return {"ok": True}
+
+
+@api.post("/schedules/{schedule_id}/evaluate")
+async def evaluate_schedule(schedule_id: int):
+    """Best-effort read of the schedule's currently effective value, reusing
+    the live bacpypes3 object's own eval() rather than re-deriving the
+    weekly/exception/priority logic ourselves. Returns None fields if the
+    schedule is disabled or not currently built on the wire (e.g. all its
+    targets are missing)."""
+    sched = await asyncio.to_thread(db.get_schedule, schedule_id)
+    if not sched:
+        raise HTTPException(404, "Schedule not found")
+    bacnet_obj = engine._schedule_objects.get(schedule_id)
+    if bacnet_obj is None:
+        return {"present_value": None, "source": "not-active", "matching_exception": None, "next_transition": None}
+
+    now = datetime.now()
+    current_date = Date((now.year - 1900, now.month, now.day, now.isoweekday()))
+    current_time = Time((now.hour, now.minute, now.second, 0))
+    result = bacnet_obj.eval(current_date, current_time)
+    if result is None:
+        return {"present_value": None, "source": "outside-effective-period", "matching_exception": None, "next_transition": None}
+
+    value, next_transition_time = result
+    python_value = bacnet_schedule.atomic_to_python(value, sched["value_type"])
+
+    matching_exception = None
+    source = "weekly"
+    for exc in json.loads(sched["exception_schedule"] or "[]"):
+        period = exc.get("period") or {}
+        try:
+            if period.get("type") == "date":
+                y, m, d = bacnet_schedule.parse_date_tuple(period["date"])
+                match = (y, m, d) == (current_date[0], current_date[1], current_date[2])
+            elif period.get("type") == "date-range":
+                ys, ms, ds = bacnet_schedule.parse_date_tuple(period["start"])
+                ye, me, de = bacnet_schedule.parse_date_tuple(period["end"])
+                match = (ys, ms, ds) <= (current_date[0], current_date[1], current_date[2]) <= (ye, me, de)
+            else:
+                match = False
+        except Exception:
+            match = False
+        if match:
+            source = "exception"
+            matching_exception = exc.get("period")
+            break
+
+    if next_transition_time[0] == 24:
+        next_dt = datetime.combine(now.date() + timedelta(days=1), datetime.min.time())
+    else:
+        next_dt = now.replace(
+            hour=next_transition_time[0], minute=next_transition_time[1],
+            second=next_transition_time[2], microsecond=0,
+        )
+    return {
+        "present_value": python_value,
+        "source": source,
+        "matching_exception": matching_exception,
+        "next_transition": next_dt.isoformat(),
+    }
 
 
 # ── State + reload ──

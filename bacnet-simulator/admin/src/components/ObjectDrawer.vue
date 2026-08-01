@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, reactive, watch, nextTick } from 'vue'
+import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
-import type { SimObject, Meta } from '../types'
+import type { SimObject, Meta, NotificationClass } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -38,8 +38,121 @@ const form = reactive({
   units: 'no-units',
   behavior: 'constant',
   enabled: true,
+  number_of_states: 2,
+  reliability: 'no-fault-detected',
 })
 const params = ref<any>({ value: 0 })
+
+// ── Intrinsic Reporting (alarm) config — editing only, needs a real object id ──
+
+const isAnalog = computed(() => form.object_type.startsWith('analog'))
+const isBinary = computed(() => form.object_type.startsWith('binary'))
+const isMultistate = computed(() => form.object_type.startsWith('multi-state'))
+const showAlarmSection = computed(() => !props.draftMode && !!props.object && (isAnalog.value || isBinary.value || isMultistate.value))
+
+const ALARM_TRANSITIONS = [
+  { label: 'To Off-Normal', value: 'to-offnormal' },
+  { label: 'To Fault', value: 'to-fault' },
+  { label: 'To Normal', value: 'to-normal' },
+]
+
+const notificationClasses = ref<NotificationClass[]>([])
+const alarmCfgLoading = ref(false)
+const alarmCfgSaving = ref(false)
+const alarmCfgExists = ref(false)
+const alarmCfg = reactive({
+  notification_class_id: null as number | null,
+  enabled: true,
+  event_enable: ['to-offnormal', 'to-fault', 'to-normal'] as string[],
+  time_delay: 0,
+  time_delay_normal: 0,
+  high_limit: undefined as number | undefined,
+  low_limit: undefined as number | undefined,
+  deadband: 0,
+  alarm_value: true,
+  alarm_values: [] as number[],
+})
+
+function resetAlarmCfg() {
+  alarmCfgExists.value = false
+  Object.assign(alarmCfg, {
+    notification_class_id: null, enabled: true,
+    event_enable: ['to-offnormal', 'to-fault', 'to-normal'],
+    time_delay: 0, time_delay_normal: 0,
+    high_limit: undefined, low_limit: undefined, deadband: 0, alarm_value: true, alarm_values: [],
+  })
+}
+
+async function loadAlarmSection() {
+  if (!props.deviceId || !props.object) return
+  alarmCfgLoading.value = true
+  try {
+    const [cfg, ncs] = await Promise.all([
+      api.alarmConfig.get(props.deviceId, props.object.id),
+      api.notificationClasses.list(props.deviceId),
+    ])
+    notificationClasses.value = ncs
+    if (cfg) {
+      alarmCfgExists.value = true
+      Object.assign(alarmCfg, {
+        notification_class_id: cfg.notification_class_id,
+        enabled: cfg.enabled,
+        event_enable: cfg.event_enable,
+        time_delay: cfg.time_delay,
+        time_delay_normal: cfg.time_delay_normal,
+        high_limit: cfg.params.high_limit as number | undefined,
+        low_limit: cfg.params.low_limit as number | undefined,
+        deadband: (cfg.params.deadband as number | undefined) ?? 0,
+        alarm_value: (cfg.params.alarm_value as boolean | undefined) ?? true,
+        alarm_values: (cfg.params.alarm_values as number[] | undefined) ?? [],
+      })
+    } else {
+      resetAlarmCfg()
+    }
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to load alarm config')
+  } finally {
+    alarmCfgLoading.value = false
+  }
+}
+
+async function saveAlarmConfig() {
+  if (!props.deviceId || !props.object) return
+  alarmCfgSaving.value = true
+  try {
+    const params: Record<string, number | boolean | number[] | undefined> = isAnalog.value
+      ? { high_limit: alarmCfg.high_limit, low_limit: alarmCfg.low_limit, deadband: alarmCfg.deadband }
+      : isMultistate.value
+      ? { alarm_values: alarmCfg.alarm_values }
+      : { alarm_value: alarmCfg.alarm_value }
+    await api.alarmConfig.set(props.deviceId, props.object.id, {
+      notification_class_id: alarmCfg.notification_class_id,
+      enabled: alarmCfg.enabled ? 1 : 0,
+      event_enable: alarmCfg.event_enable,
+      notify_type: 'alarm',
+      time_delay: alarmCfg.time_delay,
+      time_delay_normal: alarmCfg.time_delay_normal,
+      params,
+    })
+    alarmCfgExists.value = true
+    message.success('Alarm config saved')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to save alarm config')
+  } finally {
+    alarmCfgSaving.value = false
+  }
+}
+
+async function removeAlarmConfig() {
+  if (!props.deviceId || !props.object) return
+  try {
+    await api.alarmConfig.del(props.deviceId, props.object.id)
+    resetAlarmCfg()
+    message.success('Alarm config removed')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to remove alarm config')
+  }
+}
 
 function addScheduleBlock() {
   if (!Array.isArray(params.value.blocks)) params.value.blocks = []
@@ -81,6 +194,8 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
       units: src.units ?? 'no-units',
       behavior: src.behavior ?? 'constant',
       enabled: !!src.enabled,
+      number_of_states: src.number_of_states ?? 2,
+      reliability: src.reliability ?? 'no-fault-detected',
     })
     try {
       const raw = src.behavior_params
@@ -90,10 +205,14 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
     Object.assign(form, {
       object_type: props.meta.object_types[0] ?? 'analog-input',
       object_instance: 1, name: '', units: 'no-units', behavior: 'constant', enabled: true,
+      number_of_states: 2, reliability: 'no-fault-detected',
     })
     params.value = { value: 0 }
   }
   nextTick(() => { skipBehaviorReset = false })
+
+  resetAlarmCfg()
+  if (!props.draftMode && props.object) loadAlarmSection()
 })
 
 async function save() {
@@ -151,7 +270,10 @@ async function save() {
         <a-input v-model:value="form.name" placeholder="Supply Temp" />
       </a-form-item>
 
-      <a-form-item label="Units">
+      <a-form-item v-if="isMultistate" label="Number of States" required>
+        <a-input-number v-model:value="form.number_of_states" :min="1" :max="254" style="width:100%" />
+      </a-form-item>
+      <a-form-item v-else label="Units">
         <a-select v-model:value="form.units" show-search>
           <a-select-option v-for="u in meta.units" :key="u" :value="u">{{ u }}</a-select-option>
         </a-select>
@@ -411,6 +533,92 @@ async function save() {
       <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
         <a-switch v-model:checked="form.enabled" />
       </a-form-item>
+
+      <a-form-item
+        label="Reliability"
+        style="margin-top:16px;margin-bottom:0"
+        tooltip="Simulates a BACnet fault condition on this object. Non-default values set statusFlags.fault so client software can be tested against fault handling."
+      >
+        <a-select v-model:value="form.reliability">
+          <a-select-option v-for="r in meta.reliability_options" :key="r" :value="r">{{ r }}</a-select-option>
+        </a-select>
+      </a-form-item>
+
+      <template v-if="showAlarmSection">
+        <div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 10px">
+          Intrinsic Reporting (Alarms)
+        </div>
+        <a-spin :spinning="alarmCfgLoading">
+          <div style="background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:14px">
+            <a-form-item label="Enable alarming for this object" style="margin-bottom:12px">
+              <a-switch v-model:checked="alarmCfg.enabled" />
+            </a-form-item>
+
+            <a-form-item label="Notification Class" style="margin-bottom:12px">
+              <a-select v-model:value="alarmCfg.notification_class_id" allow-clear placeholder="None — logged locally only, no routed notification">
+                <a-select-option v-for="nc in notificationClasses" :key="nc.id" :value="nc.id">{{ nc.name }}</a-select-option>
+              </a-select>
+            </a-form-item>
+
+            <template v-if="isAnalog">
+              <a-row :gutter="12">
+                <a-col :span="8">
+                  <a-form-item label="High Limit">
+                    <a-input-number v-model:value="alarmCfg.high_limit" style="width:100%" :step="0.5" placeholder="none" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <a-form-item label="Low Limit">
+                    <a-input-number v-model:value="alarmCfg.low_limit" style="width:100%" :step="0.5" placeholder="none" />
+                  </a-form-item>
+                </a-col>
+                <a-col :span="8">
+                  <a-form-item label="Deadband">
+                    <a-input-number v-model:value="alarmCfg.deadband" :min="0" style="width:100%" :step="0.5" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+            </template>
+            <template v-else-if="isMultistate">
+              <a-form-item label="Alarm states" :tooltip="`Which of the ${form.number_of_states} state(s) count as off-normal`">
+                <a-checkbox-group v-model:value="alarmCfg.alarm_values">
+                  <a-checkbox v-for="s in form.number_of_states" :key="s" :value="s">{{ s }}</a-checkbox>
+                </a-checkbox-group>
+              </a-form-item>
+            </template>
+            <template v-else>
+              <a-form-item label="Alarm when value is">
+                <a-radio-group v-model:value="alarmCfg.alarm_value">
+                  <a-radio-button :value="true">Active</a-radio-button>
+                  <a-radio-button :value="false">Inactive</a-radio-button>
+                </a-radio-group>
+              </a-form-item>
+            </template>
+
+            <a-row :gutter="12">
+              <a-col :span="12">
+                <a-form-item label="Time Delay (s)" tooltip="How long the condition must persist before an off-normal/fault transition is confirmed">
+                  <a-input-number v-model:value="alarmCfg.time_delay" :min="0" :step="5" style="width:100%" />
+                </a-form-item>
+              </a-col>
+              <a-col :span="12">
+                <a-form-item label="Time Delay Normal (s)" tooltip="Same, for the return-to-normal transition">
+                  <a-input-number v-model:value="alarmCfg.time_delay_normal" :min="0" :step="5" style="width:100%" />
+                </a-form-item>
+              </a-col>
+            </a-row>
+
+            <a-form-item label="Generate notifications for" style="margin-bottom:0">
+              <a-checkbox-group v-model:value="alarmCfg.event_enable" :options="ALARM_TRANSITIONS" />
+            </a-form-item>
+          </div>
+
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+            <a-button v-if="alarmCfgExists" danger size="small" @click="removeAlarmConfig">Remove Alarm Config</a-button>
+            <a-button type="primary" size="small" :loading="alarmCfgSaving" @click="saveAlarmConfig">Save Alarm Config</a-button>
+          </div>
+        </a-spin>
+      </template>
     </a-form>
 
     <template #footer>

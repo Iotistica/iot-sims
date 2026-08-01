@@ -18,7 +18,7 @@ const emit = defineEmits<{
 
 // ── Meta (fetched once) ───────────────────────────────────────────────────────
 
-const meta = ref<Meta>({ object_types: [], behaviors: [], units: [] })
+const meta = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [] })
 
 async function fetchMeta() {
   if (meta.value.object_types.length) return
@@ -299,6 +299,8 @@ async function copyFromLive() {
             behavior: o.behavior,
             behavior_params: o.behavior_params,
             enabled: !!o.enabled,
+            number_of_states: o.number_of_states,
+            reliability: o.reliability,
           })),
         }
       }),
@@ -344,6 +346,8 @@ async function saveProfile() {
           behavior_params: o.behavior_params,
           enabled: o.enabled ? 1 : 0,
           manual_value: null,
+          number_of_states: o.number_of_states,
+          reliability: o.reliability,
         })),
       })),
     }

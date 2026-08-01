@@ -1,5 +1,38 @@
-import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot } from './types'
+import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation } from './types'
 import { authToken, logout } from './auth'
+
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (authToken.value) headers['Authorization'] = `Bearer ${authToken.value}`
+  return headers
+}
+
+async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  const res = await fetch(path, { headers: authHeaders() })
+  if (!res.ok) throw new Error(res.statusText)
+  const disposition = res.headers.get('Content-Disposition') ?? ''
+  const match = /filename="?([^"]+)"?/.exec(disposition)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = match?.[1] ?? fallbackName
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function uploadFile<T>(path: string, file: File, fields: Record<string, string> = {}): Promise<T> {
+  const body = new FormData()
+  body.append('file', file)
+  for (const [k, v] of Object.entries(fields)) body.append(k, v)
+  const res = await fetch(path, { method: 'POST', headers: authHeaders(), body })
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({ detail: res.statusText }))
+    const detail = (e as { detail?: unknown }).detail
+    throw new Error(typeof detail === 'string' ? detail : res.statusText)
+  }
+  return res.json() as Promise<T>
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -60,6 +93,9 @@ export const api = {
     update: (id: number, b: Omit<Device, 'id'>) => req<Device>(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
     del:    (id: number)                   => req<null>(`/devices/${id}`, { method: 'DELETE' }),
     logs:   (id: number, limit = 100)      => req<LogEntry[]>(`/devices/${id}/logs?limit=${limit}`),
+    exportEde: (id: number, name: string)  => downloadFile(`/devices/${id}/export/ede`, `${name}.ede`),
+    importEde: (id: number, file: File)    =>
+      uploadFile<{ ok: boolean; objects_imported: number }>(`/devices/${id}/import/ede`, file),
   },
 
   objects: {
@@ -81,6 +117,74 @@ export const api = {
     load:    (id: number)                                   => req<{ ok: boolean }>(`/profiles/${id}/load`, { method: 'POST' }),
     import_: (name: string, description: string, data: object) =>
       req<Profile>('/profiles/import', { method: 'POST', body: JSON.stringify({ name, description, data }) }),
+    exportEde: (id: number, name: string) => downloadFile(`/profiles/${id}/export/ede`, `${name}.ede`),
+    importEde: (name: string, description: string, deviceName: string, file: File) =>
+      uploadFile<Profile>('/profiles/import/ede', file, { name, description, device_name: deviceName }),
+  },
+
+  notificationClasses: {
+    list:   (deviceId: number)                             => req<NotificationClass[]>(`/devices/${deviceId}/notification-classes`),
+    create: (deviceId: number, b: Omit<NotificationClass, 'id' | 'device_id'>) =>
+      req<NotificationClass>(`/devices/${deviceId}/notification-classes`, { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<NotificationClass, 'id' | 'device_id'>) =>
+      req<NotificationClass>(`/notification-classes/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)                                   => req<null>(`/notification-classes/${id}`, { method: 'DELETE' }),
+  },
+
+  alarmConfig: {
+    get: (deviceId: number, objId: number)             => req<AlarmConfig | null>(`/devices/${deviceId}/objects/${objId}/alarm-config`),
+    set: (deviceId: number, objId: number, b: object)  =>
+      req<AlarmConfig>(`/devices/${deviceId}/objects/${objId}/alarm-config`, { method: 'PUT', body: JSON.stringify(b) }),
+    del: (deviceId: number, objId: number)             => req<null>(`/devices/${deviceId}/objects/${objId}/alarm-config`, { method: 'DELETE' }),
+  },
+
+  alarms: {
+    list: (limit = 200, unackedOnly = false) =>
+      req<AlarmLogEntry[]>(`/alarms?limit=${limit}&unacked_only=${unackedOnly}`),
+    ack:  (id: number, ackBy?: string) =>
+      req<AlarmLogEntry>(`/alarms/${id}/ack`, { method: 'POST', body: JSON.stringify({ ack_by: ackBy }) }),
+  },
+
+  eventEnrollments: {
+    list:   (deviceId: number)                          => req<EventEnrollment[]>(`/devices/${deviceId}/event-enrollments`),
+    create: (deviceId: number, b: Omit<EventEnrollment, 'id' | 'device_id'>) =>
+      req<EventEnrollment>(`/devices/${deviceId}/event-enrollments`, { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<EventEnrollment, 'id' | 'device_id'>) =>
+      req<EventEnrollment>(`/event-enrollments/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)                                => req<null>(`/event-enrollments/${id}`, { method: 'DELETE' }),
+  },
+
+  trendLogs: {
+    list:   (deviceId: number)                     => req<TrendLog[]>(`/devices/${deviceId}/trend-logs`),
+    create: (deviceId: number, b: Omit<TrendLog, 'id' | 'device_id' | 'record_count' | 'total_record_count' | 'last_sampled_at'>) =>
+      req<TrendLog>(`/devices/${deviceId}/trend-logs`, { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<TrendLog, 'id' | 'device_id' | 'record_count' | 'total_record_count' | 'last_sampled_at'>) =>
+      req<TrendLog>(`/trend-logs/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:     (id: number) => req<null>(`/trend-logs/${id}`, { method: 'DELETE' }),
+    records: (id: number, opts: { from?: string; to?: string; startSequence?: number; limit?: number; order?: 'asc' | 'desc' } = {}) => {
+      const params = new URLSearchParams()
+      if (opts.from) params.set('from', opts.from)
+      if (opts.to) params.set('to', opts.to)
+      if (opts.startSequence !== undefined) params.set('start_sequence', String(opts.startSequence))
+      if (opts.limit !== undefined) params.set('limit', String(opts.limit))
+      if (opts.order) params.set('order', opts.order)
+      const qs = params.toString()
+      return req<TrendLogRecord[]>(`/trend-logs/${id}/records${qs ? `?${qs}` : ''}`)
+    },
+    trigger: (id: number) => req<{ ok: boolean; sequence_number: number; value: unknown }>(`/trend-logs/${id}/trigger`, { method: 'POST' }),
+    clear:   (id: number) => req<{ ok: boolean }>(`/trend-logs/${id}/clear`, { method: 'POST' }),
+  },
+
+  schedules: {
+    list:   (deviceId: number)                          => req<Schedule[]>(`/devices/${deviceId}/schedules`),
+    create: (deviceId: number, b: Omit<Schedule, 'id' | 'device_id' | 'enabled'> & { enabled: number }) =>
+      req<Schedule>(`/devices/${deviceId}/schedules`, { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<Schedule, 'id' | 'device_id' | 'enabled'> & { enabled: number }) =>
+      req<Schedule>(`/schedules/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:      (id: number) => req<null>(`/schedules/${id}`, { method: 'DELETE' }),
+    enable:   (id: number) => req<{ ok: boolean }>(`/schedules/${id}/enable`, { method: 'POST' }),
+    disable:  (id: number) => req<{ ok: boolean }>(`/schedules/${id}/disable`, { method: 'POST' }),
+    evaluate: (id: number) => req<ScheduleEvaluation>(`/schedules/${id}/evaluate`, { method: 'POST' }),
   },
 
   analytics: {

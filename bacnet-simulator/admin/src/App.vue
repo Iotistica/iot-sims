@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
@@ -12,20 +12,36 @@ import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import LoginView from './components/LoginView.vue'
 import UsersDrawer from './components/UsersDrawer.vue'
 import AnalyticsDashboard from './components/AnalyticsDashboard.vue'
+import AlarmsPanel from './components/AlarmsPanel.vue'
+import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
+import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
+import TrendLogDrawer from './components/TrendLogDrawer.vue'
+import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import type { Device, SimObject, Meta, Health, HistoryPoint } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, DashboardOutlined, ApartmentOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
-const activeView = ref<'devices' | 'analytics'>('devices')
+const activeView = ref<'devices' | 'analytics' | 'alarms'>('devices')
 
 const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
 const simActionLoading = ref(false)
 const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a', paused: '#faad14', stopped: '#ff4d4f' }
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
-const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [] })
+const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [] })
 const devices = ref<Device[]>([])
+const deviceSearch = ref('')
+const filteredDevices = computed(() => {
+  const q = deviceSearch.value.trim().toLowerCase()
+  if (!q) return devices.value
+  return devices.value.filter(d =>
+    d.name.toLowerCase().includes(q) ||
+    String(d.device_instance).includes(q) ||
+    d.vendor_name.toLowerCase().includes(q) ||
+    d.model_name.toLowerCase().includes(q)
+  )
+})
 const selectedDevice = ref<Device | null>(null)
 const objects = ref<SimObject[]>([])
 const liveValues = ref<Record<number, number | boolean>>({})
@@ -158,13 +174,15 @@ async function duplicateDevice(d: Device) {
     const srcObjects = await api.objects.list(d.id)
     for (const obj of srcObjects) {
       await api.objects.create(created.id, {
-        object_type:     obj.object_type,
-        object_instance: obj.object_instance,
-        name:            obj.name,
-        units:           obj.units,
-        behavior:        obj.behavior,
-        behavior_params: obj.behavior_params,
-        enabled:         obj.enabled,
+        object_type:      obj.object_type,
+        object_instance:  obj.object_instance,
+        name:             obj.name,
+        units:            obj.units,
+        behavior:         obj.behavior,
+        behavior_params:  obj.behavior_params,
+        enabled:          obj.enabled,
+        number_of_states: obj.number_of_states,
+        reliability:      obj.reliability,
       })
     }
     await loadDevices()
@@ -187,6 +205,71 @@ function deleteDevice(d: Device) {
       message.success('Device deleted')
     },
   })
+}
+
+async function exportDeviceEde(d: Device) {
+  try {
+    await api.devices.exportEde(d.id, d.name)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Export failed')
+  }
+}
+
+const edeImportTarget = ref<Device | null>(null)
+const edeImportInput = ref<HTMLInputElement>()
+
+const notificationClassDrawerOpen = ref(false)
+const notificationClassDevice = ref<Device | null>(null)
+function openNotificationClasses(d: Device) {
+  notificationClassDevice.value = d
+  notificationClassDrawerOpen.value = true
+}
+
+const eventEnrollmentDrawerOpen = ref(false)
+const eventEnrollmentDevice = ref<Device | null>(null)
+function openEventEnrollments(d: Device) {
+  eventEnrollmentDevice.value = d
+  eventEnrollmentDrawerOpen.value = true
+}
+
+const trendLogDrawerOpen = ref(false)
+const trendLogDevice = ref<Device | null>(null)
+function openTrendLogs(d: Device) {
+  trendLogDevice.value = d
+  trendLogDrawerOpen.value = true
+}
+
+const scheduleDrawerOpen = ref(false)
+const scheduleDevice = ref<Device | null>(null)
+function openSchedules(d: Device) {
+  scheduleDevice.value = d
+  scheduleDrawerOpen.value = true
+}
+
+function importDeviceEde(d: Device) {
+  Modal.confirm({
+    title: `Import EDE into "${d.name}"?`,
+    content: 'Points in the file that match an existing point here by object type + instance will be overwritten; others will be added. If the file covers more than one device, use project-level EDE import instead — it creates each device separately.',
+    okText: 'Choose file…',
+    onOk() {
+      edeImportTarget.value = d
+      edeImportInput.value?.click()
+    },
+  })
+}
+
+async function onEdeImportFileChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  const target = edeImportTarget.value
+  ;(e.target as HTMLInputElement).value = ''
+  if (!file || !target) return
+  try {
+    const result = await api.devices.importEde(target.id, file)
+    message.success(`${result.objects_imported} object${result.objects_imported !== 1 ? 's' : ''} imported into "${target.name}"`)
+    if (selectedDevice.value?.id === target.id) await loadObjects()
+  } catch (e2: unknown) {
+    message.error((e2 as Error).message ?? 'Import failed')
+  }
 }
 
 // Profile actions
@@ -535,10 +618,10 @@ onUnmounted(() => {
         <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
           <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
           <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
+          <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
         </a-radio-group>
 
         <div style="flex:1" />
-        <template v-if="activeView === 'devices'">
         <a-tag v-if="activeProfileName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProfileName }}</a-tag>
         <a-button size="small" @click="newProject">
           <template #icon><FileAddOutlined /></template>
@@ -547,7 +630,6 @@ onUnmounted(() => {
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
         <a-button v-if="activeProfileId !== null" size="small" @click="openSaveAs">Save As</a-button>
         <a-button size="small" @click="profilesDrawerOpen = true">Open Project</a-button>
-        </template>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
 
         <div style="display:flex;align-items:center;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
@@ -568,6 +650,7 @@ onUnmounted(() => {
       </a-layout-header>
 
       <AnalyticsDashboard v-if="activeView === 'analytics'" />
+      <AlarmsPanel v-else-if="activeView === 'alarms'" />
       <a-layout v-else>
 
         <!-- Sidebar: devices -->
@@ -577,12 +660,26 @@ onUnmounted(() => {
             <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
           </div>
 
+          <div v-if="devices.length" style="padding:8px 12px;border-bottom:1px solid #e8e8e8">
+            <a-input
+              v-model:value="deviceSearch"
+              size="small"
+              allow-clear
+              placeholder="Search devices…"
+            >
+              <template #prefix><SearchOutlined style="color:#bbb" /></template>
+            </a-input>
+          </div>
+
           <div v-if="!devices.length" style="padding:24px 16px;color:#bbb;text-align:center;font-size:13px">
             No devices yet
           </div>
+          <div v-else-if="!filteredDevices.length" style="padding:24px 16px;color:#bbb;text-align:center;font-size:13px">
+            No devices match "{{ deviceSearch }}"
+          </div>
 
           <div
-            v-for="d in devices" :key="d.id"
+            v-for="d in filteredDevices" :key="d.id"
             style="padding:10px 12px 10px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;border-bottom:1px solid #f5f5f5;transition:background .1s"
             :style="{
               background: selectedDevice?.id === d.id ? '#e6f7ff' : 'white',
@@ -602,12 +699,41 @@ onUnmounted(() => {
               <a-button type="text" size="small" title="Duplicate" @click.stop="duplicateDevice(d)">
                 <template #icon><CopyOutlined /></template>
               </a-button>
+              <a-dropdown :trigger="['click']" @click.stop>
+                <a-button type="text" size="small" title="More" @click.stop>
+                  <template #icon><EllipsisOutlined /></template>
+                </a-button>
+                <template #overlay>
+                  <a-menu @click.stop>
+                    <a-menu-item key="export-ede" @click="exportDeviceEde(d)">
+                      <DownloadOutlined /> Export EDE
+                    </a-menu-item>
+                    <a-menu-item key="import-ede" @click="importDeviceEde(d)">
+                      <UploadOutlined /> Import EDE
+                    </a-menu-item>
+                    <a-menu-divider />
+                    <a-menu-item key="notification-classes" @click="openNotificationClasses(d)">
+                      <AlertOutlined /> Notification Classes
+                    </a-menu-item>
+                    <a-menu-item key="event-enrollments" @click="openEventEnrollments(d)">
+                      <AlertOutlined /> Event Enrollments
+                    </a-menu-item>
+                    <a-menu-item key="trend-logs" @click="openTrendLogs(d)">
+                      <LineChartOutlined /> Trend Logs
+                    </a-menu-item>
+                    <a-menu-item key="schedules" @click="openSchedules(d)">
+                      <CalendarOutlined /> Schedules
+                    </a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
               <a-button type="text" size="small" danger title="Delete" @click.stop="deleteDevice(d)">
                 <template #icon><DeleteOutlined /></template>
               </a-button>
             </a-space>
           </div>
         </a-layout-sider>
+        <input ref="edeImportInput" type="file" accept=".ede,.csv,text/csv" style="display:none" @change="onEdeImportFileChange" />
 
         <!-- Content: objects + log -->
         <a-layout-content style="display:flex;flex-direction:column;overflow:hidden">
@@ -724,6 +850,18 @@ onUnmounted(() => {
 
     <!-- Users drawer -->
     <UsersDrawer v-model:open="usersDrawerOpen" />
+
+    <!-- Notification classes drawer -->
+    <NotificationClassDrawer v-model:open="notificationClassDrawerOpen" :device="notificationClassDevice" />
+
+    <!-- Event enrollments drawer -->
+    <EventEnrollmentDrawer v-model:open="eventEnrollmentDrawerOpen" :device="eventEnrollmentDevice" />
+
+    <!-- Trend logs drawer -->
+    <TrendLogDrawer v-model:open="trendLogDrawerOpen" :device="trendLogDevice" />
+
+    <!-- Schedules drawer -->
+    <ScheduleDrawer v-model:open="scheduleDrawerOpen" :device="scheduleDevice" />
 
     <!-- Save as template -->
     <SaveTemplateModal

@@ -100,15 +100,68 @@ const clientOptions = computed(() => {
   return Array.from(sources).map((s) => ({ value: s, label: s }))
 })
 
+// a-select's "allow-clear" × button resets the bound value to `undefined`,
+// not `null` — every check below used to compare against `null` specifically
+// (`filterDevice.value !== null`), so clearing the filter left it stuck
+// "filtering for device `undefined`" (which matches nothing) instead of
+// going back to showing everything (GH #3, the clear-button follow-up).
+// Normalized once here so every computed below only has one nullish check
+// to get right.
+const activeDeviceFilter = computed<number | null>(() => filterDevice.value ?? null)
+
 const filteredRequests = computed(() => {
   let rows = snapshot.value?.traffic.recent_requests ?? []
   if (filterClient.value) rows = rows.filter((r) => r.source === filterClient.value)
-  if (filterDevice.value !== null) {
-    const prefix = `,${filterDevice.value}`
-    rows = rows.filter((r) => r.object?.includes(prefix) || r.device === filterDevice.value)
+  if (activeDeviceFilter.value !== null) {
+    const prefix = `,${activeDeviceFilter.value}`
+    rows = rows.filter((r) => r.object?.includes(prefix) || r.device === activeDeviceFilter.value)
   }
   return rows
 })
+
+// The device filter previously only touched filteredRequests above — every
+// other section (Overview tiles, Device Analytics, Recent Errors) read the
+// unfiltered snapshot directly, so picking a device visibly changed nothing
+// (GH #3). Scoped here to whatever can be honestly derived from data already
+// in the snapshot; Performance/Discovery stay global since they're genuinely
+// process-wide, not per-device.
+
+const filteredDevices = computed(() => {
+  const all = snapshot.value?.devices.list ?? []
+  return activeDeviceFilter.value === null ? all : all.filter((d) => d.device_instance === activeDeviceFilter.value)
+})
+
+const filteredErrors = computed(() => {
+  let rows = snapshot.value?.errors.recent ?? []
+  if (activeDeviceFilter.value !== null) {
+    const prefix = `,${activeDeviceFilter.value}`
+    rows = rows.filter((r) => r.object?.includes(prefix))
+  }
+  return rows
+})
+
+const filteredDuplicateIds = computed(() => {
+  const all = snapshot.value?.errors.duplicate_device_ids ?? []
+  return activeDeviceFilter.value === null ? all : all.filter((d) => d.device_instance === activeDeviceFilter.value)
+})
+
+const overviewTotalErrors = computed(() =>
+  activeDeviceFilter.value === null ? snapshot.value?.errors.total ?? 0 : filteredErrors.value.length,
+)
+
+const overviewTotalDevices = computed(() =>
+  activeDeviceFilter.value === null ? snapshot.value?.overview.total_devices ?? 0 : filteredDevices.value.length,
+)
+const overviewOnlineDevices = computed(() =>
+  activeDeviceFilter.value === null
+    ? snapshot.value?.overview.online_devices ?? 0
+    : filteredDevices.value.filter((d) => d.enabled).length,
+)
+const overviewOfflineDevices = computed(() =>
+  activeDeviceFilter.value === null
+    ? snapshot.value?.overview.offline_devices ?? 0
+    : filteredDevices.value.filter((d) => !d.enabled).length,
+)
 
 const filteredHistory = computed(() => history.value.slice(-timeWindowSec.value))
 
@@ -352,9 +405,9 @@ const discoveryColumns = [
         <section>
           <h3>Overview</h3>
           <div class="kpi-grid">
-            <a-card size="small"><a-statistic title="Total Devices" :value="snapshot.overview.total_devices" /></a-card>
-            <a-card size="small"><a-statistic title="Online" :value="snapshot.overview.online_devices" :value-style="{ color: '#52c41a' }" /></a-card>
-            <a-card size="small"><a-statistic title="Offline" :value="snapshot.overview.offline_devices" :value-style="{ color: snapshot.overview.offline_devices ? '#f5222d' : undefined }" /></a-card>
+            <a-card size="small"><a-statistic title="Total Devices" :value="overviewTotalDevices" /></a-card>
+            <a-card size="small"><a-statistic title="Online" :value="overviewOnlineDevices" :value-style="{ color: '#52c41a' }" /></a-card>
+            <a-card size="small"><a-statistic title="Offline" :value="overviewOfflineDevices" :value-style="{ color: overviewOfflineDevices ? '#f5222d' : undefined }" /></a-card>
             <a-card size="small"><a-statistic title="Active Clients" :value="snapshot.overview.active_clients" /></a-card>
             <a-card size="small"><a-statistic title="Requests/sec" :value="snapshot.overview.requests_per_sec" /></a-card>
             <a-card size="small"><a-statistic title="Avg Response (ms)" :value="snapshot.overview.avg_response_time_ms" :precision="2" /></a-card>
@@ -409,7 +462,7 @@ const discoveryColumns = [
         <section>
           <h3>Device Analytics</h3>
           <a-card size="small">
-            <a-table :columns="deviceColumns" :data-source="snapshot.devices.list" :pagination="{ pageSize: 10 }" row-key="id" size="small">
+            <a-table :columns="deviceColumns" :data-source="filteredDevices" :pagination="{ pageSize: 10 }" row-key="id" size="small">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'enabled'">
                   <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? 'Online' : 'Offline' }}</a-tag>
@@ -459,8 +512,8 @@ const discoveryColumns = [
         <section>
           <h3>Error Analytics</h3>
           <div class="kpi-grid">
-            <a-card size="small"><a-statistic title="Total Errors" :value="snapshot.errors.total" :value-style="{ color: snapshot.errors.total ? '#f5222d' : undefined }" /></a-card>
-            <a-card size="small"><a-statistic title="Duplicate Device IDs" :value="snapshot.errors.duplicate_device_ids.length" :value-style="{ color: snapshot.errors.duplicate_device_ids.length ? '#f5222d' : undefined }" /></a-card>
+            <a-card size="small"><a-statistic title="Total Errors" :value="overviewTotalErrors" :value-style="{ color: overviewTotalErrors ? '#f5222d' : undefined }" /></a-card>
+            <a-card size="small"><a-statistic title="Duplicate Device IDs" :value="filteredDuplicateIds.length" :value-style="{ color: filteredDuplicateIds.length ? '#f5222d' : undefined }" /></a-card>
           </div>
           <div class="chart-row">
             <a-card size="small" title="Errors by Type (reject / abort / unknown object / unknown property / etc.)" class="chart-card wide">
@@ -468,7 +521,7 @@ const discoveryColumns = [
             </a-card>
           </div>
           <a-card size="small" title="Recent Errors">
-            <a-table :columns="recentErrorColumns" :data-source="snapshot.errors.recent.slice().reverse()" :pagination="{ pageSize: 10 }" row-key="ts" size="small">
+            <a-table :columns="recentErrorColumns" :data-source="filteredErrors.slice().reverse()" :pagination="{ pageSize: 10 }" row-key="ts" size="small">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'ts'">{{ fmtTime(record.ts) }}</template>
               </template>
