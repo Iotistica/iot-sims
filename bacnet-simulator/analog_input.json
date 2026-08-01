@@ -1,0 +1,231 @@
+{
+    "object_type": "Analog Input",
+    "properties": [
+        {
+            "name": "Object_Identifier",
+            "requirement": "R",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Object_Name",
+            "requirement": "R",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Object_Type",
+            "requirement": "R",
+            "writable": null,
+            "property_id": 0,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Present_Value",
+            "requirement": "R",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Description",
+            "requirement": "O",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Status_Flags",
+            "requirement": "R",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Event_State",
+            "requirement": "R",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Reliability",
+            "requirement": "O",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": "Possible conditions are: 3. no_fault_detected 4. open_loop 5. shorted_loop"
+        },
+        {
+            "name": "Out_Of_Service",
+            "requirement": "R",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Units",
+            "requirement": "R",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "COV_Increment",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Time_Delay",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": "0 to 86400s",
+            "remarks": null
+        },
+        {
+            "name": "Notification_Class",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": "0 to 3",
+            "remarks": null
+        },
+        {
+            "name": "High_Limit",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Low_Limit",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Deadband",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Limit_Enable",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Event_Enable",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Acked_Transitions",
+            "requirement": "O",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Notify_Type",
+            "requirement": "O",
+            "writable": true,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Event_Time_Stamps",
+            "requirement": "O",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Event_Detection_Enable",
+            "requirement": "O",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Property_List",
+            "requirement": "R",
+            "writable": null,
+            "property_id": null,
+            "datatype": null,
+            "range": null,
+            "remarks": null
+        },
+        {
+            "name": "Terminal Address",
+            "requirement": "P",
+            "writable": null,
+            "property_id": 532,
+            "datatype": "adtCharString",
+            "range": "8 characters",
+            "remarks": null
+        },
+        {
+            "name": "Sensor Offset",
+            "requirement": "P",
+            "writable": null,
+            "property_id": 533,
+            "datatype": "adtReal",
+            "range": null,
+            "remarks": null
+        }
+    ],
+    "warnings": []
+}
