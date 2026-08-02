@@ -10,7 +10,6 @@ import json
 import math
 import os
 import random
-import secrets
 import socket
 import sqlite3
 import time
@@ -31,13 +30,30 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 import uvicorn
 
-import alarms
-import ede
-import bacnet_schedule
-import bacnet_calendar
+# GH #15 refactor, pass 1 — constants/JWT-secret, Pydantic schemas, and the
+# alarms/calendar/schedule/EDE helpers now live alongside this file in src/.
+from . import alarms
+from . import ede
+from . import schedule as bacnet_schedule
+from . import calendar as bacnet_calendar
+from .config import (
+    BACNET_PORT, BACNET_UNITS, COMMANDABLE_TYPES, DATA_DIR, DB_PATH,
+    JWT_ALGORITHM, JWT_EXPIRE_HOURS, MULTISTATE_TYPES, SIM_API_PORT,
+    VALID_BEHAVIORS, VALID_OBJECT_TYPES, VALID_POLARITY, VALID_RELIABILITY,
+    VALID_SEGMENTATION, _get_jwt_secret,
+)
+from .schemas import (
+    AckAlarmRequest, AlarmConfigSet, CalendarCreate, CalendarUpdate,
+    Credentials, DeviceCreate, DeviceUpdate, EventEnrollmentCreate,
+    EventEnrollmentUpdate, LocationCreate, LocationUpdate,
+    NotificationClassCreate, NotificationClassUpdate,
+    ObjectCreate, ObjectUpdate, PasswordReset, PriorityWrite, ProfileCreate,
+    ProfileImport, ProfileUpdate, ScheduleCreate, ScheduleTargetSpec,
+    ScheduleUpdate, SetValueRequest, SettingsPayload, TrendLogCreate,
+    TrendLogUpdate,
+)
 
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.analog import AnalogInputObject, AnalogOutputObject, AnalogValueObject
@@ -80,72 +96,42 @@ _log = ModuleLogger(globals())
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
+# Moved to bacnet_sim/config.py (GH #15 pass 1) — imported below.
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-DB_PATH = DATA_DIR / "bacnet_sim.db"
-SIM_API_PORT = int(os.environ.get("SIM_API_PORT", "47900"))
-BACNET_PORT = int(os.environ.get("BACNET_PORT", "47808"))
-
-VALID_OBJECT_TYPES = {
-    "analog-input", "analog-output", "analog-value",
-    "binary-input", "binary-output", "binary-value",
-    "multi-state-input", "multi-state-output", "multi-state-value",
-}
-# Calendar (GH #18) is NOT part of this set — like Trend Log and Schedule, it
-# has its own DB table/CRUD/drawer rather than being shoehorned into the
-# generic objects table, since it has no units/behavior/number_of_states.
-MULTISTATE_TYPES = {"multi-state-input", "multi-state-output", "multi-state-value"}
-
-# Object types that are actually Commandable (real 16-slot priorityArray) in
-# this bacpypes3 version (GH #17) — note *-value objects are NOT Commandable
-# here despite being writable, so they have no priority array to expose.
-COMMANDABLE_TYPES = {"analog-output", "binary-output", "multi-state-output"}
-
-# Narrow, practical subset of BACnet's Reliability enum (GH #16) — enough to
-# exercise client-side fault handling without modeling every standard value.
-VALID_RELIABILITY = {
-    "no-fault-detected", "no-sensor", "over-range", "under-range",
-    "open-loop", "shorted-loop", "unreliable-other", "multi-state-fault",
+# ─── Runtime settings ──────────────────────────────────────────────────────────
+# Persisted key/value overrides for constants that used to be hardcoded. Values
+# are stored as TEXT in the `settings` table; SETTINGS_SCHEMA casts them back.
+SETTINGS_SCHEMA: dict[str, type] = {
+    "tick_seconds": float,
+    "device_log_maxlen": int,
+    "global_log_maxlen": int,
+    "metrics_errors_maxlen": int,
+    "metrics_new_devices_maxlen": int,
+    "metrics_duplicate_id_maxlen": int,
+    "metrics_traffic_feed_maxlen": int,
+    "object_history_maxlen": int,
+    "trend_log_default_interval": int,
+    "trend_log_default_buffer_size": int,
+    "jwt_expire_hours": int,
 }
 
-# Binary Input/Output Polarity (GH #19) — Binary Value has no such property
-# in bacpypes3's schema (matches real BACnet spec), so this only applies when
-# object_type is binary-input or binary-output.
-VALID_POLARITY = {"normal", "reverse"}
 
-VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault"}
-
-BACNET_UNITS = [
-    "no-units", "degrees-celsius", "degrees-fahrenheit", "degrees-kelvin",
-    "percent", "parts-per-million", "kilowatts", "watts", "kilowatt-hours",
-    "amperes", "volts", "cubic-feet-per-minute", "liters-per-second",
-    "pascals", "kilopascals", "bars", "cubic-meters-per-hour",
-    "revolutions-per-minute", "meters-per-second", "luxes",
-]
-
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
-_JWT_SECRET_FILE = DATA_DIR / ".jwt_secret"
-_jwt_secret_cache: Optional[str] = None
-
-
-def _get_jwt_secret() -> str:
-    """Resolve the JWT signing secret: env override, else a persisted random
-    value in DATA_DIR so tokens survive process restarts."""
-    global _jwt_secret_cache
-    if _jwt_secret_cache is not None:
-        return _jwt_secret_cache
-    env_secret = os.environ.get("JWT_SECRET")
-    if env_secret:
-        _jwt_secret_cache = env_secret
-        return _jwt_secret_cache
-    _JWT_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if _JWT_SECRET_FILE.exists():
-        _jwt_secret_cache = _JWT_SECRET_FILE.read_text().strip()
-    else:
-        _jwt_secret_cache = secrets.token_hex(32)
-        _JWT_SECRET_FILE.write_text(_jwt_secret_cache)
-    return _jwt_secret_cache
+def _default_settings() -> dict:
+    return {
+        "tick_seconds": 5.0,
+        "device_log_maxlen": 300,
+        "global_log_maxlen": 1000,
+        "metrics_errors_maxlen": 200,
+        "metrics_new_devices_maxlen": 200,
+        "metrics_duplicate_id_maxlen": 100,
+        "metrics_traffic_feed_maxlen": 500,
+        "object_history_maxlen": 720,
+        "trend_log_default_interval": 60,
+        "trend_log_default_buffer_size": 1000,
+        # Seeded from the env var so upgrading an existing deployment that
+        # already sets JWT_EXPIRE_HOURS doesn't silently change on first read.
+        "jwt_expire_hours": int(os.environ.get("JWT_EXPIRE_HOURS", "24")),
+    }
 
 
 # ─── Database ─────────────────────────────────────────────────────────────────
@@ -166,6 +152,13 @@ class Database:
         self.path_obj.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript("""
+                CREATE TABLE IF NOT EXISTS locations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    parent_location_id INTEGER REFERENCES locations(id),
+                    description TEXT NOT NULL DEFAULT ''
+                );
+
                 CREATE TABLE IF NOT EXISTS devices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     device_instance INTEGER NOT NULL UNIQUE
@@ -213,6 +206,11 @@ class Database:
                     password_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     last_login_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS notification_classes (
@@ -356,6 +354,10 @@ class Database:
                 conn.execute("ALTER TABLE devices ADD COLUMN max_apdu_length_accepted INTEGER NOT NULL DEFAULT 1024")
             if "segmentation_supported" not in existing_dev_cols:
                 conn.execute("ALTER TABLE devices ADD COLUMN segmentation_supported TEXT NOT NULL DEFAULT 'segmented-both'")
+            # Additive migration: Location (organizational grouping, no BACnet
+            # protocol meaning) was added after devices first shipped.
+            if "location_id" not in existing_dev_cols:
+                conn.execute("ALTER TABLE devices ADD COLUMN location_id INTEGER REFERENCES locations(id)")
         log.info("Database ready at %s", self.path)
 
     def seed_default(self) -> None:
@@ -598,6 +600,55 @@ class Database:
             )
         log.info("Seeded 4-storey office tower: Honeywell/Trane/JCI/Siemens/LOYTEC – 17 devices, %d objects", len(objects))
 
+    # ── Locations ────────────────────────────────────────────────────────────
+    # Pure organizational grouping for the admin UI/sidebar tree — no BACnet
+    # protocol representation, unlike devices/objects. Devices reference a
+    # location via the nullable devices.location_id FK; NULL = top level.
+
+    def get_locations(self) -> list[dict]:
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM locations ORDER BY name")]
+
+    def get_location(self, location_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM locations WHERE id=?", (location_id,)).fetchone()
+            return dict(r) if r else None
+
+    def create_location(self, name: str, parent_location_id: Optional[int], description: str) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO locations (name, parent_location_id, description) VALUES (?,?,?)",
+                (name, parent_location_id, description),
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM locations WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def update_location(self, location_id: int, name: str, parent_location_id: Optional[int], description: str) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE locations SET name=?, parent_location_id=?, description=? WHERE id=?",
+                (name, parent_location_id, description, location_id),
+            )
+            conn.commit()
+            r = conn.execute("SELECT * FROM locations WHERE id=?", (location_id,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_location(self, location_id: int) -> bool:
+        """Refuses to delete a non-empty location (sub-locations or devices
+        still reference it) — returns False rather than silently cascading."""
+        with self._conn() as conn:
+            has_sublocations = conn.execute(
+                "SELECT 1 FROM locations WHERE parent_location_id=?", (location_id,)
+            ).fetchone()
+            has_devices = conn.execute(
+                "SELECT 1 FROM devices WHERE location_id=?", (location_id,)
+            ).fetchone()
+            if has_sublocations or has_devices:
+                return False
+            cur = conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
     def get_devices(self) -> list[dict]:
         with self._conn() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM devices ORDER BY device_instance")]
@@ -611,10 +662,10 @@ class Database:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
-                "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported) "
+                "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, location_id) "
                 "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
-                ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported)",
-                data,
+                ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, :location_id)",
+                {**data, "location_id": data.get("location_id")},
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM devices WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -626,8 +677,8 @@ class Database:
                 "description=:description, vendor_name=:vendor_name, model_name=:model_name, "
                 "enabled=:enabled, firmware_revision=:firmware_revision, protocol_revision=:protocol_revision, "
                 "max_apdu_length_accepted=:max_apdu_length_accepted, "
-                "segmentation_supported=:segmentation_supported WHERE id=:id",
-                {**data, "id": device_id},
+                "segmentation_supported=:segmentation_supported, location_id=:location_id WHERE id=:id",
+                {**data, "location_id": data.get("location_id"), "id": device_id},
             )
             conn.commit()
             r = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
@@ -1244,6 +1295,7 @@ class Database:
 
     def save_profile(self, name: str, description: str) -> dict:
         with self._conn() as conn:
+            locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             devices = [dict(r) for r in conn.execute(
                 "SELECT * FROM devices ORDER BY device_instance"
             )]
@@ -1255,7 +1307,7 @@ class Database:
                 self._attach_trend_logs(conn, dev)
                 self._attach_schedules(conn, dev)
                 self._attach_calendars(conn, dev)
-            data = json.dumps({"devices": devices})
+            data = json.dumps({"locations": locations, "devices": devices})
             cur = conn.execute(
                 "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
                 (name, description, len(devices), data),
@@ -1268,6 +1320,7 @@ class Database:
 
     def update_profile(self, profile_id: int, name: str, description: str) -> bool:
         with self._conn() as conn:
+            locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             devices = [dict(r) for r in conn.execute(
                 "SELECT * FROM devices ORDER BY device_instance"
             )]
@@ -1279,7 +1332,7 @@ class Database:
                 self._attach_trend_logs(conn, dev)
                 self._attach_schedules(conn, dev)
                 self._attach_calendars(conn, dev)
-            data = json.dumps({"devices": devices})
+            data = json.dumps({"locations": locations, "devices": devices})
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
                 (name, description, len(devices), data, profile_id),
@@ -1294,24 +1347,57 @@ class Database:
                 return False
             payload = json.loads(row["data"])
             conn.execute("DELETE FROM devices")
+            conn.execute("DELETE FROM locations")
             conn.commit()
+
+            # Restore locations parent-before-child, remapping old ids -> new
+            # ids as we go (a fresh INSERT can't reuse the old autoincrement
+            # ids) — same approach as objects/devices below, just one level
+            # up since locations can nest into each other.
+            location_id_map: dict[int, int] = {}
+            remaining = list(payload.get("locations", []))
+            while remaining:
+                progressed = False
+                still_remaining = []
+                for loc in remaining:
+                    old_id = loc["id"]
+                    old_parent = loc.get("parent_location_id")
+                    if old_parent is None or old_parent in location_id_map:
+                        cur = conn.execute(
+                            "INSERT INTO locations (name, parent_location_id, description) VALUES (?,?,?)",
+                            (loc["name"], location_id_map.get(old_parent) if old_parent is not None else None, loc.get("description", "")),
+                        )
+                        location_id_map[old_id] = cur.lastrowid
+                        progressed = True
+                    else:
+                        still_remaining.append(loc)
+                if not progressed:
+                    # Malformed/cyclic parent references in old data — bail
+                    # rather than looping forever; leftover locations are
+                    # simply not restored.
+                    break
+                remaining = still_remaining
+            conn.commit()
+
             for dev in payload.get("devices", []):
                 objects = dev.pop("objects", [])
                 trend_logs = dev.pop("trend_logs", [])
                 schedules = dev.pop("schedules", [])
                 calendars = dev.pop("calendars", [])
                 dev.pop("id", None)
+                old_location_id = dev.get("location_id")
                 cur = conn.execute(
                     "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
-                    "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported) "
+                    "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, location_id) "
                     "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
-                    ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported)",
+                    ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, :location_id)",
                     {
                         **dev,
                         "firmware_revision": dev.get("firmware_revision") or "N/A",
                         "protocol_revision": dev.get("protocol_revision") or 22,
                         "max_apdu_length_accepted": dev.get("max_apdu_length_accepted") or 1024,
                         "segmentation_supported": dev.get("segmentation_supported") or "segmented-both",
+                        "location_id": location_id_map.get(old_location_id) if old_location_id is not None else None,
                     },
                 )
                 dev_id = cur.lastrowid
@@ -1490,6 +1576,26 @@ class Database:
             conn.commit()
             return cur.rowcount > 0
 
+    # ── Settings ──────────────────────────────────────────────────────────────
+
+    def get_settings(self) -> dict:
+        values = _default_settings()
+        with self._conn() as conn:
+            for row in conn.execute("SELECT key, value FROM settings"):
+                key = row["key"]
+                if key in SETTINGS_SCHEMA:
+                    values[key] = SETTINGS_SCHEMA[key](row["value"])
+        return values
+
+    def save_settings(self, values: dict) -> None:
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT INTO settings (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [(k, str(v)) for k, v in values.items() if k in SETTINGS_SCHEMA],
+            )
+            conn.commit()
+
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 # db/engine are set as module globals during app startup (see lifespan()) —
@@ -1564,6 +1670,7 @@ def _is_public_path(path: str) -> bool:
 # ─── Behaviors ────────────────────────────────────────────────────────────────
 
 TICK_SECONDS = 5.0  # cadence of the engine tick loop; see tick_loop()/tick()
+OBJECT_HISTORY_MAXLEN = 720  # per-object value-history ring buffer length; see tick()
 
 @dataclass
 class SimState:
@@ -2686,8 +2793,8 @@ class SimEngine:
 
             self._prev_values[obj_id] = val
 
-            # Append to rolling history (1 h, never persisted)
-            hist = self._history.setdefault(obj_id, deque(maxlen=720))
+            # Append to rolling history (never persisted)
+            hist = self._history.setdefault(obj_id, deque(maxlen=OBJECT_HISTORY_MAXLEN))
             hist.append((time.time(), 1.0 if val is True else 0.0 if val is False else float(val)))
 
             did = dev["device_instance"]
@@ -3082,189 +3189,7 @@ class SimEngine:
 
 
 # ─── FastAPI models ───────────────────────────────────────────────────────────
-
-VALID_SEGMENTATION = {"segmented-both", "segmented-transmit", "segmented-receive", "no-segmentation"}
-
-
-class DeviceCreate(BaseModel):
-    device_instance: int = Field(..., ge=1, le=4194302)
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = ""
-    vendor_name: str = "Iotistica"
-    model_name: str = "BACnet Simulator"
-    enabled: int = 1
-    firmware_revision: str = Field("N/A", max_length=50)
-    protocol_revision: int = Field(22, ge=0, le=255)
-    max_apdu_length_accepted: int = Field(1024, ge=50, le=1476)
-    segmentation_supported: str = "segmented-both"
-
-    def validate_device_info(self) -> None:
-        if self.segmentation_supported not in VALID_SEGMENTATION:
-            raise HTTPException(400, f"segmentation_supported must be one of: {sorted(VALID_SEGMENTATION)}")
-
-
-class DeviceUpdate(DeviceCreate):
-    pass
-
-
-class ObjectCreate(BaseModel):
-    object_type: str
-    object_instance: int = Field(..., ge=0, le=4194302)
-    name: str = Field(..., min_length=1, max_length=100)
-    units: str = "no-units"
-    behavior: str = "constant"
-    behavior_params: str = '{"value":0}'
-    enabled: int = 1
-    number_of_states: int = Field(2, ge=1, le=254)
-    reliability: str = "no-fault-detected"
-    polarity: str = "normal"
-
-    def validate_type(self):
-        if self.object_type not in VALID_OBJECT_TYPES:
-            raise HTTPException(400, f"Invalid object_type. Must be one of: {sorted(VALID_OBJECT_TYPES)}")
-        if self.behavior not in VALID_BEHAVIORS:
-            raise HTTPException(400, f"Invalid behavior. Must be one of: {sorted(VALID_BEHAVIORS)}")
-        if self.reliability not in VALID_RELIABILITY:
-            raise HTTPException(400, f"Invalid reliability. Must be one of: {sorted(VALID_RELIABILITY)}")
-        if self.polarity not in VALID_POLARITY:
-            raise HTTPException(400, f"Invalid polarity. Must be one of: {sorted(VALID_POLARITY)}")
-        try:
-            json.loads(self.behavior_params)
-        except Exception:
-            raise HTTPException(400, "behavior_params must be valid JSON")
-
-
-class ObjectUpdate(ObjectCreate):
-    pass
-
-
-class SetValueRequest(BaseModel):
-    value: Any
-
-
-class NotificationClassCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    priority_to_offnormal: int = Field(100, ge=0, le=255)
-    priority_to_fault: int = Field(100, ge=0, le=255)
-    priority_to_normal: int = Field(100, ge=0, le=255)
-    ack_required_transitions: list[str] = Field(default_factory=lambda: ["to-offnormal", "to-fault"])
-    recipients: list[dict] = Field(default_factory=list)
-
-
-class NotificationClassUpdate(NotificationClassCreate):
-    pass
-
-
-class AlarmConfigSet(BaseModel):
-    notification_class_id: Optional[int] = None
-    enabled: int = 1
-    event_enable: list[str] = Field(default_factory=lambda: ["to-offnormal", "to-fault", "to-normal"])
-    notify_type: str = "alarm"
-    time_delay: int = Field(0, ge=0)
-    time_delay_normal: int = Field(0, ge=0)
-    params: dict = Field(default_factory=dict)
-
-
-class AckAlarmRequest(BaseModel):
-    ack_by: Optional[str] = None
-
-
-class EventEnrollmentCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    monitored_object_id: int
-    algorithm: str = "change-of-state"
-    event_parameters: dict = Field(default_factory=dict)
-    notification_class_id: Optional[int] = None
-    enabled: int = 1
-    event_enable: list[str] = Field(default_factory=lambda: ["to-offnormal", "to-fault", "to-normal"])
-    notify_type: str = "event"
-    time_delay: int = Field(0, ge=0)
-    time_delay_normal: int = Field(0, ge=0)
-
-
-class EventEnrollmentUpdate(EventEnrollmentCreate):
-    pass
-
-
-class TrendLogCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=500)
-    monitored_object_id: int
-    logging_type: str = "polled"
-    log_interval: int = Field(60, ge=1)
-    cov_increment: float = Field(1.0, ge=0)
-    buffer_size: int = Field(1000, ge=1, le=100000)
-    stop_when_full: int = 0
-    enabled: int = 1
-
-
-class TrendLogUpdate(TrendLogCreate):
-    pass
-
-
-class ScheduleTargetSpec(BaseModel):
-    object_id: int
-    property_identifier: str = "present-value"
-
-
-class ScheduleCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=500)
-    value_type: str = "real"
-    schedule_default: Any = 0
-    effective_start: Optional[str] = None
-    effective_end: Optional[str] = None
-    weekly_schedule: dict = Field(default_factory=dict)
-    exception_schedule: list = Field(default_factory=list)
-    priority_for_writing: int = Field(10, ge=1, le=16)
-    enabled: int = 1
-    targets: list[ScheduleTargetSpec] = Field(default_factory=list)
-
-
-class ScheduleUpdate(ScheduleCreate):
-    pass
-
-
-class CalendarCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=500)
-    date_list: list = Field(default_factory=list)
-    enabled: int = 1
-
-    def validate_date_list(self) -> None:
-        try:
-            bacnet_calendar.validate_date_list(self.date_list)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-
-
-class CalendarUpdate(CalendarCreate):
-    pass
-
-
-class ProfileCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=500)
-
-
-class ProfileUpdate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=500)
-
-
-class ProfileImport(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field("", max_length=500)
-    data: dict
-
-
-class Credentials(BaseModel):
-    username: str = Field(..., min_length=1, max_length=64)
-    password: str = Field(..., min_length=8, max_length=200)
-
-
-class PasswordReset(BaseModel):
-    password: str = Field(..., min_length=8, max_length=200)
+# Moved to bacnet_sim/schemas.py (GH #15 pass 1) -- imported at the top of this file.
 
 
 # ─── Globals (shared between FastAPI and engine) ──────────────────────────────
@@ -3320,6 +3245,34 @@ class Metrics:
 
 metrics = Metrics()
 metrics_ws_clients: list[WebSocket] = []
+
+
+def _apply_settings_live(values: dict) -> None:
+    """Push a settings dict into the module globals/buffers that actually
+    drive behavior, so a save takes effect immediately — no restart. Safe to
+    call repeatedly (e.g. once at startup, then again on every PUT /settings).
+    Resizing a deque via deque(old, maxlen=new) keeps only the newest `new`
+    items, matching normal ring-buffer truncation semantics."""
+    global TICK_SECONDS, JWT_EXPIRE_HOURS, OBJECT_HISTORY_MAXLEN, _MAX_LOG, _global_log
+
+    TICK_SECONDS = values["tick_seconds"]
+    JWT_EXPIRE_HOURS = values["jwt_expire_hours"]
+    OBJECT_HISTORY_MAXLEN = values["object_history_maxlen"]
+
+    _MAX_LOG = values["device_log_maxlen"]
+    for device_id in list(_device_logs):
+        _device_logs[device_id] = deque(_device_logs[device_id], maxlen=_MAX_LOG)
+    _global_log = deque(_global_log, maxlen=values["global_log_maxlen"])
+
+    metrics.recent_errors = deque(metrics.recent_errors, maxlen=values["metrics_errors_maxlen"])
+    metrics.new_devices_timeline = deque(metrics.new_devices_timeline, maxlen=values["metrics_new_devices_maxlen"])
+    metrics.duplicate_id_events = deque(metrics.duplicate_id_events, maxlen=values["metrics_duplicate_id_maxlen"])
+    metrics.recent_requests = deque(metrics.recent_requests, maxlen=values["metrics_traffic_feed_maxlen"])
+    metrics.latencies_ms = deque(metrics.latencies_ms, maxlen=values["metrics_traffic_feed_maxlen"])
+
+    if engine is not None:
+        for obj_id in list(engine._history):
+            engine._history[obj_id] = deque(engine._history[obj_id], maxlen=OBJECT_HISTORY_MAXLEN)
 
 
 def _log_event(device_id: int, level: str, message: str) -> None:
@@ -3548,6 +3501,7 @@ async def lifespan(app: FastAPI):
     for d in db.get_devices():
         _device_names[d["id"]] = d["name"]
     engine = SimEngine(db)
+    _apply_settings_live(await asyncio.to_thread(db.get_settings))
     await engine.start()
     tick_task = asyncio.create_task(tick_loop())
     metrics_task = asyncio.create_task(metrics_loop())
@@ -3586,8 +3540,8 @@ async def auth_gate(request: Request, call_next):
     return await call_next(request)
 
 
-ADMIN_DIST = Path(__file__).parent / "admin" / "dist"
-ADMIN_PUBLIC = Path(__file__).parent / "admin" / "public"
+ADMIN_DIST = Path(__file__).parent.parent / "admin" / "dist"
+ADMIN_PUBLIC = Path(__file__).parent.parent / "admin" / "public"
 
 
 @api.get("/", include_in_schema=False)
@@ -3723,6 +3677,18 @@ async def meta():
     }
 
 
+@api.get("/settings")
+async def get_settings():
+    return await asyncio.to_thread(db.get_settings)
+
+
+@api.put("/settings")
+async def update_settings(body: SettingsPayload):
+    await asyncio.to_thread(db.save_settings, body.model_dump())
+    _apply_settings_live(body.model_dump())
+    return body
+
+
 # ── Devices ──
 
 @api.get("/devices")
@@ -3733,6 +3699,8 @@ async def list_devices():
 @api.post("/devices", status_code=201)
 async def create_device(body: DeviceCreate):
     body.validate_device_info()
+    if body.location_id is not None and not await asyncio.to_thread(db.get_location, body.location_id):
+        raise HTTPException(404, "Location not found")
     try:
         device = await asyncio.to_thread(db.create_device, body.model_dump())
     except sqlite3.IntegrityError:
@@ -3757,6 +3725,8 @@ async def update_device(device_id: int, body: DeviceUpdate):
     d = await asyncio.to_thread(db.get_device, device_id)
     if not d:
         raise HTTPException(404, "Device not found")
+    if body.location_id is not None and not await asyncio.to_thread(db.get_location, body.location_id):
+        raise HTTPException(404, "Location not found")
     try:
         updated = await asyncio.to_thread(db.update_device, device_id, body.model_dump())
     except sqlite3.IntegrityError:
@@ -3767,6 +3737,8 @@ async def update_device(device_id: int, body: DeviceUpdate):
         _log_event(device_id, "info", f"Device {'enabled' if body.enabled else 'disabled'}")
     elif d["name"] != body.name:
         _log_event(device_id, "info", f"Device renamed to '{body.name}'")
+    elif d.get("location_id") != body.location_id:
+        _log_event(device_id, "info", "Device moved to a different location")
     else:
         _log_event(device_id, "info", "Device configuration updated")
     asyncio.create_task(engine.reload())
@@ -3779,6 +3751,65 @@ async def delete_device(device_id: int):
     if not deleted:
         raise HTTPException(404, "Device not found")
     asyncio.create_task(engine.reload())
+
+
+# ── Locations ──
+# Pure organizational grouping for the sidebar tree — no BACnet protocol
+# meaning, so (unlike opcua-simulator's analogous Folder feature) there's no
+# live-engine resync on any of these, no `key`/`enabled` fields to manage.
+
+def _is_descendant_location(database: "Database", candidate_id: int, of_location_id: int) -> bool:
+    """True if candidate_id is of_location_id itself or lives anywhere under
+    it — used to refuse a reparent that would create a cycle."""
+    lid: Optional[int] = candidate_id
+    while lid is not None:
+        if lid == of_location_id:
+            return True
+        location = database.get_location(lid)
+        lid = location["parent_location_id"] if location else None
+    return False
+
+
+@api.get("/locations")
+async def list_locations():
+    return await asyncio.to_thread(db.get_locations)
+
+
+@api.post("/locations", status_code=201)
+async def create_location(body: LocationCreate):
+    if body.parent_location_id is not None and not await asyncio.to_thread(db.get_location, body.parent_location_id):
+        raise HTTPException(404, "Parent location not found")
+    return await asyncio.to_thread(db.create_location, body.name, body.parent_location_id, body.description)
+
+
+@api.get("/locations/{location_id}")
+async def get_location(location_id: int):
+    loc = await asyncio.to_thread(db.get_location, location_id)
+    if not loc:
+        raise HTTPException(404, "Location not found")
+    return loc
+
+
+@api.put("/locations/{location_id}")
+async def update_location(location_id: int, body: LocationUpdate):
+    existing = await asyncio.to_thread(db.get_location, location_id)
+    if not existing:
+        raise HTTPException(404, "Location not found")
+    if body.parent_location_id is not None:
+        if not await asyncio.to_thread(db.get_location, body.parent_location_id):
+            raise HTTPException(404, "Parent location not found")
+        if await asyncio.to_thread(_is_descendant_location, db, body.parent_location_id, location_id):
+            raise HTTPException(400, "Cannot move a location into itself or one of its own sub-locations")
+    return await asyncio.to_thread(db.update_location, location_id, body.name, body.parent_location_id, body.description)
+
+
+@api.delete("/locations/{location_id}", status_code=204)
+async def delete_location(location_id: int):
+    if not await asyncio.to_thread(db.get_location, location_id):
+        raise HTTPException(404, "Location not found")
+    deleted = await asyncio.to_thread(db.delete_location, location_id)
+    if not deleted:
+        raise HTTPException(409, "Location is not empty — move or remove its sub-locations and devices first")
 
 
 # ── Objects ──
@@ -3887,10 +3918,6 @@ async def get_priority_array(device_id: int, obj_id: int):
     if result is None:
         raise HTTPException(409, "Object is not currently live in the running application")
     return result
-
-
-class PriorityWrite(BaseModel):
-    value: Any = None  # None relinquishes the slot
 
 
 @api.put("/devices/{device_id}/objects/{obj_id}/priority-array/{priority}")
@@ -4249,7 +4276,14 @@ async def create_trend_log(device_id: int, body: TrendLogCreate):
     if not await asyncio.to_thread(db.get_device, device_id):
         raise HTTPException(404, "Device not found")
     await _validate_trend_log(device_id, body)
-    tl = await asyncio.to_thread(db.create_trend_log, device_id, body.model_dump())
+    data = body.model_dump()
+    if data["log_interval"] is None or data["buffer_size"] is None:
+        current_settings = await asyncio.to_thread(db.get_settings)
+        if data["log_interval"] is None:
+            data["log_interval"] = current_settings["trend_log_default_interval"]
+        if data["buffer_size"] is None:
+            data["buffer_size"] = current_settings["trend_log_default_buffer_size"]
+    tl = await asyncio.to_thread(db.create_trend_log, device_id, data)
     asyncio.create_task(engine.reload())
     return tl
 

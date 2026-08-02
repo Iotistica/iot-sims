@@ -10,6 +10,14 @@ export interface Device {
   protocol_revision: number
   max_apdu_length_accepted: number
   segmentation_supported: string
+  location_id?: number | null
+}
+
+export interface Location {
+  id: number
+  name: string
+  parent_location_id: number | null
+  description: string
 }
 
 export interface SimObject {
@@ -49,6 +57,20 @@ export interface Health {
   devices: number
   sim_state: 'running' | 'paused' | 'stopped'
   elapsed_seconds: number
+}
+
+export interface Settings {
+  tick_seconds: number
+  device_log_maxlen: number
+  global_log_maxlen: number
+  metrics_errors_maxlen: number
+  metrics_new_devices_maxlen: number
+  metrics_duplicate_id_maxlen: number
+  metrics_traffic_feed_maxlen: number
+  object_history_maxlen: number
+  trend_log_default_interval: number
+  trend_log_default_buffer_size: number
+  jwt_expire_hours: number
 }
 
 export interface NotificationRecipient {

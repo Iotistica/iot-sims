@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { Modal, message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
-import type { Device, Meta } from '../types'
+import { buildLocationTreeOptions } from '../locationTree'
+import type { Device, Meta, Location } from '../types'
 
 const props = defineProps<{
   open: boolean
   device: Device | null
   meta: Meta
+  locations?: Location[]
   existingInstances?: number[]
   draftMode?: boolean
   draftDevice?: Record<string, any> | null
@@ -20,6 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const loading = ref(false)
+const deleting = ref(false)
 const form = reactive({
   device_instance: 1001,
   name: '',
@@ -31,7 +34,10 @@ const form = reactive({
   protocol_revision: 22,
   max_apdu_length_accepted: 1024,
   segmentation_supported: 'segmented-both',
+  location_id: null as number | null,
 })
+
+const locationTreeOptions = computed(() => buildLocationTreeOptions(props.locations ?? []))
 
 // ── Import points from EDE (only offered when adding a new, non-draft device) ──
 
@@ -145,11 +151,13 @@ watch(() => props.open, (v) => {
       protocol_revision: src.protocol_revision ?? 22,
       max_apdu_length_accepted: src.max_apdu_length_accepted ?? 1024,
       segmentation_supported: src.segmentation_supported ?? 'segmented-both',
+      location_id: src.location_id ?? null,
     })
   } else {
     Object.assign(form, {
       device_instance: nextFreeInstance(), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true,
       firmware_revision: 'N/A', protocol_revision: 22, max_apdu_length_accepted: 1024, segmentation_supported: 'segmented-both',
+      location_id: null,
     })
   }
 })
@@ -187,6 +195,30 @@ async function save() {
     loading.value = false
   }
 }
+
+function doDelete() {
+  if (!props.device) return
+  const dev = props.device
+  Modal.confirm({
+    title: `Delete "${dev.name}"?`,
+    content: 'This also deletes all its objects and cannot be undone.',
+    okType: 'danger',
+    okText: 'Delete',
+    onOk: async () => {
+      deleting.value = true
+      try {
+        await api.devices.del(dev.id)
+        message.success('Device deleted')
+        emit('update:open', false)
+        emit('saved')
+      } catch (e: unknown) {
+        message.error((e as Error).message ?? 'Failed to delete device')
+      } finally {
+        deleting.value = false
+      }
+    },
+  })
+}
 </script>
 
 <template>
@@ -212,6 +244,17 @@ async function save() {
 
       <a-form-item label="Description">
         <a-input v-model:value="form.description" placeholder="Air Handling Unit 1" />
+      </a-form-item>
+
+      <a-form-item label="Location">
+        <a-tree-select
+          v-model:value="form.location_id"
+          :tree-data="locationTreeOptions"
+          allow-clear
+          tree-default-expand-all
+          placeholder="Top level"
+          style="width: 100%"
+        />
       </a-form-item>
 
       <a-row :gutter="12">
@@ -301,12 +344,16 @@ async function save() {
     </a-form>
 
     <template #footer>
-      <a-space>
-        <a-button @click="emit('update:open', false)">Cancel</a-button>
-        <a-button type="primary" :loading="loading" @click="save">
-          {{ device ? 'Save' : 'Create' }}
-        </a-button>
-      </a-space>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a-button v-if="device && !draftMode" danger :loading="deleting" @click="doDelete">Delete</a-button>
+        <div v-else />
+        <a-space>
+          <a-button @click="emit('update:open', false)">Cancel</a-button>
+          <a-button type="primary" :loading="loading" @click="save">
+            {{ device ? 'Save' : 'Create' }}
+          </a-button>
+        </a-space>
+      </div>
     </template>
   </a-drawer>
 </template>

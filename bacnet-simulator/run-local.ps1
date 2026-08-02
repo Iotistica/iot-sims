@@ -25,7 +25,6 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # iot-sims has no venv of its own — this reuses the iotistica repo's venv,
 # which already has bacpypes3==0.0.91 and the rest of requirements.txt installed.
 $python    = "C:\Users\Dan\iotistica\.venv\Scripts\python.exe"
-$sim       = Join-Path $scriptDir "bacnet_simulator.py"
 
 if (-not (Test-Path $python)) {
     Write-Error "venv not found at $python — run: python -m venv .venv && .venv\Scripts\pip install -r requirements.txt (from bacnet-simulator\)"
@@ -72,4 +71,14 @@ Write-Host ""
 
 $env:BACPYPES_IFACE = "$localIp`:47808"
 $env:PYTHONUTF8    = "1"          # force UTF-8 stdout so checkmark chars don't crash on Windows cp1252
-& $python $sim
+
+# simulator.py lives in src/ and imports sibling top-level modules (alarms.py)
+# with plain `import alarms` — that only resolves if the repo root is on
+# sys.path, which -m guarantees via the *current directory*, not the script's
+# own directory. Push-Location so this still works when invoked from anywhere.
+Push-Location $scriptDir
+try {
+    & $python -m src.simulator
+} finally {
+    Pop-Location
+}

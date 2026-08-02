@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+admin/node_modules/
+admin/dist/

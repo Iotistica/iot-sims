@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
+import LocationDrawer from './components/LocationDrawer.vue'
 import ObjectDrawer from './components/ObjectDrawer.vue'
 import ProfilesDrawer from './components/ProfilesDrawer.vue'
 import TemplatePickerModal from './components/TemplatePickerModal.vue'
@@ -10,22 +11,22 @@ import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import LoginView from './components/LoginView.vue'
-import UsersDrawer from './components/UsersDrawer.vue'
 import AnalyticsDashboard from './components/AnalyticsDashboard.vue'
 import AlarmsPanel from './components/AlarmsPanel.vue'
+import SettingsView from './components/SettingsView.vue'
 import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
 import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
-import type { Device, SimObject, Meta, Health, HistoryPoint } from './types'
+import type { Device, SimObject, Meta, Health, HistoryPoint, Location } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47900'
-const activeView = ref<'devices' | 'analytics' | 'alarms'>('devices')
+const activeView = ref<'devices' | 'analytics' | 'alarms' | 'settings'>('devices')
 
 const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
 const simActionLoading = ref(false)
@@ -33,6 +34,7 @@ const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
 const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [] })
 const devices = ref<Device[]>([])
+const locations = ref<Location[]>([])
 const deviceSearch = ref('')
 const filteredDevices = computed(() => {
   const q = deviceSearch.value.trim().toLowerCase()
@@ -44,6 +46,49 @@ const filteredDevices = computed(() => {
     d.model_name.toLowerCase().includes(q)
   )
 })
+
+interface SidebarTreeNode {
+  key: string
+  kind: 'location' | 'device'
+  location?: Location
+  device?: Device
+  children?: SidebarTreeNode[]
+}
+
+// While searching, fall back to today's flat filtered list (ignoring
+// locations entirely) rather than pruning empty location branches — keeps
+// the existing search UX exactly as-is.
+const sidebarTree = computed<SidebarTreeNode[]>(() => {
+  if (deviceSearch.value.trim()) {
+    return filteredDevices.value.map(d => ({ key: `device-${d.id}`, kind: 'device' as const, device: d }))
+  }
+  const locationNodes = new Map<number, SidebarTreeNode>()
+  for (const l of locations.value) {
+    locationNodes.set(l.id, { key: `location-${l.id}`, kind: 'location', location: l, children: [] })
+  }
+  const roots: SidebarTreeNode[] = []
+  for (const l of locations.value) {
+    const node = locationNodes.get(l.id)!
+    const parent = l.parent_location_id != null ? locationNodes.get(l.parent_location_id) : undefined
+    if (parent) parent.children!.push(node)
+    else roots.push(node)
+  }
+  for (const d of filteredDevices.value) {
+    const node: SidebarTreeNode = { key: `device-${d.id}`, kind: 'device', device: d }
+    const parent = d.location_id != null ? locationNodes.get(d.location_id) : undefined
+    if (parent) parent.children!.push(node)
+    else roots.push(node)
+  }
+  return roots
+})
+const expandedKeys = ref<string[]>([])
+watch(locations, () => { expandedKeys.value = locations.value.map(l => `location-${l.id}`) }, { immediate: true })
+
+function onTreeSelect(_keys: unknown, info: { node: { dataRef?: SidebarTreeNode } & Partial<SidebarTreeNode> }) {
+  const data = info.node.dataRef ?? (info.node as SidebarTreeNode)
+  if (data.kind === 'device' && data.device) selectDevice(data.device)
+}
+
 const selectedDevice = ref<Device | null>(null)
 const objects = ref<SimObject[]>([])
 const liveValues = ref<Record<number, number | boolean>>({})
@@ -51,12 +96,13 @@ const liveValues = ref<Record<number, number | boolean>>({})
 // Drawers
 const deviceDrawerOpen  = ref(false)
 const editingDevice     = ref<Device | null>(null)
+const locationDrawerOpen = ref(false)
+const editingLocation    = ref<Location | null>(null)
 const objectDrawerOpen  = ref(false)
 const editingObject     = ref<SimObject | null>(null)
 const profilesDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
 const saveTemplateOpen     = ref(false)
-const usersDrawerOpen      = ref(false)
 
 // Active profile state
 const activeProfileId   = ref<number | null>(null)
@@ -146,6 +192,9 @@ async function loadDevices() {
     }
   } catch { /* swallow */ }
 }
+async function loadLocations() {
+  try { locations.value = await api.locations.list() } catch { /* swallow */ }
+}
 async function loadObjects() {
   if (!selectedDevice.value) return
   try { objects.value = await api.objects.list(selectedDevice.value.id) } catch { /* swallow */ }
@@ -176,6 +225,7 @@ async function duplicateDevice(d: Device) {
       protocol_revision:        d.protocol_revision,
       max_apdu_length_accepted: d.max_apdu_length_accepted,
       segmentation_supported:   d.segmentation_supported,
+      location_id:              d.location_id,
     })
     const srcObjects = await api.objects.list(d.id)
     for (const obj of srcObjects) {
@@ -199,20 +249,9 @@ async function duplicateDevice(d: Device) {
     message.error((e as Error).message)
   }
 }
-function deleteDevice(d: Device) {
-  Modal.confirm({
-    title: `Delete "${d.name}"?`,
-    content: 'This also deletes all its objects and cannot be undone.',
-    okType: 'danger',
-    okText: 'Delete',
-    onOk: async () => {
-      await api.devices.del(d.id)
-      if (selectedDevice.value?.id === d.id) { selectedDevice.value = null; objects.value = [] }
-      await loadDevices(); await loadHealth()
-      message.success('Device deleted')
-    },
-  })
-}
+// Location actions
+function openAddLocation() { editingLocation.value = null; locationDrawerOpen.value = true }
+function openEditLocation(l: Location) { editingLocation.value = l; locationDrawerOpen.value = true }
 
 async function exportDeviceEde(d: Device) {
   try {
@@ -357,6 +396,7 @@ async function onProjectLoaded(id: number, name: string, desc: string) {
   activeProfileName.value = name
   activeProfileDesc.value = desc
   await loadDevices()
+  await loadLocations()
   selectedDevice.value = null
   objects.value = []
   await loadHealth()
@@ -546,7 +586,7 @@ const columns: TableColumnsType = [
 let healthTimer: ReturnType<typeof setInterval>
 
 async function startApp() {
-  await Promise.all([loadMeta(), loadDevices(), loadHealth()])
+  await Promise.all([loadMeta(), loadDevices(), loadLocations(), loadHealth()])
   wsConnect()
   healthTimer = setInterval(loadHealth, 10_000)
 }
@@ -633,6 +673,7 @@ onUnmounted(() => {
           <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
           <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
           <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
+          <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
         </a-radio-group>
 
         <div style="flex:1" />
@@ -655,11 +696,6 @@ onUnmounted(() => {
               <template #icon><BulbOutlined :style="{ color: isDark ? '#faad14' : 'rgba(255,255,255,0.5)' }" /></template>
             </a-button>
           </a-tooltip>
-          <a-tooltip title="Manage users">
-            <a-button size="small" type="text" @click="usersDrawerOpen = true">
-              <template #icon><TeamOutlined :style="{ color: 'rgba(255,255,255,0.5)' }" /></template>
-            </a-button>
-          </a-tooltip>
           <a-tooltip title="Sign out">
             <a-button size="small" type="text" @click="doLogout">
               <template #icon><LogoutOutlined :style="{ color: 'rgba(255,255,255,0.5)' }" /></template>
@@ -670,13 +706,19 @@ onUnmounted(() => {
 
       <AnalyticsDashboard v-if="activeView === 'analytics'" />
       <AlarmsPanel v-else-if="activeView === 'alarms'" />
+      <SettingsView v-else-if="activeView === 'settings'" />
       <a-layout v-else>
 
         <!-- Sidebar: devices -->
-        <a-layout-sider :width="260" style="background:var(--surface);border-right:1px solid var(--border);overflow:auto">
+        <a-layout-sider :width="320" style="background:var(--surface);border-right:1px solid var(--border);overflow:auto">
           <div style="padding:10px 12px 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
             <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Devices</span>
-            <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
+            <a-space :size="4">
+              <a-button size="small" title="Add Location" @click="openAddLocation">
+                <template #icon><FolderAddOutlined /></template>
+              </a-button>
+              <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
+            </a-space>
           </div>
 
           <div v-if="devices.length" style="padding:8px 12px;border-bottom:1px solid var(--border)">
@@ -697,63 +739,79 @@ onUnmounted(() => {
             No devices match "{{ deviceSearch }}"
           </div>
 
-          <div
-            v-for="d in filteredDevices" :key="d.id"
-            style="padding:10px 12px 10px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border-subtle);transition:background .1s"
-            :style="{
-              background: selectedDevice?.id === d.id ? 'var(--selected-bg)' : 'var(--surface)',
-              borderRight: selectedDevice?.id === d.id ? '3px solid #1890ff' : '3px solid transparent',
-            }"
-            @click="selectDevice(d)"
+          <a-tree
+            v-else
+            v-model:expanded-keys="expandedKeys"
+            :tree-data="sidebarTree"
+            :selected-keys="selectedDevice ? [`device-${selectedDevice.id}`] : []"
+            :field-names="{ children: 'children', title: 'key', key: 'key' }"
+            block-node
+            style="padding:6px 4px"
+            @select="onTreeSelect"
           >
-            <a-badge :status="d.enabled ? 'success' : 'default'" />
-            <div style="flex:1;min-width:0">
-              <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.name }}</div>
-              <div style="font-size:11px;color:var(--text-secondary)">ID {{ d.device_instance }}</div>
-            </div>
-            <a-space :size="2">
-              <a-button type="text" size="small" title="Edit" @click.stop="openEditDevice(d)">
-                <template #icon><EditOutlined /></template>
-              </a-button>
-              <a-button type="text" size="small" title="Duplicate" @click.stop="duplicateDevice(d)">
-                <template #icon><CopyOutlined /></template>
-              </a-button>
-              <a-dropdown :trigger="['click']" @click.stop>
-                <a-button type="text" size="small" title="More" @click.stop>
-                  <template #icon><EllipsisOutlined /></template>
-                </a-button>
-                <template #overlay>
-                  <a-menu @click.stop>
-                    <a-menu-item key="export-ede" @click="exportDeviceEde(d)">
-                      <DownloadOutlined /> Export EDE
-                    </a-menu-item>
-                    <a-menu-item key="import-ede" @click="importDeviceEde(d)">
-                      <UploadOutlined /> Import EDE
-                    </a-menu-item>
-                    <a-menu-divider />
-                    <a-menu-item key="notification-classes" @click="openNotificationClasses(d)">
-                      <AlertOutlined /> Notification Classes
-                    </a-menu-item>
-                    <a-menu-item key="event-enrollments" @click="openEventEnrollments(d)">
-                      <AlertOutlined /> Event Enrollments
-                    </a-menu-item>
-                    <a-menu-item key="trend-logs" @click="openTrendLogs(d)">
-                      <LineChartOutlined /> Trend Logs
-                    </a-menu-item>
-                    <a-menu-item key="schedules" @click="openSchedules(d)">
-                      <CalendarOutlined /> Schedules
-                    </a-menu-item>
-                    <a-menu-item key="calendars" @click="openCalendars(d)">
-                      <ScheduleOutlined /> Calendars
-                    </a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
-              <a-button type="text" size="small" danger title="Delete" @click.stop="deleteDevice(d)">
-                <template #icon><DeleteOutlined /></template>
-              </a-button>
-            </a-space>
-          </div>
+            <template #title="node">
+              <!-- Location row -->
+              <div v-if="node.kind === 'location'" style="display:flex;align-items:center;gap:6px;padding:2px 0">
+                <FolderOutlined style="color:#1890ff" />
+                <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:12.5px">
+                  {{ node.location.name }}
+                </span>
+                <a-space :size="0" @click.stop>
+                  <a-button type="text" size="small" title="Edit" @click="openEditLocation(node.location)">
+                    <template #icon><EditOutlined /></template>
+                  </a-button>
+                </a-space>
+              </div>
+
+              <!-- Device row -->
+              <div v-else style="display:flex;align-items:center;gap:8px;padding:2px 0">
+                <a-badge :status="node.device.enabled ? 'success' : 'default'" />
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
+                  <div style="font-size:11px;color:var(--text-secondary)">ID {{ node.device.device_instance }}</div>
+                </div>
+                <a-space :size="2" @click.stop>
+                  <a-button type="text" size="small" title="Edit" @click="openEditDevice(node.device)">
+                    <template #icon><EditOutlined /></template>
+                  </a-button>
+                  <a-button type="text" size="small" title="Duplicate" @click="duplicateDevice(node.device)">
+                    <template #icon><CopyOutlined /></template>
+                  </a-button>
+                  <a-dropdown :trigger="['click']">
+                    <a-button type="text" size="small" title="More">
+                      <template #icon><EllipsisOutlined /></template>
+                    </a-button>
+                    <template #overlay>
+                      <a-menu @click.stop>
+                        <a-menu-item key="export-ede" @click="exportDeviceEde(node.device)">
+                          <DownloadOutlined /> Export EDE
+                        </a-menu-item>
+                        <a-menu-item key="import-ede" @click="importDeviceEde(node.device)">
+                          <UploadOutlined /> Import EDE
+                        </a-menu-item>
+                        <a-menu-divider />
+                        <a-menu-item key="notification-classes" @click="openNotificationClasses(node.device)">
+                          <AlertOutlined /> Notification Classes
+                        </a-menu-item>
+                        <a-menu-item key="event-enrollments" @click="openEventEnrollments(node.device)">
+                          <AlertOutlined /> Event Enrollments
+                        </a-menu-item>
+                        <a-menu-item key="trend-logs" @click="openTrendLogs(node.device)">
+                          <LineChartOutlined /> Trend Logs
+                        </a-menu-item>
+                        <a-menu-item key="schedules" @click="openSchedules(node.device)">
+                          <CalendarOutlined /> Schedules
+                        </a-menu-item>
+                        <a-menu-item key="calendars" @click="openCalendars(node.device)">
+                          <ScheduleOutlined /> Calendars
+                        </a-menu-item>
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
+                </a-space>
+              </div>
+            </template>
+          </a-tree>
         </a-layout-sider>
         <input ref="edeImportInput" type="file" accept=".ede,.csv,text/csv" style="display:none" @change="onEdeImportFileChange" />
 
@@ -852,8 +910,17 @@ onUnmounted(() => {
       v-model:open="deviceDrawerOpen"
       :device="editingDevice"
       :meta="meta"
+      :locations="locations"
       :existing-instances="devices.map(d => d.device_instance)"
       @saved="onDeviceSaved"
+    />
+
+    <!-- Location drawer -->
+    <LocationDrawer
+      v-model:open="locationDrawerOpen"
+      :location="editingLocation"
+      :locations="locations"
+      @saved="loadLocations"
     />
 
     <!-- Object drawer -->
@@ -871,9 +938,6 @@ onUnmounted(() => {
       v-model:open="profilesDrawerOpen"
       @loaded="onProjectLoaded"
     />
-
-    <!-- Users drawer -->
-    <UsersDrawer v-model:open="usersDrawerOpen" />
 
     <!-- Notification classes drawer -->
     <NotificationClassDrawer v-model:open="notificationClassDrawerOpen" :device="notificationClassDevice" />

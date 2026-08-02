@@ -1,13 +1,10 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, onMounted } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { KeyOutlined, DeleteOutlined, UserAddOutlined } from '@ant-design/icons-vue'
 import type { User } from '../types'
 import { api } from '../api'
 import { currentUser } from '../auth'
-
-const props = defineProps<{ open: boolean }>()
-const emit = defineEmits<{ 'update:open': [val: boolean] }>()
 
 const users = ref<User[]>([])
 const loading = ref(false)
@@ -103,18 +100,11 @@ function fmtDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : 'never'
 }
 
-watch(() => props.open, (isOpen) => {
-  if (isOpen) load()
-})
+onMounted(load)
 </script>
 
 <template>
-  <a-drawer
-    :open="open"
-    title="Users"
-    width="460"
-    @close="emit('update:open', false)"
-  >
+  <div>
     <a-button type="primary" style="margin-bottom:16px" @click="openAdd">
       <template #icon><UserAddOutlined /></template>
       Add user
@@ -151,10 +141,6 @@ watch(() => props.open, (isOpen) => {
       </div>
     </a-spin>
 
-    <template #footer>
-      <a-button @click="emit('update:open', false)">Close</a-button>
-    </template>
-
     <!-- Add user modal -->
     <a-modal
       v-model:open="addOpen"
@@ -187,5 +173,5 @@ watch(() => props.open, (isOpen) => {
         </a-form-item>
       </a-form>
     </a-modal>
-  </a-drawer>
+  </div>
 </template>

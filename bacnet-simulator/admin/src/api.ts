@@ -1,4 +1,4 @@
-import type { Device, SimObject, Meta, Health, Profile, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation, PriorityArrayInfo, Calendar } from './types'
+import type { Device, SimObject, Meta, Health, Settings, Profile, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation, PriorityArrayInfo, Calendar, Location } from './types'
 import { authToken, logout } from './auth'
 
 function authHeaders(): Record<string, string> {
@@ -87,6 +87,11 @@ export const api = {
     stop:  () => req<{ sim_state: Health['sim_state']; elapsed_seconds: number }>('/sim/stop', { method: 'POST' }),
   },
 
+  settings: {
+    get:    ()                  => req<Settings>('/settings'),
+    update: (body: Settings)    => req<Settings>('/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  },
+
   devices: {
     list:   ()                              => req<Device[]>('/devices'),
     create: (b: Omit<Device, 'id'>)        => req<Device>('/devices', { method: 'POST', body: JSON.stringify(b) }),
@@ -96,6 +101,13 @@ export const api = {
     exportEde: (id: number, name: string)  => downloadFile(`/devices/${id}/export/ede`, `${name}.ede`),
     importEde: (id: number, file: File)    =>
       uploadFile<{ ok: boolean; objects_imported: number }>(`/devices/${id}/import/ede`, file),
+  },
+
+  locations: {
+    list:   ()                                    => req<Location[]>('/locations'),
+    create: (b: Omit<Location, 'id'>)             => req<Location>('/locations', { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<Location, 'id'>) => req<Location>(`/locations/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)                          => req<null>(`/locations/${id}`, { method: 'DELETE' }),
   },
 
   objects: {

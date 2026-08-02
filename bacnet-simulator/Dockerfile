@@ -17,7 +17,7 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bacnet_simulator.py ede.py alarms.py bacnet_schedule.py bacnet_calendar.py .
+COPY src/ ./src/
 COPY --from=ui-builder /ui/dist ./admin/dist
 COPY bacnet-vendors.json ./admin/dist/
 
@@ -31,4 +31,4 @@ ENV DATA_DIR=/data
 ENV SIM_API_PORT=47900
 ENV BACNET_PORT=47808
 
-CMD ["python", "-u", "bacnet_simulator.py"]
+CMD ["python", "-u", "-m", "src.simulator"]
