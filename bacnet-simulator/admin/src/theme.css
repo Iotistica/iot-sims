@@ -38,3 +38,16 @@ html.dark {
 html.dark body {
   background: #141414;
 }
+
+/* The app manages all of its own scrolling internally (sidebar, content
+   panels, drawers all set their own overflow: auto) via a height:100vh root
+   layout — the page itself should never scroll. Without this, a Tooltip
+   popup near a viewport edge (e.g. the dark-mode/sign-out buttons in the
+   top-right corner) can momentarily push document height/width past the
+   viewport, toggling a native scrollbar on and off in a flicker loop as
+   dom-align repositions the popup in response to the resulting reflow. */
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}

@@ -66,7 +66,7 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 DB_PATH = DATA_DIR / "opcua_sim.db"
 SIM_API_PORT = int(os.environ.get("SIM_API_PORT", "47901"))
 OPCUA_PORT = int(os.environ.get("OPCUA_PORT", "4840"))
-OPCUA_ENDPOINT = f"opc.tcp://0.0.0.0:{OPCUA_PORT}/opcua-simulator/"
+OPCUA_ENDPOINT = f"opc.tcp://0.0.0.0:{OPCUA_PORT}"
 
 # OPC UA transport security — both NoSecurity and an encrypted policy are
 # offered by default so existing NoSecurity clients (e.g. the current

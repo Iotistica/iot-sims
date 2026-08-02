@@ -25,7 +25,6 @@ import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
 import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined } from '@ant-design/icons-vue'
 
-const apiPort = window.location.port || '47900'
 const activeView = ref<'devices' | 'analytics' | 'alarms' | 'settings'>('devices')
 
 const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
@@ -685,7 +684,6 @@ onUnmounted(() => {
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
         <a-button v-if="activeProfileId !== null" size="small" @click="openSaveAs">Save As</a-button>
         <a-button size="small" @click="profilesDrawerOpen = true">Open Project</a-button>
-        <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
 
         <div style="display:flex;align-items:center;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
           <span style="color:rgba(255,255,255,0.5);font-size:12px">
@@ -774,15 +772,16 @@ onUnmounted(() => {
                   <a-button type="text" size="small" title="Edit" @click="openEditDevice(node.device)">
                     <template #icon><EditOutlined /></template>
                   </a-button>
-                  <a-button type="text" size="small" title="Duplicate" @click="duplicateDevice(node.device)">
-                    <template #icon><CopyOutlined /></template>
-                  </a-button>
                   <a-dropdown :trigger="['click']">
                     <a-button type="text" size="small" title="More">
                       <template #icon><EllipsisOutlined /></template>
                     </a-button>
                     <template #overlay>
                       <a-menu @click.stop>
+                        <a-menu-item key="duplicate" @click="duplicateDevice(node.device)">
+                          <CopyOutlined /> Duplicate
+                        </a-menu-item>
+                        <a-menu-divider />
                         <a-menu-item key="export-ede" @click="exportDeviceEde(node.device)">
                           <DownloadOutlined /> Export EDE
                         </a-menu-item>

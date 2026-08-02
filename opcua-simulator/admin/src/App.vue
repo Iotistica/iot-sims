@@ -14,13 +14,14 @@ import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import LoginView from './components/LoginView.vue'
 import UsersDrawer from './components/UsersDrawer.vue'
 import AnalyticsDashboard from './components/AnalyticsDashboard.vue'
+import AlarmsPanel from './components/AlarmsPanel.vue'
 import type { Device, Tag, Meta, Health, HistoryPoint, Folder } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, CloudUploadOutlined, DashboardOutlined, FolderOutlined, FolderAddOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, TeamOutlined, CloudUploadOutlined, DashboardOutlined, ApartmentOutlined, AlertOutlined, FolderOutlined, FolderAddOutlined } from '@ant-design/icons-vue'
 
 const apiPort = window.location.port || '47901'
-const activeView = ref<'devices' | 'analytics'>('devices')
+const activeView = ref<'devices' | 'analytics' | 'alarms'>('devices')
 
 const health  = ref<Health>({ status: 'unknown', opcua_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
 const simActionLoading = ref(false)
@@ -616,6 +617,12 @@ onUnmounted(() => {
           </span>
         </div>
 
+        <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
+          <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
+          <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
+          <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
+        </a-radio-group>
+
         <div style="flex:1" />
         <a-tag v-if="activeProjectName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProjectName }}</a-tag>
         <a-button size="small" @click="newProject">
@@ -629,10 +636,6 @@ onUnmounted(() => {
           <template #icon><CloudUploadOutlined /></template>
           Import NodeSet
         </a-button>
-        <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
-          <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
-          <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
-        </a-radio-group>
         <span style="color:#444;font-size:11px;margin-left:4px">:{{ apiPort }}</span>
 
         <div style="display:flex;align-items:center;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
@@ -809,7 +812,8 @@ onUnmounted(() => {
         </a-layout-content>
       </a-layout>
 
-      <AnalyticsDashboard v-else style="flex:auto;min-height:0" />
+      <AnalyticsDashboard v-else-if="activeView === 'analytics'" style="flex:auto;min-height:0" />
+      <AlarmsPanel v-else-if="activeView === 'alarms'" style="flex:auto;min-height:0" />
     </a-layout>
 
     <!-- Device drawer -->

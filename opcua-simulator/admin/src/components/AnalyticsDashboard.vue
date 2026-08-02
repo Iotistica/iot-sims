@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { message, theme } from 'ant-design-vue'
+import { theme } from 'ant-design-vue'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -19,7 +19,6 @@ import {
   BulbOutlined,
   WifiOutlined,
   DisconnectOutlined,
-  CheckOutlined,
 } from '@ant-design/icons-vue'
 import { api } from '../api'
 import { authToken } from '../auth'
@@ -153,23 +152,6 @@ async function doExport(format: 'csv' | 'json') {
     await api.analytics.export(format)
   } finally {
     exporting.value = false
-  }
-}
-
-// ─── Alarm acknowledgement ──────────────────────────────────────────────────
-
-const acking = ref<Set<number>>(new Set())
-async function ackAlarm(tagId: number) {
-  acking.value = new Set([...acking.value, tagId])
-  try {
-    await api.analytics.ackAlarm(tagId)
-    message.success('Alarm acknowledged')
-  } catch (err: unknown) {
-    message.error((err as { message?: string })?.message ?? 'Failed to acknowledge alarm')
-  } finally {
-    const next = new Set(acking.value)
-    next.delete(tagId)
-    acking.value = next
   }
 }
 
@@ -325,23 +307,6 @@ const recentErrorColumns = [
   { title: 'Node', dataIndex: 'node', key: 'node' },
 ]
 
-const alarmColumns = [
-  { title: 'Device', dataIndex: 'device_name', key: 'device_name' },
-  { title: 'Tag', dataIndex: 'tag_name', key: 'tag_name' },
-  { title: 'Fault', dataIndex: 'fault_type', key: 'fault_type', width: 100 },
-  { title: 'Severity', key: 'severity', width: 100 },
-  { title: 'Opened', key: 'opened_ts', width: 110 },
-  { title: 'Status', key: 'ack_status', width: 110 },
-  { title: '', key: 'actions', width: 90 },
-]
-
-const alarmEventColumns = [
-  { title: 'Time', key: 'ts', width: 110 },
-  { title: 'Event', dataIndex: 'event', key: 'event', width: 90 },
-  { title: 'Device', dataIndex: 'device_name', key: 'device_name' },
-  { title: 'Tag', dataIndex: 'tag_name', key: 'tag_name' },
-  { title: 'Severity', key: 'severity', width: 100 },
-]
 </script>
 
 <template>
@@ -572,49 +537,6 @@ const alarmEventColumns = [
             <a-card size="small"><a-statistic title="Auth Failures" :value="snapshot.security.auth_failures" :value-style="{ color: snapshot.security.auth_failures ? '#f5222d' : undefined }" /></a-card>
             <a-card size="small"><a-statistic title="Rejected Connections" :value="snapshot.security.rejected_connections" :value-style="{ color: snapshot.security.rejected_connections ? '#f5222d' : undefined }" /></a-card>
           </div>
-        </section>
-
-        <!-- ═══ Alarm & Event Analytics ═══ -->
-        <section>
-          <h3>Alarm &amp; Event Analytics</h3>
-          <div class="kpi-grid">
-            <a-card size="small"><a-statistic title="Active Alarms" :value="snapshot.alarms.active" :value-style="{ color: snapshot.alarms.active ? '#faad14' : undefined }" /></a-card>
-            <a-card size="small"><a-statistic title="Avg Acknowledgement Time" :value="fmtDuration(snapshot.alarms.avg_ack_time_s)" /></a-card>
-          </div>
-          <a-card size="small" title="Active Alarms" style="margin-bottom: 10px">
-            <a-table :columns="alarmColumns" :data-source="snapshot.alarms.active_list" :pagination="{ pageSize: 10 }" row-key="tag_id" size="small">
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'severity'">
-                  <a-tag :color="record.severity === 'critical' ? 'red' : 'gold'">{{ record.severity }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'opened_ts'">{{ fmtTime(record.opened_ts) }}</template>
-                <template v-else-if="column.key === 'ack_status'">
-                  <a-tag v-if="record.acknowledged" color="green"><CheckOutlined /> Acked</a-tag>
-                  <a-tag v-else color="orange">Unacked</a-tag>
-                </template>
-                <template v-else-if="column.key === 'actions'">
-                  <a-button
-                    v-if="!record.acknowledged"
-                    size="small"
-                    :loading="acking.has(record.tag_id)"
-                    @click="ackAlarm(record.tag_id)"
-                  >
-                    Ack
-                  </a-button>
-                </template>
-              </template>
-            </a-table>
-          </a-card>
-          <a-card size="small" title="Alarm History">
-            <a-table :columns="alarmEventColumns" :data-source="snapshot.alarms.recent_events.slice().reverse()" :pagination="{ pageSize: 10 }" row-key="ts" size="small">
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'ts'">{{ fmtTime(record.ts) }}</template>
-                <template v-else-if="column.key === 'severity'">
-                  <a-tag :color="record.severity === 'critical' ? 'red' : 'gold'">{{ record.severity }}</a-tag>
-                </template>
-              </template>
-            </a-table>
-          </a-card>
         </section>
       </div>
     </div>
