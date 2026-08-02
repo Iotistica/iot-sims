@@ -30,11 +30,11 @@ jobs:
 
       - name: Check Python syntax
         working-directory: ./bacnet-simulator
-        run: python -m py_compile bacnet_simulator.py
+        run: python -m py_compile src/*.py
 
       - name: Run pylint
         working-directory: ./bacnet-simulator
-        run: pylint --disable=all --enable=E,F bacnet_simulator.py || true
+        run: pylint --disable=all --enable=E,F src/simulator.py || true
 
       - name: Cleanup test artifacts
         if: always()
