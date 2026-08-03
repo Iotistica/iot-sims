@@ -241,6 +241,15 @@ export interface Project {
   device_count: number
 }
 
+export interface BackupEntry {
+  file_name: string
+  created_at: string
+  size_bytes: number
+  checksum_sha256: string
+  integrity: string
+  label?: string | null
+}
+
 export interface LogEntry {
   ts: number
   level: 'info' | 'warn' | 'error'

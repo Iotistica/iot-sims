@@ -4,6 +4,7 @@ import { message } from 'ant-design-vue'
 import { api } from '../api'
 import type { Settings } from '../types'
 import UsersDrawer from './UsersDrawer.vue'
+import BackupsPanel from './BackupsPanel.vue'
 
 const loading = ref(false)
 const savingGeneral = ref(false)
@@ -124,6 +125,10 @@ onMounted(load)
 
       <a-tab-pane key="users" tab="Users">
         <UsersDrawer />
+      </a-tab-pane>
+
+      <a-tab-pane key="backup" tab="Backup & Restore">
+        <BackupsPanel />
       </a-tab-pane>
     </a-tabs>
   </div>

@@ -1,4 +1,4 @@
-import type { Device, SimObject, Meta, Health, Settings, Project, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation, PriorityArrayInfo, Calendar, Location } from './types'
+import type { Device, SimObject, Meta, Health, Settings, Project, BackupEntry, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation, PriorityArrayInfo, Calendar, Location } from './types'
 import { authToken, logout } from './auth'
 
 function authHeaders(): Record<string, string> {
@@ -140,6 +140,17 @@ export const api = {
     exportEde: (id: number, name: string) => downloadFile(`/profiles/${id}/export/ede`, `${name}.ede`),
     importEde: (name: string, description: string, deviceName: string, file: File) =>
       uploadFile<Project>('/profiles/import/ede', file, { name, description, device_name: deviceName }),
+  },
+
+  // Whole-database snapshot/restore — distinct from `projects` above (which
+  // save/restore just the device/object topology, not the full SQLite file).
+  backups: {
+    list:    ()                       => req<BackupEntry[]>('/backups'),
+    create:  ()                       => req<BackupEntry>('/backups', { method: 'POST' }),
+    restore: (fileName: string)       => req<{ ok: boolean; pre_restore_backup: string }>(`/backups/${encodeURIComponent(fileName)}/restore`, { method: 'POST' }),
+    del:     (fileName: string)       => req<null>(`/backups/${encodeURIComponent(fileName)}`, { method: 'DELETE' }),
+    download: (fileName: string)      => downloadFile(`/backups/${encodeURIComponent(fileName)}/download`, fileName),
+    upload:  (file: File)             => uploadFile<BackupEntry>('/backups/upload', file),
   },
 
   notificationClasses: {

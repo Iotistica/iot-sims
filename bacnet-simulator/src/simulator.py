@@ -35,6 +35,7 @@ import uvicorn
 # GH #15 refactor, pass 1 — constants/JWT-secret, Pydantic schemas, and the
 # alarms/calendar/schedule/EDE helpers now live alongside this file in src/.
 from . import alarms
+from . import backup
 from . import ede
 from . import schedule as bacnet_schedule
 from . import calendar as bacnet_calendar
@@ -4122,6 +4123,71 @@ async def import_project_ede(
         raise HTTPException(400, "No valid EDE rows found in file")
     data = ede.rows_to_devices(rows, device_name)
     return await asyncio.to_thread(db.import_project, name, description, data)
+
+
+# ── Backups ──
+# Whole-database snapshot/restore, independent of the Projects feature above
+# (Projects save/restore the device/object *contents*; Backups save/restore
+# the entire SQLite file, including users, settings, alarm history, trend
+# log data, etc.). See src/backup.py for the actual implementation.
+
+@api.get("/backups")
+async def list_backups():
+    return await asyncio.to_thread(backup.list_backups)
+
+
+@api.post("/backups", status_code=201)
+async def create_backup():
+    try:
+        return await asyncio.to_thread(backup.create_backup)
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@api.post("/backups/{file_name}/restore")
+async def restore_backup(file_name: str):
+    try:
+        result = await asyncio.to_thread(backup.restore_backup, file_name)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    # Same sequence load_project() already uses after swapping in a whole
+    # different DB snapshot — Database caches no connection and SimEngine
+    # re-queries fresh on reload(), so this hot-swaps without a restart.
+    asyncio.create_task(engine.reload())
+    engine.reset()
+    return result
+
+
+@api.delete("/backups/{file_name}", status_code=204)
+async def delete_backup(file_name: str):
+    deleted = await asyncio.to_thread(backup.delete_backup, file_name)
+    if not deleted:
+        raise HTTPException(404, "Backup not found")
+
+
+@api.get("/backups/{file_name}/download")
+async def download_backup(file_name: str):
+    path = backup.get_backup_dir() / Path(file_name).name
+    if not path.exists():
+        raise HTTPException(404, "Backup not found")
+    return FileResponse(
+        str(path),
+        media_type="application/octet-stream",
+        filename=path.name,
+    )
+
+
+@api.post("/backups/upload", status_code=201)
+async def upload_backup(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Uploaded file is empty")
+    try:
+        return await asyncio.to_thread(backup.save_uploaded_backup, file.filename or "backup.db", data)
+    except Exception as e:
+        raise HTTPException(400, str(e))
 
 
 # ── Alarms & Notification Classes (BACnet Intrinsic Reporting, Phase 1) ──
