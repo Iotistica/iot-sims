@@ -209,6 +209,13 @@ def extract_legacy_object_headings(text: str) -> list[str]:
     return headings
 
 def looks_like_legacy_object_page(text: str) -> bool:
+    """
+    A page is legacy only when it has genuine legacy signals. A heading
+    match alone (e.g. "Analog Input Object" printed as a page title) is not
+    enough — modern PICS pages can carry the same heading text above their
+    "Property name" table, so heading-only matches are ignored on pages that
+    already look modern to avoid misclassifying them as legacy.
+    """
     lowered = text.casefold()
 
     has_property_columns = (
@@ -216,11 +223,32 @@ def looks_like_legacy_object_page(text: str) -> bool:
         and "writable properties" in lowered
     )
 
-    has_object_heading = bool(
-        extract_legacy_object_headings(text)
-    )
+    if has_property_columns:
+        return True
 
-    return has_property_columns or has_object_heading
+    if looks_like_object_page(text):
+        return False
+
+    return bool(extract_legacy_object_headings(text))
+
+
+def detect_document_layout(pages: list[PdfPage]) -> str:
+    """
+    Classify the whole document as "modern", "legacy_read_write", "mixed",
+    or "unknown" based on how many pages carry each family's signals. Used
+    for diagnostics/reporting — page-level routing still happens per-page in
+    PicsParser._parse_object_pages.
+    """
+    modern_pages = sum(1 for p in pages if looks_like_object_page(p.text))
+    legacy_pages = sum(1 for p in pages if looks_like_legacy_object_page(p.text))
+
+    if modern_pages and legacy_pages:
+        return "mixed"
+    if modern_pages:
+        return "modern"
+    if legacy_pages:
+        return "legacy_read_write"
+    return "unknown"
 
 def looks_like_legacy_continuation(text: str) -> bool:
     lowered = text.casefold()

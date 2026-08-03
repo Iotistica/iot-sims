@@ -28,6 +28,13 @@ Protocol fields:
     protocol_version = "1"
     protocol_revision = "16"
 - Do not return "1.16" as protocol_version.
+- For text such as "BACnet Protocol Revision: 9" (a single bare number, no
+  dot), interpret:
+    protocol_revision = "9"
+    protocol_version = null
+  Do not copy a bare revision number into protocol_version. Only set
+  protocol_version when the document explicitly states a protocol version
+  separately from the revision.
 - If another page reports a conflicting revision, preserve the main document
   value and add a warning describing the conflict.
 

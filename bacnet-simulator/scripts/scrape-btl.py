@@ -44,6 +44,16 @@ except ImportError:
     print("ERROR: pip install requests beautifulsoup4", file=sys.stderr)
     sys.exit(1)
 
+# Product/vendor names scraped from the BTL site can contain characters
+# (non-breaking hyphens, accented letters, the registered-trademark sign)
+# that aren't representable in the Windows console's default cp1252
+# encoding. A print() crash mid-run means nothing gets written to disk (the
+# output is only persisted at the very end) — so make stdout/stderr tolerant
+# instead of letting an unencodable character abort the whole scrape.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 BASE_URL = "https://www.bacnetinternational.net/btl/"
 MFR_URL  = "https://www.bacnetinternational.net/btl/index.php?m={id}"
 
@@ -82,7 +92,21 @@ OBJECT_TYPES: list[tuple[str, str]] = [
     (r"\bprogram\b",                "Program"),
     (r"\bcommand\b",                "Command"),
     (r"\bfile\b",                   "File"),
+    (r"\bdevice\b",                 "Device"),
+    (r"network[\s\-]?port",         "NP"),
 ]
+
+# BTL "Product Listing" certificates (bacnetinternational.net) list only the
+# object types a product supports under this heading — no per-item "Yes"/
+# count marker like full vendor PICS documents use. Being listed here *is*
+# the affirmative signal.
+_OBJECT_TYPE_SUPPORT_HEADING = "object type support"
+_OBJECT_TYPE_SUPPORT_TERMINATORS = (
+    "data link layer options",
+    "character set support",
+    "special functionality",
+    "routing capabilities",
+)
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -246,6 +270,52 @@ def _parse_text(text: str, existing: dict | None = None) -> dict[str, int | bool
     return result
 
 
+def _extract_object_type_support_block(full_text: str) -> str:
+    """
+    Return the text between the "Object Type Support" heading and the next
+    recognized section heading (or end of document). Scans the full,
+    multi-page document text since the heading and its terminator can land
+    on different pages.
+    """
+    lines = full_text.splitlines()
+    start = None
+    for i, raw_line in enumerate(lines):
+        if raw_line.strip().casefold() == _OBJECT_TYPE_SUPPORT_HEADING:
+            start = i + 1
+            break
+    if start is None:
+        return ""
+
+    end = len(lines)
+    for i in range(start, len(lines)):
+        stripped = lines[i].strip().casefold()
+        if not stripped:
+            continue
+        if stripped in _OBJECT_TYPE_SUPPORT_TERMINATORS or re.match(r"^page\s+\d+\s+of\s+\d+$", stripped):
+            end = i
+            break
+
+    return "\n".join(lines[start:end])
+
+
+def _parse_object_type_support_section(full_text: str) -> dict[str, int | bool]:
+    """
+    BTL "Product Listing" certificates list supported object types as bare
+    names grouped under an "Object Type Support" heading, with no per-item
+    "Yes"/count marker the way full vendor PICS documents use — so every
+    object type name found within that heading's block is supported.
+    """
+    block = _extract_object_type_support_block(full_text)
+    if not block:
+        return {}
+
+    result: dict[str, int | bool] = {}
+    for pattern, code in OBJECT_TYPES:
+        if re.search(pattern, block, re.I):
+            result[code] = True
+    return result
+
+
 def parse_pics_pdf(url: str) -> dict[str, int | bool]:
     """
     Download a PICS PDF and return supported object types.
@@ -261,6 +331,7 @@ def parse_pics_pdf(url: str) -> dict[str, int | bool]:
     resp.raise_for_status()
 
     obj_types: dict[str, int | bool] = {}
+    full_text_parts: list[str] = []
 
     with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
         for page in pdf.pages:
@@ -268,6 +339,10 @@ def parse_pics_pdf(url: str) -> dict[str, int | bool]:
                 obj_types.update(_parse_table(table))
             text = page.extract_text() or ""
             obj_types.update(_parse_text(text, existing=obj_types))
+            full_text_parts.append(text)
+
+    for code, val in _parse_object_type_support_section("\n".join(full_text_parts)).items():
+        obj_types.setdefault(code, val)
 
     return obj_types
 
@@ -284,9 +359,30 @@ def _pics_stats(products: list[dict]) -> tuple[int, int]:
     )
 
 
-def scrape(parse_pics: bool = False, only_mfr_id: str | None = None) -> dict:
+def _load_existing_lookup(out_path: Path) -> dict[tuple[str, str], dict]:
+    """
+    Read a previously-written output file (if any) and index products by
+    (vendor name, product name) so a fresh HTML scrape can carry forward
+    already-parsed object_types/pics_error instead of discarding them.
+    """
+    if not out_path.exists():
+        return {}
+    try:
+        data = json.loads(out_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    lookup: dict[tuple[str, str], dict] = {}
+    for vendor in data.get("vendors", []):
+        for product in vendor.get("models", []):
+            lookup[(vendor["name"], product["name"])] = product
+    return lookup
+
+
+def scrape(parse_pics: bool = False, only_mfr_id: str | None = None, out_path: Path | None = None) -> dict:
     """Full scrape of the BTL website."""
     vendors: dict[str, list[dict]] = {}
+    existing = _load_existing_lookup(out_path) if out_path else {}
 
     print("Fetching manufacturer list…")
     manufacturers = get_manufacturers()
@@ -306,10 +402,23 @@ def scrape(parse_pics: bool = False, only_mfr_id: str | None = None) -> dict:
             seen: set[str] = set()
             unique = [p for p in products if p["name"] not in seen and not seen.add(p["name"])]  # type: ignore[func-returns-value]
 
+            # Carry forward previously-parsed PICS data when the product's
+            # pics_url hasn't changed, so a plain re-scrape never throws
+            # away work a prior --parse-pics/--update-pics run already did.
+            for p in unique:
+                prev = existing.get((name, p["name"]))
+                if prev and prev.get("pics_url") == p.get("pics_url"):
+                    if "object_types" in prev:
+                        p["object_types"] = prev["object_types"]
+                    if "pics_error" in prev:
+                        p["pics_error"] = prev["pics_error"]
+
             if parse_pics:
                 for p in unique:
                     if "pics_url" not in p:
                         continue
+                    if "object_types" in p or "pics_error" in p:
+                        continue  # already have a result carried forward
                     try:
                         ot = parse_pics_pdf(p["pics_url"])
                         if ot:
@@ -415,7 +524,7 @@ def main():
     else:
         if args.parse_pics:
             print("PICS parsing enabled")
-        data = scrape(parse_pics=args.parse_pics, only_mfr_id=args.manufacturer)
+        data = scrape(parse_pics=args.parse_pics, only_mfr_id=args.manufacturer, out_path=out_path)
 
     vendor_count  = len(data["vendors"])
     product_count = sum(len(v["models"]) for v in data["vendors"])

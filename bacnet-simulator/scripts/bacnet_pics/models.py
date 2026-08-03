@@ -93,3 +93,6 @@ class PicsProfile(BaseModel):
     objects: list[PicsObject] = Field(default_factory=list)
     network: NetworkCapabilities = Field(default_factory=NetworkCapabilities)
     warnings: list[str] = Field(default_factory=list)
+    document_layout: Literal["modern", "legacy_read_write", "mixed", "unknown"] = "unknown"
+    status: Literal["accepted", "needs_review", "failed"] = "accepted"
+    confidence: float = 1.0

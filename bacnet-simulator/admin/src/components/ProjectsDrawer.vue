@@ -106,11 +106,11 @@ watch(() => props.open, (isOpen) => {
       <div
         v-for="p in projects"
         :key="p.id"
-        style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px;background:var(--surface)"
+        style="border:1px solid var(--border);border-radius:6px;padding:12px 14px;margin-bottom:10px;background:var(--surface-alt)"
       >
         <div style="display:flex;align-items:flex-start;gap:8px">
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+            <div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-primary)">
               {{ p.name }}
             </div>
             <div v-if="p.description" style="font-size:12px;color:var(--text-muted);margin-top:2px">{{ p.description }}</div>

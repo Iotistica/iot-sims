@@ -32,6 +32,7 @@ from .models import (
 
 from .pdf import (
     PdfPage,
+    detect_document_layout,
     extract_legacy_object_headings,
     extract_object_heading,
     extract_pages,
@@ -62,6 +63,10 @@ class PicsParser:
         if self.verbose:
             print(f"Loaded {len(pages)} pages from {self.pdf_path.name}")
 
+        document_layout = detect_document_layout(pages)
+        if self.verbose:
+            print(f"Detected document layout: {document_layout}")
+
         summary = self._parse_summary(pages)
         objects = self._parse_object_pages(pages)
         objects = self._merge_duplicate_objects(objects)
@@ -75,9 +80,35 @@ class PicsParser:
             objects=objects,
             network=summary.network,
             warnings=summary.warnings,
+            document_layout=document_layout,
         )
         self._validate(profile)
+        self._assess_confidence(profile)
         return profile
+
+    @staticmethod
+    def _assess_confidence(profile: PicsProfile) -> None:
+        """
+        Lightweight accepted/needs_review signal — not a full per-object
+        confidence model, just enough to flag a run worth eyeballing.
+        """
+        object_warning_count = sum(len(obj.warnings) for obj in profile.objects)
+        total_warnings = object_warning_count + len(profile.warnings)
+
+        needs_review = (
+            profile.document_layout in ("mixed", "unknown")
+            and len(profile.objects) <= 1
+        ) or total_warnings > 0
+
+        if not profile.objects:
+            profile.status = "failed"
+            profile.confidence = 0.0
+        elif needs_review:
+            profile.status = "needs_review"
+            profile.confidence = 0.6
+        else:
+            profile.status = "accepted"
+            profile.confidence = 1.0
 
     def _parse_summary(
         self,
@@ -121,25 +152,27 @@ class PicsParser:
             }
 
             selected_profiles: list[str] = []
+            checkbox_prefixes = ("☒", "☑", "✓", "✔", "[x]", "[X]", "x ", "X ")
 
-            print("\n====================")
-            print("DEVICE PROFILE TEXT")
-            print("====================")
+            if self.verbose:
+                print("\n====================")
+                print("DEVICE PROFILE TEXT")
+                print("====================")
 
-            for page in selected:
-                if (
-                    "BACnet Standardized Device Profile" in page.text
-                    or "B-AAC" in page.text
-                ):
-                    print(f"\n--- PAGE {page.number} ---")
-                    print(page.text)
+                for page in selected:
+                    if (
+                        "BACnet Standardized Device Profile" in page.text
+                        or "B-AAC" in page.text
+                    ):
+                        print(f"\n--- PAGE {page.number} ---")
+                        print(page.text)
 
             for page in selected:
                 for line in page.text.splitlines():
                     stripped = line.strip()
 
                     # Temporary Honeywell checkbox check.
-                    if not stripped.startswith(""):
+                    if not stripped.startswith(checkbox_prefixes):
                         continue
 
                     for label, code in profile_map.items():
@@ -186,12 +219,11 @@ class PicsParser:
                     else []
                 )
 
-            print(
-                f"Legacy headings page {page.number}: "
-                f"{extract_legacy_object_headings(page.text)}"
-            )
-
             if self.verbose:
+                print(
+                    f"Legacy headings page {page.number}: "
+                    f"{extract_legacy_object_headings(page.text)}"
+                )
                 heading_display = (
                     ", ".join(detected_headings)
                     if detected_headings
@@ -203,13 +235,19 @@ class PicsParser:
                     f"{page.number}: {heading_display}"
                 )
 
+            if is_modern_page:
+                table_format = "modern PICS property table"
+            elif is_legacy_page:
+                table_format = "legacy readable/writable columns"
+            else:
+                table_format = "unknown/continuation"
+
             parsed = self.ai.parse(
                 response_model=PageObjects,
                 system_prompt=OBJECT_SYSTEM_PROMPT,
                 user_prompt=(
                     f"Page number: {page.number}\n"
-                    f"Document table format: "
-                    f"{'legacy readable/writable columns' if is_legacy_page else 'modern PICS property table'}\n"
+                    f"Document table format: {table_format}\n"
                     f"Expected object headings: "
                     f"{', '.join(detected_headings) or 'unknown'}\n"
                     f"Is continuation page: {is_continuation}\n\n"
@@ -448,23 +486,23 @@ class PicsParser:
                         f"Proprietary property has no ID: {prop.name}"
                     )
 
-                supported_names = {
-                item.object_type.strip().casefold()
-                for item in profile.standard_objects
-            }
+        supported_names = {
+            item.object_type.strip().casefold()
+            for item in profile.standard_objects
+        }
 
-            for obj in profile.objects:
-                normalized_name = obj.object_type.strip().casefold()
+        for detected in profile.objects:
+            normalized_name = detected.object_type.strip().casefold()
 
-                if obj.proprietary:
-                    continue
+            if detected.proprietary:
+                continue
 
-                if normalized_name not in supported_names:
-                    profile.standard_objects.append(
-                        ObjectSupport(
-                            object_type=obj.object_type,
-                            dynamically_creatable=None,
-                            dynamically_deletable=None,
-                        )
+            if normalized_name not in supported_names:
+                profile.standard_objects.append(
+                    ObjectSupport(
+                        object_type=detected.object_type,
+                        dynamically_creatable=None,
+                        dynamically_deletable=None,
                     )
-                    supported_names.add(normalized_name)
+                )
+                supported_names.add(normalized_name)

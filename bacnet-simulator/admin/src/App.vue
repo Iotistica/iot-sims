@@ -103,10 +103,38 @@ const projectsDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
 const saveTemplateOpen     = ref(false)
 
-// Active project state
+// Active project state — persisted to localStorage so a page reload (e.g.
+// after a frontend rebuild) doesn't lose track of which project "Save"
+// should overwrite.
+const ACTIVE_PROJECT_KEY = 'bacnet-sim-active-project'
 const activeProjectId   = ref<number | null>(null)
 const activeProjectName = ref<string | null>(null)
 const activeProjectDesc = ref<string>('')
+
+function loadActiveProjectFromStorage() {
+  try {
+    const raw = localStorage.getItem(ACTIVE_PROJECT_KEY)
+    if (!raw) return
+    const saved = JSON.parse(raw) as { id: number; name: string; desc: string }
+    activeProjectId.value = saved.id
+    activeProjectName.value = saved.name
+    activeProjectDesc.value = saved.desc
+  } catch {
+    // Malformed/stale storage — ignore and fall back to "no active project"
+  }
+}
+
+watch([activeProjectId, activeProjectName, activeProjectDesc], () => {
+  if (activeProjectId.value === null) {
+    localStorage.removeItem(ACTIVE_PROJECT_KEY)
+  } else {
+    localStorage.setItem(ACTIVE_PROJECT_KEY, JSON.stringify({
+      id: activeProjectId.value,
+      name: activeProjectName.value,
+      desc: activeProjectDesc.value,
+    }))
+  }
+})
 
 // Save-project modal
 const saveModalOpen    = ref(false)
@@ -351,21 +379,15 @@ function openSaveAs() {
   saveModalOpen.value = true
 }
 
-function openSave() {
+async function openSave() {
   if (activeProjectId.value !== null) {
     // Overwrite existing project directly — no dialog
-    Modal.confirm({
-      title: `Save to "${activeProjectName.value}"?`,
-      okText: 'Save',
-      async onOk() {
-        try {
-          await api.projects.update(activeProjectId.value!, activeProjectName.value!, activeProjectDesc.value)
-          message.success(`"${activeProjectName.value}" saved`)
-        } catch (e: unknown) {
-          message.error((e as Error).message ?? 'Failed to save')
-        }
-      },
-    })
+    try {
+      await api.projects.update(activeProjectId.value, activeProjectName.value!, activeProjectDesc.value)
+      message.success(`"${activeProjectName.value}" saved`)
+    } catch (e: unknown) {
+      message.error((e as Error).message ?? 'Failed to save')
+    }
   } else {
     saveModalName.value = ''
     saveModalDesc.value = ''
@@ -630,6 +652,7 @@ onMounted(async () => {
   if (authToken.value) {
     try {
       currentUser.value = await api.auth.me()
+      loadActiveProjectFromStorage()
       await startApp()
     } catch {
       // api.ts already cleared the (invalid/expired) token on the 401; the
@@ -731,7 +754,7 @@ onUnmounted(() => {
               <a-button size="small" title="Add Location" @click="openAddLocation">
                 <template #icon><FolderAddOutlined /></template>
               </a-button>
-              <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
+              <a-button size="small" type="primary" @click="openAddDevice">+ Add Device</a-button>
             </a-space>
           </div>
 
@@ -787,15 +810,15 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <a-space :size="2" @click.stop>
-                  <a-button type="text" size="small" title="Edit" @click="openEditDevice(node.device)">
-                    <template #icon><EditOutlined /></template>
-                  </a-button>
                   <a-dropdown :trigger="['click']">
                     <a-button type="text" size="small" title="More">
                       <template #icon><EllipsisOutlined /></template>
                     </a-button>
                     <template #overlay>
                       <a-menu @click.stop>
+                        <a-menu-item key="edit" @click="openEditDevice(node.device)">
+                          <EditOutlined /> Edit
+                        </a-menu-item>
                         <a-menu-item key="duplicate" @click="duplicateDevice(node.device)">
                           <CopyOutlined /> Duplicate
                         </a-menu-item>

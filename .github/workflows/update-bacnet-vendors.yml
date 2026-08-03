@@ -10,7 +10,7 @@ jobs:
   scrape:
     name: Scrape BTL Product Database
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     permissions:
       contents: write
 
@@ -27,13 +27,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4
+        run: pip install requests beautifulsoup4 pdfplumber
 
       - name: Run BTL scraper
         id: scrape
         run: |
           python bacnet-simulator/scripts/scrape-btl.py \
-            --output bacnet-simulator/bacnet-vendors.json
+            --output bacnet-simulator/bacnet-vendors.json \
+            --parse-pics
         env:
           PYTHONUNBUFFERED: "1"
 

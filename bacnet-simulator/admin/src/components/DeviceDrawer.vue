@@ -98,7 +98,14 @@ function nextFreeInstance(): number {
 
 // ── Vendor / model picker ─────────────────────────────────────────────────────
 
-interface VendorModel { name: string; type?: string; typeLabel?: string }
+interface VendorModel {
+  name: string
+  type?: string
+  typeLabel?: string
+  pics_url?: string
+  object_types?: Record<string, number | boolean>
+  pics_error?: string
+}
 interface Vendor { name: string; models: VendorModel[] }
 
 const vendors = ref<Vendor[]>([])
@@ -108,12 +115,30 @@ const vendorOptions = computed(() =>
   vendors.value.map(v => ({ value: v.name, label: v.name }))
 )
 
+const selectedVendor = computed(() => vendors.value.find(v => v.name === form.vendor_name))
+
 const modelOptions = computed(() => {
-  const v = vendors.value.find(v => v.name === form.vendor_name)
+  const v = selectedVendor.value
   if (!v) return []
   return v.models.map(m => ({
     value: m.name,
     label: m.typeLabel ? `${m.name} (${m.typeLabel})` : m.name,
+  }))
+})
+
+// Scraped BTL catalog info (device profile, PICS datasheet, supported object
+// types) for whichever vendor/model is currently selected — surfaced so the
+// user can see what was scraped without leaving the form.
+const selectedModel = computed(() =>
+  selectedVendor.value?.models.find(m => m.name === form.model_name)
+)
+
+const selectedModelObjectTypes = computed(() => {
+  const types = selectedModel.value?.object_types
+  if (!types) return []
+  return Object.entries(types).map(([code, count]) => ({
+    code,
+    label: typeof count === 'number' ? `${code} ×${count}` : code,
   }))
 })
 
@@ -306,9 +331,27 @@ function doDelete() {
         </a-col>
       </a-row>
 
-      <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
-        <a-switch v-model:checked="form.enabled" />
-      </a-form-item>
+      <div
+        v-if="selectedModel && (selectedModel.typeLabel || selectedModel.pics_url || selectedModelObjectTypes.length)"
+        style="background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:16px;font-size:12px"
+      >
+        <div v-if="selectedModel.typeLabel" style="margin-bottom:4px">
+          <span style="color:var(--text-muted)">Device Profile:</span> {{ selectedModel.typeLabel }}
+        </div>
+        <div v-if="selectedModel.pics_url" style="margin-bottom:4px">
+          <div style="color:var(--text-muted);white-space:nowrap">PICS Datasheet:</div>
+          <a :href="selectedModel.pics_url" target="_blank" rel="noopener noreferrer" style="word-break:break-all">{{ selectedModel.pics_url }}</a>
+        </div>
+        <div v-if="selectedModelObjectTypes.length">
+          <span style="color:var(--text-muted)">Supported Object Types:</span>
+          <a-space :size="[4, 4]" wrap style="margin-left:4px">
+            <a-tag v-for="t in selectedModelObjectTypes" :key="t.code" style="margin:0">{{ t.label }}</a-tag>
+          </a-space>
+        </div>
+        <div v-if="selectedModel.pics_error" style="color:#faad14;margin-top:4px">
+          PICS parsing note: {{ selectedModel.pics_error }}
+        </div>
+      </div>
 
       <a-collapse ghost style="margin-top:16px">
         <a-collapse-panel key="device-info" header="Device Info (advanced)">
@@ -354,6 +397,10 @@ function doDelete() {
           <template #icon><UploadOutlined /></template>
           {{ edeFileName || 'Choose EDE file…' }}
         </a-button>
+      </a-form-item>
+
+      <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
+        <a-switch v-model:checked="form.enabled" />
       </a-form-item>
     </a-form>
 
