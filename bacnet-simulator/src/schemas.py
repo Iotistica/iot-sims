@@ -15,6 +15,9 @@ from pydantic import BaseModel, Field
 
 from . import calendar as bacnet_calendar
 from .config import (
+    EQUIPMENT_TYPES,
+    LOCATION_KINDS,
+    POINT_TYPES,
     VALID_BEHAVIORS,
     VALID_OBJECT_TYPES,
     VALID_POLARITY,
@@ -35,10 +38,15 @@ class DeviceCreate(BaseModel):
     max_apdu_length_accepted: int = Field(1024, ge=50, le=1476)
     segmentation_supported: str = "segmented-both"
     location_id: Optional[int] = None
+    equipment_type: Optional[str] = None
 
     def validate_device_info(self) -> None:
         if self.segmentation_supported not in VALID_SEGMENTATION:
             raise HTTPException(400, f"segmentation_supported must be one of: {sorted(VALID_SEGMENTATION)}")
+
+    def validate_semantic(self) -> None:
+        if self.equipment_type is not None and self.equipment_type not in EQUIPMENT_TYPES:
+            raise HTTPException(400, f"equipment_type must be one of: {sorted(EQUIPMENT_TYPES)}")
 
 
 class DeviceUpdate(DeviceCreate):
@@ -49,6 +57,11 @@ class LocationCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     parent_location_id: Optional[int] = None
     description: str = Field("", max_length=500)
+    kind: Optional[str] = None
+
+    def validate_semantic(self) -> None:
+        if self.kind is not None and self.kind not in LOCATION_KINDS:
+            raise HTTPException(400, f"kind must be one of: {sorted(LOCATION_KINDS)}")
 
 
 class LocationUpdate(LocationCreate):
@@ -66,6 +79,7 @@ class ObjectCreate(BaseModel):
     number_of_states: int = Field(2, ge=1, le=254)
     reliability: str = "no-fault-detected"
     polarity: str = "normal"
+    point_type: Optional[str] = None
 
     def validate_type(self):
         if self.object_type not in VALID_OBJECT_TYPES:
@@ -80,6 +94,10 @@ class ObjectCreate(BaseModel):
             json.loads(self.behavior_params)
         except Exception:
             raise HTTPException(400, "behavior_params must be valid JSON")
+
+    def validate_semantic(self) -> None:
+        if self.point_type is not None and self.point_type not in POINT_TYPES:
+            raise HTTPException(400, f"point_type must be one of: {sorted(POINT_TYPES)}")
 
 
 class ObjectUpdate(ObjectCreate):
@@ -194,17 +212,17 @@ class CalendarUpdate(CalendarCreate):
     pass
 
 
-class ProfileCreate(BaseModel):
+class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
 
 
-class ProfileUpdate(BaseModel):
+class ProjectUpdate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
 
 
-class ProfileImport(BaseModel):
+class ProjectImport(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
     data: dict

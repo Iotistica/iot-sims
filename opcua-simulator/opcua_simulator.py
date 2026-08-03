@@ -22,6 +22,7 @@ and the handful of routes (health, sim clock, device-value /state + /ws)
 that are simple enough not to warrant their own file.
 """
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -281,6 +282,17 @@ class SimEngine:
         val = behavior.compute(self.state)
         await self._write_value(live_tag, val)
         self._tag_behaviors[tag_row["id"]] = behavior
+        if tag_row["behavior"] == "manual":
+            # Only "manual" tags accept a lasting external write — mirrors the
+            # same condition the admin UI's REST "Set" button already gates on
+            # (App.vue). Without this hook, an external OPC-UA client's WriteValue
+            # is accepted at the protocol level (writable=True lets it land in
+            # the node's raw value slot) but tick() reasserts the old
+            # ManualBehavior value over it every 5s, so the write never sticks.
+            self.server.iserver.aspace.add_datachange_callback(
+                live_tag.node.nodeid, ua.AttributeIds.Value,
+                functools.partial(self._on_manual_write, device_id, tag_row["id"]),
+            )
         # This initial compute() can itself flip a fresh FaultBehavior active
         # before tick()'s own before/after edge-detection ever runs on it —
         # without this, that first activation would go unrecorded (was_active
@@ -416,6 +428,23 @@ class SimEngine:
         else:
             self._tag_behaviors[tag_id] = ManualBehavior({"value": value})
         return True
+
+    async def _on_manual_write(self, device_id: int, tag_id: int, _handle: int, data_value) -> None:
+        """asyncua datachange callback (registered in _create_live_tag) — fires
+        on every write to a "manual"-behavior node's Value attribute, including
+        our own tick()/REST-triggered reassertions of the value already held in
+        ManualBehavior, not just genuine external OPC-UA client writes. Skip
+        when the incoming value already matches what's stored, so those
+        self-echoes don't re-hit the DB every tick (~5s) forever."""
+        behavior = self._tag_behaviors.get(tag_id)
+        new_value = data_value.Value.Value
+        if isinstance(behavior, ManualBehavior) and behavior._value == new_value:
+            return
+        await asyncio.to_thread(self.db.set_manual_value, device_id, tag_id, new_value)
+        self.set_manual_value(tag_id, new_value)
+        log.info(
+            "External OPC-UA write applied: device=%s tag=%s value=%s", device_id, tag_id, new_value,
+        )
 
     async def tick(self) -> None:
         """Advance sim state and update every live tag's value."""

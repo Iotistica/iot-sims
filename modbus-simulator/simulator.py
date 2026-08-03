@@ -59,6 +59,16 @@ profile_loaded = False  # Track if profile was successfully loaded
 
 # GUI control state (shared memory, no file IPC needed!)
 REGISTER_OVERRIDES = {}  # {address: {"base": int, "noise_pct": float, "value": int}}
+# A genuine external Modbus client write (WriteSingleRegister/WriteMultipleRegisters/
+# WriteSingleCoil) lands in ProfileDataBlock.setValues() and is recorded here so
+# _update_registers()'s background simulation tick (every update_interval, default 1s)
+# re-asserts the written value instead of overwriting it with fresh noise — without
+# this, any external write was accepted (logged "Write complete") but silently
+# reverted within ~1s, since REGISTER_OVERRIDES above is a different, pre-existing
+# feature (freeze a register around a fixed base+noise for demo scenarios), not a
+# "hold whatever was last written" mechanism. Keyed like PROFILE_INDEX/REGISTER_ACCESS_LOG:
+# {(register_type, address): value}
+MANUAL_WRITE_OVERRIDES = {}
 DISABLED_SLAVES = set()  # Set of disabled slave unit IDs
 SLAVE_DELAYS = {}  # {slave_id: {"delay_ms": int, "jitter_ms": int}}
 REGISTER_ACCESS_LOG = {}  # {(slave_id, reg_type, address): {reads: int, writes: int, last_read: float, last_write: float}}
@@ -251,15 +261,21 @@ class ProfileDataBlock(ModbusSequentialDataBlock):
             
             idx = addr - self.address
             
+            manual_key = (self.register_type, addr)
+
             if self.register_type == 'discrete':
                 self.values[idx] = bool(random.random() < 0.05)
             elif self.register_type == 'coil':
-                if addr in REGISTER_OVERRIDES:
+                if manual_key in MANUAL_WRITE_OVERRIDES:
+                    self.values[idx] = bool(MANUAL_WRITE_OVERRIDES[manual_key])
+                elif addr in REGISTER_OVERRIDES:
                     self.values[idx] = bool(REGISTER_OVERRIDES[addr].get('value', False))
                 else:
                     self.values[idx] = bool(random.random() < 0.05)
             elif self.register_type == 'holding':
-                if addr in REGISTER_OVERRIDES:
+                if manual_key in MANUAL_WRITE_OVERRIDES:
+                    self.values[idx] = int(MANUAL_WRITE_OVERRIDES[manual_key])
+                elif addr in REGISTER_OVERRIDES:
                     override = REGISTER_OVERRIDES[addr]
                     base = override.get("base", 100)
                     noise_pct = override.get("noise_pct", 0.05)
@@ -384,11 +400,15 @@ class ProfileDataBlock(ModbusSequentialDataBlock):
             if 0 <= idx < len(self.values):
                 old_val = self.values[idx]
                 super().setValues(addr, [value])
-                
+                # Freeze this address at the written value so the next
+                # _update_registers() tick re-asserts it instead of overwriting it
+                # with fresh noise/randomization.
+                MANUAL_WRITE_OVERRIDES[(self.register_type, addr)] = value
+
                 key = (self.register_type, addr)
                 dp = self._dp_index.get(key)
                 dp_name = dp.get("name", "unknown") if dp else "unconfigured"
-                logger.info(f"  → {addr} ({dp_name}): {old_val} → {value}")
+                logger.info(f"  → {addr} ({dp_name}): {old_val} → {value} [external write, now held]")
         
         logger.info(f"✅ Write complete")
 
@@ -837,10 +857,11 @@ def set_override():
 
 @app.route('/api/overrides', methods=['DELETE'])
 def clear_all_overrides():
-    """Clear all register overrides"""
+    """Clear all register overrides, including held external-write values"""
     global REGISTER_OVERRIDES, ACTIVE_SCENARIO
-    count = len(REGISTER_OVERRIDES)
+    count = len(REGISTER_OVERRIDES) + len(MANUAL_WRITE_OVERRIDES)
     REGISTER_OVERRIDES.clear()
+    MANUAL_WRITE_OVERRIDES.clear()
     ACTIVE_SCENARIO = None
     logger.info(f"✅ Cleared all overrides ({count} registers)")
     return jsonify({'success': True, 'cleared': count})

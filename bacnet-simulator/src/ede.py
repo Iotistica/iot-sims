@@ -64,7 +64,7 @@ def _present_value_default(behavior: str, params: dict) -> Optional[float]:
 
 def devices_to_ede(devices: list[dict], project_name: str = "") -> str:
     """Serialize devices (each with an "objects" list, same shape as a saved
-    profile's data) into an EDE CSV. Works for a single device or a whole
+    project's data) into an EDE CSV. Works for a single device or a whole
     project — every row carries its own Device-Instance."""
     buf = io.StringIO()
     buf.write(f"#Project;{project_name}\n#EdeVersion;iotistica-1\n\n")
@@ -170,7 +170,7 @@ def parse_ede_rows(text: str) -> list[dict]:
 
 def rows_to_devices(rows: list[dict], device_name: str = "") -> dict:
     """Group parsed EDE rows by device-instance into the {"devices":[...]}
-    shape the profile import/export pipeline already uses. Devices that
+    shape the project import/export pipeline already uses. Devices that
     don't otherwise have a name use device_name (falling back to
     "Device-<instance>")."""
     devices_by_instance: dict[int, dict] = {}

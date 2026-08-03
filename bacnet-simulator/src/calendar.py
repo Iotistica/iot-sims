@@ -7,7 +7,7 @@ Calendar is just another row in the `objects` table (object_type="calendar"),
 constructed in SimEngine._create_object() like every other object type, which
 gives it a real (object_type, object_instance) portable reference — exactly
 what bacnet_schedule.py's exception-schedule targets already use for Schedule
-targets, and what profile save/load already round-trips.
+targets, and what project save/load already round-trips.
 
 Built on bacpypes3.object.CalendarObject (schema only — bacpypes3 has no
 bacpypes3.local.calendar module) combined with the same

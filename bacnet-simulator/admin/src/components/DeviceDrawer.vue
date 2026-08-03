@@ -35,6 +35,7 @@ const form = reactive({
   max_apdu_length_accepted: 1024,
   segmentation_supported: 'segmented-both',
   location_id: null as number | null,
+  equipment_type: null as string | null,
 })
 
 const locationTreeOptions = computed(() => buildLocationTreeOptions(props.locations ?? []))
@@ -152,12 +153,14 @@ watch(() => props.open, (v) => {
       max_apdu_length_accepted: src.max_apdu_length_accepted ?? 1024,
       segmentation_supported: src.segmentation_supported ?? 'segmented-both',
       location_id: src.location_id ?? null,
+      equipment_type: src.equipment_type ?? null,
     })
   } else {
     Object.assign(form, {
       device_instance: nextFreeInstance(), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true,
       firmware_revision: 'N/A', protocol_revision: 22, max_apdu_length_accepted: 1024, segmentation_supported: 'segmented-both',
       location_id: null,
+      equipment_type: null,
     })
   }
 })
@@ -254,6 +257,17 @@ function doDelete() {
           tree-default-expand-all
           placeholder="Top level"
           style="width: 100%"
+        />
+      </a-form-item>
+
+      <a-form-item label="Equipment Type">
+        <a-select
+          v-model:value="form.equipment_type"
+          show-search
+          allow-clear
+          placeholder="Not tagged"
+          :options="meta.equipment_types"
+          :filter-option="filterOption"
         />
       </a-form-item>
 

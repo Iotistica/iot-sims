@@ -1,4 +1,4 @@
-import type { Device, SimObject, Meta, Health, Settings, Profile, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation, PriorityArrayInfo, Calendar, Location } from './types'
+import type { Device, SimObject, Meta, Health, Settings, Project, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation, PriorityArrayInfo, Calendar, Location } from './types'
 import { authToken, logout } from './auth'
 
 function authHeaders(): Record<string, string> {
@@ -127,17 +127,19 @@ export const api = {
       }),
   },
 
-  profiles: {
-    list:    ()                                              => req<Profile[]>('/profiles'),
-    save:    (name: string, description: string)            => req<Profile>('/profiles', { method: 'POST', body: JSON.stringify({ name, description }) }),
+  // Backend routes stay under /profiles (unchanged URL space) — only the
+  // frontend-facing naming here was renamed to "project" to match the UI.
+  projects: {
+    list:    ()                                              => req<Project[]>('/profiles'),
+    save:    (name: string, description: string)            => req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description }) }),
     update:  (id: number, name: string, description: string) => req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description }) }),
     del:     (id: number)                                   => req<null>(`/profiles/${id}`, { method: 'DELETE' }),
     load:    (id: number)                                   => req<{ ok: boolean }>(`/profiles/${id}/load`, { method: 'POST' }),
     import_: (name: string, description: string, data: object) =>
-      req<Profile>('/profiles/import', { method: 'POST', body: JSON.stringify({ name, description, data }) }),
+      req<Project>('/profiles/import', { method: 'POST', body: JSON.stringify({ name, description, data }) }),
     exportEde: (id: number, name: string) => downloadFile(`/profiles/${id}/export/ede`, `${name}.ede`),
     importEde: (name: string, description: string, deviceName: string, file: File) =>
-      uploadFile<Profile>('/profiles/import/ede', file, { name, description, device_name: deviceName }),
+      uploadFile<Project>('/profiles/import/ede', file, { name, description, device_name: deviceName }),
   },
 
   notificationClasses: {

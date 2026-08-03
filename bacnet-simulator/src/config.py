@@ -46,6 +46,99 @@ VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedu
 
 VALID_SEGMENTATION = {"segmented-both", "segmented-transmit", "segmented-receive", "no-segmentation"}
 
+# ── Brick/Haystack-style semantic metadata (optional, additive) ────────────
+# Purely descriptive vocabulary — never consulted by the BACnet protocol or
+# simulation engine. Kept here alongside the other admin-UI-facing enums
+# (exposed via GET /meta) so the frontend dropdowns and the validate_semantic()
+# methods in schemas.py share one source of truth, same pattern as
+# VALID_OBJECT_TYPES etc. above.
+#
+# Every key below is a real Brick class name, verified against the pinned
+# release (not derived by naming convention — e.g. "AHU"/"VAV" are NOT real
+# Brick class keys, the canonical names are Air_Handling_Unit/
+# Variable_Air_Volume_Box, with AHU/VAV as Brick-defined aliases; several
+# similarly-plausible-looking guesses like Freeze_Alarm/Filter_Alarm don't
+# exist at all). Any future addition must be verified the same way: fetch
+# https://github.com/BrickSchema/Brick/blob/{BRICK_VERSION-as-vNNN-tag}/bricksrc/<file>.py
+# and confirm the exact key exists there — don't type one in by pattern.
+BRICK_VERSION = "1.4.4"
+
+EQUIPMENT_TYPES = {
+    "Air_Handling_Unit": "AHU",
+    "Variable_Air_Volume_Box": "VAV",
+    "Boiler": "Boiler",
+    "Chiller": "Chiller",
+    "Cooling_Tower": "Cooling Tower",
+    "Pump": "Pump",
+    "Meter": "Meter",
+    "Lighting_Equipment": "Lighting Equipment",
+}
+
+LOCATION_KINDS = {
+    "Site": "Site",
+    "Building": "Building",
+    "Floor": "Floor",
+    "Room": "Room",
+    "Zone": "Zone",
+}
+
+POINT_TYPES = {
+    # Sensors (bricksrc/sensor.py)
+    "Supply_Air_Temperature_Sensor": "Supply Air Temperature",
+    "Return_Air_Temperature_Sensor": "Return Air Temperature",
+    "Mixed_Air_Temperature_Sensor": "Mixed Air Temperature",
+    "Outside_Air_Temperature_Sensor": "Outside Air Temperature",
+    "Zone_Air_Temperature_Sensor": "Zone Air Temperature",
+    "Leaving_Chilled_Water_Temperature_Sensor": "Chilled Water Supply Temperature",
+    "Entering_Chilled_Water_Temperature_Sensor": "Chilled Water Return Temperature",
+    "Leaving_Hot_Water_Temperature_Sensor": "Hot Water Supply Temperature",
+    "Entering_Hot_Water_Temperature_Sensor": "Hot Water Return Temperature",
+    "Condenser_Water_Temperature_Sensor": "Condenser Water Temperature",
+    "Temperature_Sensor": "Temperature",
+    "Outside_Air_Humidity_Sensor": "Outside Air Humidity",
+    "Zone_Air_Humidity_Sensor": "Zone Air Humidity",
+    "CO2_Level_Sensor": "CO2 Level",
+    "Occupancy_Sensor": "Occupancy",
+    "Illuminance_Sensor": "Illuminance",
+    "Air_Flow_Sensor": "Air Flow",
+    "Static_Pressure_Sensor": "Static Pressure",
+    "Differential_Pressure_Sensor": "Differential Pressure",
+    "Water_Flow_Sensor": "Water Flow",
+    "Water_Differential_Pressure_Sensor": "Water Differential Pressure",
+    "Power_Sensor": "Power",
+    "Energy_Sensor": "Energy",
+    "Demand_Sensor": "Demand",
+    # Setpoints (bricksrc/setpoint.py)
+    "Supply_Air_Temperature_Setpoint": "Supply Air Temperature Setpoint",
+    "Room_Air_Temperature_Setpoint": "Zone Air Temperature Setpoint",
+    "Cooling_Temperature_Setpoint": "Cooling Setpoint",
+    "Heating_Temperature_Setpoint": "Heating Setpoint",
+    "Air_Flow_Setpoint": "Air Flow Setpoint",
+    "Static_Pressure_Setpoint": "Static Pressure Setpoint",
+    # Commands (bricksrc/command.py)
+    "Damper_Position_Command": "Damper Position Command",
+    "Valve_Position_Command": "Valve Position Command",
+    "Fan_Speed_Command": "Fan Speed Command",
+    "Speed_Command": "Speed Command",
+    "Start_Stop_Command": "Start/Stop Command",
+    "On_Off_Command": "On/Off Command",
+    "Lighting_Level_Command": "Lighting Level Command",
+    # Statuses (bricksrc/status.py)
+    "Run_Status": "Run Status",
+    "Fan_Status": "Fan Status",
+    "Filter_Status": "Filter Status",
+    "Occupancy_Status": "Occupancy Status",
+    "Damper_Position_Status": "Damper Position Status",
+    "Valve_Status": "Valve Status",
+    "Enable_Status": "Enable Status",
+    "Freeze_Status": "Freeze Status",
+    # Alarms (bricksrc/alarm.py)
+    "Alarm": "Alarm",
+    "Change_Filter_Alarm": "Change Filter Alarm",
+    "High_Temperature_Alarm": "High Temperature Alarm",
+    "Low_Temperature_Alarm": "Low Temperature Alarm",
+}
+
 BACNET_UNITS = [
     "no-units", "degrees-celsius", "degrees-fahrenheit", "degrees-kelvin",
     "percent", "parts-per-million", "kilowatts", "watts", "kilowatt-hours",

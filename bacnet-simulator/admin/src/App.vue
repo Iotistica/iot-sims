@@ -5,7 +5,7 @@ import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import LocationDrawer from './components/LocationDrawer.vue'
 import ObjectDrawer from './components/ObjectDrawer.vue'
-import ProfilesDrawer from './components/ProfilesDrawer.vue'
+import ProjectsDrawer from './components/ProjectsDrawer.vue'
 import TemplatePickerModal from './components/TemplatePickerModal.vue'
 import SaveTemplateModal from './components/SaveTemplateModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
@@ -31,7 +31,7 @@ const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices:
 const simActionLoading = ref(false)
 const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a', paused: '#faad14', stopped: '#ff4d4f' }
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
-const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [] })
+const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], point_types: [], location_kinds: [] })
 const devices = ref<Device[]>([])
 const locations = ref<Location[]>([])
 const deviceSearch = ref('')
@@ -99,16 +99,16 @@ const locationDrawerOpen = ref(false)
 const editingLocation    = ref<Location | null>(null)
 const objectDrawerOpen  = ref(false)
 const editingObject     = ref<SimObject | null>(null)
-const profilesDrawerOpen   = ref(false)
+const projectsDrawerOpen   = ref(false)
 const templateModalOpen    = ref(false)
 const saveTemplateOpen     = ref(false)
 
-// Active profile state
-const activeProfileId   = ref<number | null>(null)
-const activeProfileName = ref<string | null>(null)
-const activeProfileDesc = ref<string>('')
+// Active project state
+const activeProjectId   = ref<number | null>(null)
+const activeProjectName = ref<string | null>(null)
+const activeProjectDesc = ref<string>('')
 
-// Save-profile modal
+// Save-project modal
 const saveModalOpen    = ref(false)
 const saveModalName    = ref('')
 const saveModalDesc    = ref('')
@@ -324,7 +324,7 @@ async function onEdeImportFileChange(e: Event) {
   }
 }
 
-// Profile actions
+// Project actions
 function newProject() {
   Modal.confirm({
     title: 'Start a new project?',
@@ -335,9 +335,9 @@ function newProject() {
       await Promise.allSettled(devices.value.map(d => api.devices.del(d.id)))
       selectedDevice.value = null
       objects.value = []
-      activeProfileId.value = null
-      activeProfileName.value = null
-      activeProfileDesc.value = ''
+      activeProjectId.value = null
+      activeProjectName.value = null
+      activeProjectDesc.value = ''
       await loadDevices()
       await loadHealth()
       message.success('Ready — add your first device')
@@ -346,21 +346,21 @@ function newProject() {
 }
 
 function openSaveAs() {
-  saveModalName.value = activeProfileName.value ? `${activeProfileName.value} (copy)` : ''
-  saveModalDesc.value = activeProfileDesc.value
+  saveModalName.value = activeProjectName.value ? `${activeProjectName.value} (copy)` : ''
+  saveModalDesc.value = activeProjectDesc.value
   saveModalOpen.value = true
 }
 
 function openSave() {
-  if (activeProfileId.value !== null) {
-    // Overwrite existing profile directly — no dialog
+  if (activeProjectId.value !== null) {
+    // Overwrite existing project directly — no dialog
     Modal.confirm({
-      title: `Save to "${activeProfileName.value}"?`,
+      title: `Save to "${activeProjectName.value}"?`,
       okText: 'Save',
       async onOk() {
         try {
-          await api.profiles.update(activeProfileId.value!, activeProfileName.value!, activeProfileDesc.value)
-          message.success(`"${activeProfileName.value}" saved`)
+          await api.projects.update(activeProjectId.value!, activeProjectName.value!, activeProjectDesc.value)
+          message.success(`"${activeProjectName.value}" saved`)
         } catch (e: unknown) {
           message.error((e as Error).message ?? 'Failed to save')
         }
@@ -377,12 +377,12 @@ async function doSave() {
   if (!saveModalName.value.trim()) return
   saveModalLoading.value = true
   try {
-    const profile = await api.profiles.save(saveModalName.value.trim(), saveModalDesc.value.trim())
-    activeProfileId.value = profile.id
-    activeProfileName.value = profile.name
-    activeProfileDesc.value = profile.description
+    const project = await api.projects.save(saveModalName.value.trim(), saveModalDesc.value.trim())
+    activeProjectId.value = project.id
+    activeProjectName.value = project.name
+    activeProjectDesc.value = project.description
     saveModalOpen.value = false
-    message.success(`"${profile.name}" saved`)
+    message.success(`"${project.name}" saved`)
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Failed to save')
   } finally {
@@ -391,9 +391,9 @@ async function doSave() {
 }
 
 async function onProjectLoaded(id: number, name: string, desc: string) {
-  activeProfileId.value = id
-  activeProfileName.value = name
-  activeProfileDesc.value = desc
+  activeProjectId.value = id
+  activeProjectName.value = name
+  activeProjectDesc.value = desc
   await loadDevices()
   await loadLocations()
   selectedDevice.value = null
@@ -570,11 +570,27 @@ const BEHAVIOR_COLOR: Record<string, string> = {
   schedule: 'cyan', ramp: 'green', fault: 'volcano',
 }
 
+// Point Type stores the raw Brick class (e.g. "Supply_Air_Temperature_Sensor")
+// — look up its friendly display label from /meta rather than showing the
+// underscored class name directly.
+const pointTypeLabel = computed(() => {
+  const map: Record<string, string> = {}
+  for (const o of meta.value.point_types) map[o.value] = o.label
+  return map
+})
+
+const equipmentTypeLabel = computed(() => {
+  const map: Record<string, string> = {}
+  for (const o of meta.value.equipment_types) map[o.value] = o.label
+  return map
+})
+
 const columns: TableColumnsType = [
   { title: 'Name',       dataIndex: 'name',            key: 'name' },
   { title: 'Type',       key: 'type',                  width: 170 },
   { title: 'Inst.',      dataIndex: 'object_instance', key: 'instance', width: 65 },
   { title: 'Behavior',   key: 'behavior',              width: 120 },
+  { title: 'Point Type', key: 'point_type',            width: 190 },
   { title: 'Units',      dataIndex: 'units',           key: 'units',    width: 150 },
   { title: 'Live Value', key: 'value',                 width: 110 },
   { title: 'On',         key: 'enabled',               width: 50  },
@@ -676,14 +692,14 @@ onUnmounted(() => {
         </a-radio-group>
 
         <div style="flex:1" />
-        <a-tag v-if="activeProfileName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProfileName }}</a-tag>
+        <a-tag v-if="activeProjectName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProjectName }}</a-tag>
         <a-button size="small" @click="newProject">
           <template #icon><FileAddOutlined /></template>
           New Project
         </a-button>
         <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
-        <a-button v-if="activeProfileId !== null" size="small" @click="openSaveAs">Save As</a-button>
-        <a-button size="small" @click="profilesDrawerOpen = true">Open Project</a-button>
+        <a-button v-if="activeProjectId !== null" size="small" @click="openSaveAs">Save As</a-button>
+        <a-button size="small" @click="projectsDrawerOpen = true">Open Project</a-button>
 
         <div style="display:flex;align-items:center;gap:4px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
           <span style="color:rgba(255,255,255,0.5);font-size:12px">
@@ -766,7 +782,9 @@ onUnmounted(() => {
                 <a-badge :status="node.device.enabled ? 'success' : 'default'" />
                 <div style="flex:1;min-width:0">
                   <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
-                  <div style="font-size:11px;color:var(--text-secondary)">ID {{ node.device.device_instance }}</div>
+                  <div style="font-size:11px;color:var(--text-secondary)">
+                    ID {{ node.device.device_instance }}<template v-if="node.device.equipment_type"> · {{ equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type }}</template>
+                  </div>
                 </div>
                 <a-space :size="2" @click.stop>
                   <a-button type="text" size="small" title="Edit" @click="openEditDevice(node.device)">
@@ -855,6 +873,10 @@ onUnmounted(() => {
                 <template v-else-if="column.key === 'behavior'">
                   <a-tag :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
                 </template>
+                <template v-else-if="column.key === 'point_type'">
+                  <a-tag v-if="(record as SimObject).point_type">{{ pointTypeLabel[(record as SimObject).point_type!] ?? (record as SimObject).point_type }}</a-tag>
+                  <span v-else style="color:var(--text-disabled)">—</span>
+                </template>
                 <template v-else-if="column.key === 'units'">
                   <span style="color:var(--text-secondary);font-size:12px">{{ (record as SimObject).units === 'no-units' ? '—' : (record as SimObject).units }}</span>
                 </template>
@@ -932,9 +954,9 @@ onUnmounted(() => {
       @saved="onObjectSaved"
     />
 
-    <!-- Profiles drawer -->
-    <ProfilesDrawer
-      v-model:open="profilesDrawerOpen"
+    <!-- Projects drawer -->
+    <ProjectsDrawer
+      v-model:open="projectsDrawerOpen"
       @loaded="onProjectLoaded"
     />
 
@@ -969,18 +991,18 @@ onUnmounted(() => {
       @applied="loadObjects"
     />
 
-    <!-- Save profile modal -->
+    <!-- Save project modal -->
     <a-modal
       v-model:open="saveModalOpen"
-      title="Save Profile"
+      title="Save Project"
       ok-text="Save"
       :confirm-loading="saveModalLoading"
       :ok-button-props="{ disabled: !saveModalName.trim() }"
       @ok="doSave"
     >
       <a-form layout="vertical" style="margin-top:8px">
-        <a-form-item label="Profile Name" required>
-          <a-input v-model:value="saveModalName" placeholder="My Profile" @pressEnter="doSave" />
+        <a-form-item label="Project Name" required>
+          <a-input v-model:value="saveModalName" placeholder="My Project" @pressEnter="doSave" />
         </a-form-item>
         <a-form-item label="Description">
           <a-input v-model:value="saveModalDesc" placeholder="Optional description" />

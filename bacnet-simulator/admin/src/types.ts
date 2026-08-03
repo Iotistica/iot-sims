@@ -11,6 +11,7 @@ export interface Device {
   max_apdu_length_accepted: number
   segmentation_supported: string
   location_id?: number | null
+  equipment_type?: string | null
 }
 
 export interface Location {
@@ -18,6 +19,7 @@ export interface Location {
   name: string
   parent_location_id: number | null
   description: string
+  kind?: string | null
 }
 
 export interface SimObject {
@@ -34,6 +36,12 @@ export interface SimObject {
   number_of_states: number
   reliability: string
   polarity: string
+  point_type?: string | null
+}
+
+export interface MetaOption {
+  value: string
+  label: string
 }
 
 export interface Meta {
@@ -43,6 +51,10 @@ export interface Meta {
   reliability_options: string[]
   polarity_options: string[]
   segmentation_options: string[]
+  brick_version: string
+  equipment_types: MetaOption[]
+  point_types: MetaOption[]
+  location_kinds: MetaOption[]
 }
 
 export interface PriorityArrayInfo {
@@ -221,7 +233,7 @@ export interface Calendar {
   enabled: boolean
 }
 
-export interface Profile {
+export interface Project {
   id: number
   name: string
   description: string
@@ -254,6 +266,7 @@ export interface DraftObject {
   number_of_states?: number
   reliability?: string
   polarity?: string
+  point_type?: string | null
 }
 
 export interface DraftDevice {
@@ -264,6 +277,7 @@ export interface DraftDevice {
   vendor_name: string
   model_name: string
   enabled: boolean
+  equipment_type?: string | null
   objects: DraftObject[]
 }
 

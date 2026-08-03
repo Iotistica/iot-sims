@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Seeds the simulator's Profiles library with a handful of realistic building
+Seeds the simulator's Projects library with a handful of realistic building
 configurations (small / medium / large / industrial), each using real BACnet
-vendors and plausible equipment lists. Profiles are saved via the existing
-Profile feature (a row in the `profiles` table) — this does NOT touch the
+vendors and plausible equipment lists. Projects are saved via the existing
+Project feature (a row in the `profiles` table — the DB table name predates
+the Project rename and is unchanged) — this does NOT touch the
 currently-running devices/objects, so it's safe to run against a live
-instance. Load a profile from the admin UI (or POST /profiles/{id}/load)
+instance. Load a project from the admin UI (or POST /profiles/{id}/load)
 when you want to switch the simulator to it.
 
 Usage (inside the simulator container, or anywhere with access to the DB):
     DATA_DIR=/data python scripts/seed_building_profiles.py
 
-Re-running is safe — it only adds new profile rows; it won't touch or
-duplicate anything if profiles with the same name already exist (existing
-profiles with a matching name are left alone, not overwritten).
+Re-running is safe — it only adds new project rows; it won't touch or
+duplicate anything if projects with the same name already exist (existing
+projects with a matching name are left alone, not overwritten).
 """
 
 from __future__ import annotations
@@ -306,7 +307,7 @@ def build_warehouse() -> dict:
 def build_medium_office_tower() -> dict:
     """Reuses the simulator's own default seed_default() logic (chiller/HW
     plant, 2 AHUs, 8 VAVs, 4 DALI lighting gateways) via a throwaway temp DB,
-    so this profile always matches whatever a fresh install seeds — no
+    so this project always matches whatever a fresh install seeds — no
     duplicated device/object definitions to keep in sync."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp_db_path = Path(tmp) / "seed_default_snapshot.db"
@@ -339,15 +340,15 @@ def main() -> None:
     db = sim.Database(sim.DB_PATH)
     db.setup()
 
-    existing_names = {p["name"] for p in db.get_profiles()}
+    existing_names = {p["name"] for p in db.get_projects()}
 
     for name, description, builder in PROFILES:
         if name in existing_names:
-            print(f"Skipping '{name}' — a profile with this name already exists")
+            print(f"Skipping '{name}' — a project with this name already exists")
             continue
         data = builder()
-        result = db.import_profile(name, description, data)
-        print(f"Imported '{result['name']}' — {result['device_count']} devices (profile id={result['id']})")
+        result = db.import_project(name, description, data)
+        print(f"Imported '{result['name']}' — {result['device_count']} devices (project id={result['id']})")
 
 
 if __name__ == "__main__":

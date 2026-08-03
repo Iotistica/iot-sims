@@ -39,18 +39,18 @@ from . import ede
 from . import schedule as bacnet_schedule
 from . import calendar as bacnet_calendar
 from .config import (
-    BACNET_PORT, BACNET_UNITS, COMMANDABLE_TYPES, DATA_DIR, DB_PATH,
-    JWT_ALGORITHM, JWT_EXPIRE_HOURS, MULTISTATE_TYPES, SIM_API_PORT,
-    VALID_BEHAVIORS, VALID_OBJECT_TYPES, VALID_POLARITY, VALID_RELIABILITY,
-    VALID_SEGMENTATION, _get_jwt_secret,
+    BACNET_PORT, BACNET_UNITS, BRICK_VERSION, COMMANDABLE_TYPES, DATA_DIR, DB_PATH,
+    EQUIPMENT_TYPES, JWT_ALGORITHM, JWT_EXPIRE_HOURS, LOCATION_KINDS, MULTISTATE_TYPES,
+    POINT_TYPES, SIM_API_PORT, VALID_BEHAVIORS, VALID_OBJECT_TYPES, VALID_POLARITY,
+    VALID_RELIABILITY, VALID_SEGMENTATION, _get_jwt_secret,
 )
 from .schemas import (
     AckAlarmRequest, AlarmConfigSet, CalendarCreate, CalendarUpdate,
     Credentials, DeviceCreate, DeviceUpdate, EventEnrollmentCreate,
     EventEnrollmentUpdate, LocationCreate, LocationUpdate,
     NotificationClassCreate, NotificationClassUpdate,
-    ObjectCreate, ObjectUpdate, PasswordReset, PriorityWrite, ProfileCreate,
-    ProfileImport, ProfileUpdate, ScheduleCreate, ScheduleTargetSpec,
+    ObjectCreate, ObjectUpdate, PasswordReset, PriorityWrite, ProjectCreate,
+    ProjectImport, ProjectUpdate, ScheduleCreate, ScheduleTargetSpec,
     ScheduleUpdate, SetValueRequest, SettingsPayload, TrendLogCreate,
     TrendLogUpdate,
 )
@@ -358,6 +358,17 @@ class Database:
             # protocol meaning) was added after devices first shipped.
             if "location_id" not in existing_dev_cols:
                 conn.execute("ALTER TABLE devices ADD COLUMN location_id INTEGER REFERENCES locations(id)")
+            # Additive migration: Brick/Haystack-style semantic metadata
+            # (optional layer) — never read by the BACnet protocol/simulation
+            # engine, purely descriptive. See src/config.py's EQUIPMENT_TYPES/
+            # POINT_TYPES/LOCATION_KINDS for the pinned vocabulary.
+            if "equipment_type" not in existing_dev_cols:
+                conn.execute("ALTER TABLE devices ADD COLUMN equipment_type TEXT")
+            if "point_type" not in existing_cols:
+                conn.execute("ALTER TABLE objects ADD COLUMN point_type TEXT")
+            existing_loc_cols = {row[1] for row in conn.execute("PRAGMA table_info(locations)")}
+            if "kind" not in existing_loc_cols:
+                conn.execute("ALTER TABLE locations ADD COLUMN kind TEXT")
         log.info("Database ready at %s", self.path)
 
     def seed_default(self) -> None:
@@ -370,6 +381,7 @@ class Database:
         1002  HW-Plant           Honeywell Excel 500         (basement – 2 boilers)
         1003  AHU-1              Johnson Controls FEC26B     (floors 1-2)
         1004  AHU-2              Johnson Controls FEC26B     (floors 3-4)
+        1005  Main-Meter         Honeywell WEBs-N4           (main electrical utility meter)
         1101  VAV-L1-01          Siemens RXB29.1             (floor 1 zone A – north)
         1102  VAV-L1-02          Siemens RXB29.1             (floor 1 zone B – south)
         1201  VAV-L2-01          Siemens RXB29.1             (floor 2 zone A – conference)
@@ -403,26 +415,27 @@ class Database:
 
             conn.executemany(
                 "INSERT OR IGNORE INTO devices "
-                "(device_instance, name, description, vendor_name, model_name) "
-                "VALUES (?,?,?,?,?)",
+                "(device_instance, name, description, vendor_name, model_name, equipment_type) "
+                "VALUES (?,?,?,?,?,?)",
                 [
-                    (1000, "BMS-Gateway",  "Building management system gateway – supervisory controller",  HONEYWELL, "WEBs-N4"),
-                    (1001, "Chiller-Plant","Basement chiller plant – 2 × centrifugal chillers + cooling tower", TRANE, "Tracer SC+"),
-                    (1002, "HW-Plant",     "Basement hot-water plant – 2 × condensing boilers",           HONEYWELL, "Excel 500"),
-                    (1003, "AHU-1",        "Air handling unit 1 – serves floors 1 & 2",                   JCI,       "FEC26B"),
-                    (1004, "AHU-2",        "Air handling unit 2 – serves floors 3 & 4",                   JCI,       "FEC26B"),
-                    (1101, "VAV-L1-01",    "Floor 1 VAV – Zone A north offices",                           SIEMENS,   "RXB29.1"),
-                    (1102, "VAV-L1-02",    "Floor 1 VAV – Zone B south offices",                           SIEMENS,   "RXB29.1"),
-                    (1201, "VAV-L2-01",    "Floor 2 VAV – Zone A conference rooms",                        SIEMENS,   "RXB29.1"),
-                    (1202, "VAV-L2-02",    "Floor 2 VAV – Zone B open-plan",                               SIEMENS,   "RXB29.1"),
-                    (1301, "VAV-L3-01",    "Floor 3 VAV – Zone A executive suites",                        SIEMENS,   "RXB29.1"),
-                    (1302, "VAV-L3-02",    "Floor 3 VAV – Zone B server room",                             SIEMENS,   "RXB29.1"),
-                    (1401, "VAV-L4-01",    "Floor 4 VAV – Zone A open-plan",                               SIEMENS,   "RXB29.1"),
-                    (1402, "VAV-L4-02",    "Floor 4 VAV – Zone B board room",                              SIEMENS,   "RXB29.1"),
-                    (1501, "DALI-GW-L1",   "Floor 1 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4"),
-                    (1502, "DALI-GW-L2",   "Floor 2 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4"),
-                    (1503, "DALI-GW-L3",   "Floor 3 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4"),
-                    (1504, "DALI-GW-L4",   "Floor 4 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4"),
+                    (1000, "BMS-Gateway",  "Building management system gateway – supervisory controller",  HONEYWELL, "WEBs-N4",   None),
+                    (1001, "Chiller-Plant","Basement chiller plant – 2 × centrifugal chillers + cooling tower", TRANE, "Tracer SC+", "Chiller"),
+                    (1002, "HW-Plant",     "Basement hot-water plant – 2 × condensing boilers",           HONEYWELL, "Excel 500", "Boiler"),
+                    (1003, "AHU-1",        "Air handling unit 1 – serves floors 1 & 2",                   JCI,       "FEC26B",    "Air_Handling_Unit"),
+                    (1004, "AHU-2",        "Air handling unit 2 – serves floors 3 & 4",                   JCI,       "FEC26B",    "Air_Handling_Unit"),
+                    (1005, "Main-Meter",   "Main electrical utility meter",                                HONEYWELL, "WEBs-N4",   "Meter"),
+                    (1101, "VAV-L1-01",    "Floor 1 VAV – Zone A north offices",                           SIEMENS,   "RXB29.1",   "Variable_Air_Volume_Box"),
+                    (1102, "VAV-L1-02",    "Floor 1 VAV – Zone B south offices",                           SIEMENS,   "RXB29.1",   "Variable_Air_Volume_Box"),
+                    (1201, "VAV-L2-01",    "Floor 2 VAV – Zone A conference rooms",                        SIEMENS,   "RXB29.1",   "Variable_Air_Volume_Box"),
+                    (1202, "VAV-L2-02",    "Floor 2 VAV – Zone B open-plan",                               SIEMENS,   "RXB29.1",   "Variable_Air_Volume_Box"),
+                    (1301, "VAV-L3-01",    "Floor 3 VAV – Zone A executive suites",                        SIEMENS,   "RXB29.1",   "Variable_Air_Volume_Box"),
+                    (1302, "VAV-L3-02",    "Floor 3 VAV – Zone B server room",                             SIEMENS,   "RXB29.1",   "Variable_Air_Volume_Box"),
+                    (1401, "VAV-L4-01",    "Floor 4 VAV – Zone A open-plan",                               SIEMENS,   "RXB29.1",   "Variable_Air_Volume_Box"),
+                    (1402, "VAV-L4-02",    "Floor 4 VAV – Zone B board room",                              SIEMENS,   "RXB29.1",   "Variable_Air_Volume_Box"),
+                    (1501, "DALI-GW-L1",   "Floor 1 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4",  None),
+                    (1502, "DALI-GW-L2",   "Floor 2 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4",  None),
+                    (1503, "DALI-GW-L3",   "Floor 3 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4",  None),
+                    (1504, "DALI-GW-L4",   "Floor 4 DALI-to-BACnet lighting gateway – zones A/B",         LOYTEC,    "L-DALI/4",  None),
                 ],
             )
 
@@ -438,87 +451,95 @@ class Database:
             objects += [
                 (bms, "binary-value",  1, "Building-Occupied",   "no-units",        "manual",      '{"value":true}'),
                 (bms, "analog-value",  2, "Active-Alarms",       "no-units",        "random_walk", '{"value":2,"step":1,"min":0,"max":8}'),
-                (bms, "analog-input",  3, "Energy-Today-kWh",    "kilowatt-hours",  "random_walk", '{"value":430,"step":12,"min":0,"max":2000}'),
-                (bms, "analog-input",  4, "Peak-Demand-kW",      "kilowatts",       "random_walk", '{"value":182,"step":4,"min":50,"max":320}'),
-                (bms, "analog-input",  5, "Outside-Air-Temp",    "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}'),
-                (bms, "analog-input",  6, "Outside-Air-Humidity","percent",         "sine",        '{"base":55.0,"amplitude":15.0,"period_hours":24}'),
+                (bms, "analog-input",  3, "Energy-Today-kWh",    "kilowatt-hours",  "random_walk", '{"value":430,"step":12,"min":0,"max":2000}', "Energy_Sensor"),
+                (bms, "analog-input",  4, "Peak-Demand-kW",      "kilowatts",       "random_walk", '{"value":182,"step":4,"min":50,"max":320}', "Demand_Sensor"),
+                (bms, "analog-input",  5, "Outside-Air-Temp",    "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}', "Outside_Air_Temperature_Sensor"),
+                (bms, "analog-input",  6, "Outside-Air-Humidity","percent",         "sine",        '{"base":55.0,"amplitude":15.0,"period_hours":24}', "Outside_Air_Humidity_Sensor"),
             ]
 
             # ── Chiller Plant (1001) ───────────────────────────────────────────
             cp = did(1001)
             objects += [
-                (cp, "binary-input",  1, "CH-1-Run",             "no-units",        "manual",      '{"value":true}'),
-                (cp, "analog-input",  2, "CH-1-kW",              "kilowatts",       "random_walk", '{"value":212,"step":8,"min":80,"max":320}'),
+                (cp, "binary-input",  1, "CH-1-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
+                (cp, "analog-input",  2, "CH-1-kW",              "kilowatts",       "random_walk", '{"value":212,"step":8,"min":80,"max":320}', "Power_Sensor"),
                 (cp, "analog-input",  3, "CH-1-COP",             "no-units",        "noise",       '{"base":5.8,"noise":0.2}'),
-                (cp, "binary-input",  4, "CH-2-Run",             "no-units",        "manual",      '{"value":true}'),
-                (cp, "analog-input",  5, "CH-2-kW",              "kilowatts",       "random_walk", '{"value":198,"step":8,"min":80,"max":320}'),
+                (cp, "binary-input",  4, "CH-2-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
+                (cp, "analog-input",  5, "CH-2-kW",              "kilowatts",       "random_walk", '{"value":198,"step":8,"min":80,"max":320}', "Power_Sensor"),
                 (cp, "analog-input",  6, "CH-2-COP",             "no-units",        "noise",       '{"base":5.6,"noise":0.2}'),
-                (cp, "analog-input",  7, "CW-Supply-Temp",       "degrees-celsius", "noise",       '{"base":6.5,"noise":0.2}'),
-                (cp, "analog-input",  8, "CW-Return-Temp",       "degrees-celsius", "noise",       '{"base":12.2,"noise":0.2}'),
-                (cp, "analog-input",  9, "CW-Flow",              "liters-per-second","noise",      '{"base":48.0,"noise":1.5}'),
-                (cp, "analog-input", 10, "CW-Diff-Pressure",     "pascals",         "noise",       '{"base":225,"noise":8}'),
-                (cp, "binary-input", 11, "CT-Fan-1-Run",         "no-units",        "manual",      '{"value":true}'),
-                (cp, "binary-input", 12, "CT-Fan-2-Run",         "no-units",        "manual",      '{"value":true}'),
+                (cp, "analog-input",  7, "CW-Supply-Temp",       "degrees-celsius", "noise",       '{"base":6.5,"noise":0.2}', "Leaving_Chilled_Water_Temperature_Sensor"),
+                (cp, "analog-input",  8, "CW-Return-Temp",       "degrees-celsius", "noise",       '{"base":12.2,"noise":0.2}', "Entering_Chilled_Water_Temperature_Sensor"),
+                (cp, "analog-input",  9, "CW-Flow",              "liters-per-second","noise",      '{"base":48.0,"noise":1.5}', "Water_Flow_Sensor"),
+                (cp, "analog-input", 10, "CW-Diff-Pressure",     "pascals",         "noise",       '{"base":225,"noise":8}', "Water_Differential_Pressure_Sensor"),
+                (cp, "binary-input", 11, "CT-Fan-1-Run",         "no-units",        "manual",      '{"value":true}', "Run_Status"),
+                (cp, "binary-input", 12, "CT-Fan-2-Run",         "no-units",        "manual",      '{"value":true}', "Run_Status"),
                 (cp, "analog-input", 13, "CT-Leaving-Water-Temp","degrees-celsius", "noise",       '{"base":29.5,"noise":0.5}'),
                 (cp, "analog-input", 14, "CT-Approach-Temp",     "degrees-celsius", "noise",       '{"base":3.2,"noise":0.3}'),
-                (cp, "binary-input", 15, "CW-Pump-1-Run",        "no-units",        "manual",      '{"value":true}'),
-                (cp, "binary-input", 16, "CW-Pump-2-Run",        "no-units",        "manual",      '{"value":false}'),
+                (cp, "binary-input", 15, "CW-Pump-1-Run",        "no-units",        "manual",      '{"value":true}', "Run_Status"),
+                (cp, "binary-input", 16, "CW-Pump-2-Run",        "no-units",        "manual",      '{"value":false}', "Run_Status"),
             ]
 
             # ── Hot Water Plant (1002) ─────────────────────────────────────────
             hw = did(1002)
             objects += [
-                (hw, "binary-input",  1, "BLR-1-Run",            "no-units",        "manual",      '{"value":true}'),
+                (hw, "binary-input",  1, "BLR-1-Run",            "no-units",        "manual",      '{"value":true}', "Run_Status"),
                 (hw, "analog-input",  2, "BLR-1-Firing-Rate",    "percent",         "noise",       '{"base":62,"noise":5}'),
                 (hw, "analog-input",  3, "BLR-1-Flue-Temp",      "degrees-celsius", "noise",       '{"base":88,"noise":3}'),
-                (hw, "binary-input",  4, "BLR-2-Run",            "no-units",        "manual",      '{"value":false}'),
+                (hw, "binary-input",  4, "BLR-2-Run",            "no-units",        "manual",      '{"value":false}', "Run_Status"),
                 (hw, "analog-input",  5, "BLR-2-Firing-Rate",    "percent",         "manual",      '{"value":0}'),
-                (hw, "analog-input",  6, "HW-Supply-Temp",       "degrees-celsius", "noise",       '{"base":71.0,"noise":0.8}'),
-                (hw, "analog-input",  7, "HW-Return-Temp",       "degrees-celsius", "noise",       '{"base":58.5,"noise":0.8}'),
-                (hw, "analog-input",  8, "HW-Diff-Pressure",     "pascals",         "noise",       '{"base":180,"noise":6}'),
+                (hw, "analog-input",  6, "HW-Supply-Temp",       "degrees-celsius", "noise",       '{"base":71.0,"noise":0.8}', "Leaving_Hot_Water_Temperature_Sensor"),
+                (hw, "analog-input",  7, "HW-Return-Temp",       "degrees-celsius", "noise",       '{"base":58.5,"noise":0.8}', "Entering_Hot_Water_Temperature_Sensor"),
+                (hw, "analog-input",  8, "HW-Diff-Pressure",     "pascals",         "noise",       '{"base":180,"noise":6}', "Water_Differential_Pressure_Sensor"),
                 (hw, "analog-input",  9, "Gas-Flow",             "cubic-feet-per-minute","random_walk",'{"value":44,"step":3,"min":10,"max":85}'),
-                (hw, "binary-input", 10, "HW-Pump-1-Run",        "no-units",        "manual",      '{"value":true}'),
-                (hw, "binary-input", 11, "HW-Pump-2-Run",        "no-units",        "manual",      '{"value":false}'),
+                (hw, "binary-input", 10, "HW-Pump-1-Run",        "no-units",        "manual",      '{"value":true}', "Run_Status"),
+                (hw, "binary-input", 11, "HW-Pump-2-Run",        "no-units",        "manual",      '{"value":false}', "Run_Status"),
+            ]
+
+            # ── Main Meter (1005) ──────────────────────────────────────────────
+            meter = did(1005)
+            objects += [
+                (meter, "analog-input", 1, "Total-Energy-kWh", "kilowatt-hours", "random_walk", '{"value":48200,"step":25,"min":0,"max":500000}', "Energy_Sensor"),
+                (meter, "analog-input", 2, "Total-Power-kW",   "kilowatts",      "random_walk", '{"value":210,"step":6,"min":50,"max":450}', "Power_Sensor"),
+                (meter, "analog-input", 3, "Peak-Demand-kW",   "kilowatts",      "random_walk", '{"value":182,"step":4,"min":50,"max":320}', "Demand_Sensor"),
             ]
 
             # ── AHU-1  floors 1-2 (1003) ──────────────────────────────────────
             ahu1 = did(1003)
             objects += [
-                (ahu1, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}'),
-                (ahu1, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}'),
+                (ahu1, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
+                (ahu1, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
                 (ahu1, "analog-input",  3, "SF-Speed",           "percent",         "sine",        '{"base":75.0,"amplitude":15.0,"period_hours":12}'),
                 (ahu1, "analog-input",  4, "RF-Speed",           "percent",         "sine",        '{"base":70.0,"amplitude":12.0,"period_hours":12}'),
-                (ahu1, "analog-input",  5, "SAT",                "degrees-celsius", "noise",       '{"base":13.0,"noise":0.4}'),
-                (ahu1, "analog-input",  6, "RAT",                "degrees-celsius", "sine",        '{"base":22.0,"amplitude":2.0,"period_hours":24}'),
-                (ahu1, "analog-input",  7, "MAT",                "degrees-celsius", "noise",       '{"base":16.0,"noise":0.8}'),
-                (ahu1, "analog-input",  8, "OAT",                "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}'),
-                (ahu1, "analog-output", 9, "OAD-Position",       "percent",         "sine",        '{"base":28.0,"amplitude":18.0,"period_hours":24}'),
-                (ahu1, "analog-output",10, "CC-Valve",           "percent",         "sine",        '{"base":55.0,"amplitude":25.0,"period_hours":12}'),
-                (ahu1, "analog-output",11, "HC-Valve",           "percent",         "sine",        '{"base":10.0,"amplitude":9.0,"period_hours":24}'),
-                (ahu1, "analog-input", 12, "SA-Flow",            "cubic-feet-per-minute","noise",  '{"base":8500,"noise":250}'),
-                (ahu1, "analog-input", 13, "SA-Static-Pressure", "pascals",         "noise",       '{"base":375,"noise":12}'),
-                (ahu1, "binary-input", 14, "Filter-DP-Alarm",    "no-units",        "manual",      '{"value":false}'),
-                (ahu1, "binary-input", 15, "Freeze-Stat",        "no-units",        "manual",      '{"value":false}'),
+                (ahu1, "analog-input",  5, "SAT",                "degrees-celsius", "noise",       '{"base":13.0,"noise":0.4}', "Supply_Air_Temperature_Sensor"),
+                (ahu1, "analog-input",  6, "RAT",                "degrees-celsius", "sine",        '{"base":22.0,"amplitude":2.0,"period_hours":24}', "Return_Air_Temperature_Sensor"),
+                (ahu1, "analog-input",  7, "MAT",                "degrees-celsius", "noise",       '{"base":16.0,"noise":0.8}', "Mixed_Air_Temperature_Sensor"),
+                (ahu1, "analog-input",  8, "OAT",                "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}', "Outside_Air_Temperature_Sensor"),
+                (ahu1, "analog-output", 9, "OAD-Position",       "percent",         "sine",        '{"base":28.0,"amplitude":18.0,"period_hours":24}', "Damper_Position_Command"),
+                (ahu1, "analog-output",10, "CC-Valve",           "percent",         "sine",        '{"base":55.0,"amplitude":25.0,"period_hours":12}', "Valve_Position_Command"),
+                (ahu1, "analog-output",11, "HC-Valve",           "percent",         "sine",        '{"base":10.0,"amplitude":9.0,"period_hours":24}', "Valve_Position_Command"),
+                (ahu1, "analog-input", 12, "SA-Flow",            "cubic-feet-per-minute","noise",  '{"base":8500,"noise":250}', "Air_Flow_Sensor"),
+                (ahu1, "analog-input", 13, "SA-Static-Pressure", "pascals",         "noise",       '{"base":375,"noise":12}', "Static_Pressure_Sensor"),
+                (ahu1, "binary-input", 14, "Filter-DP-Alarm",    "no-units",        "manual",      '{"value":false}', "Change_Filter_Alarm"),
+                (ahu1, "binary-input", 15, "Freeze-Stat",        "no-units",        "manual",      '{"value":false}', "Freeze_Status"),
             ]
 
             # ── AHU-2  floors 3-4 (1004) ──────────────────────────────────────
             ahu2 = did(1004)
             objects += [
-                (ahu2, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}'),
-                (ahu2, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}'),
+                (ahu2, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
+                (ahu2, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
                 (ahu2, "analog-input",  3, "SF-Speed",           "percent",         "sine",        '{"base":70.0,"amplitude":18.0,"period_hours":12}'),
                 (ahu2, "analog-input",  4, "RF-Speed",           "percent",         "sine",        '{"base":65.0,"amplitude":14.0,"period_hours":12}'),
-                (ahu2, "analog-input",  5, "SAT",                "degrees-celsius", "noise",       '{"base":13.5,"noise":0.4}'),
-                (ahu2, "analog-input",  6, "RAT",                "degrees-celsius", "sine",        '{"base":21.5,"amplitude":2.0,"period_hours":24}'),
-                (ahu2, "analog-input",  7, "MAT",                "degrees-celsius", "noise",       '{"base":15.5,"noise":0.8}'),
-                (ahu2, "analog-input",  8, "OAT",                "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}'),
-                (ahu2, "analog-output", 9, "OAD-Position",       "percent",         "sine",        '{"base":25.0,"amplitude":16.0,"period_hours":24}'),
-                (ahu2, "analog-output",10, "CC-Valve",           "percent",         "sine",        '{"base":50.0,"amplitude":22.0,"period_hours":12}'),
-                (ahu2, "analog-output",11, "HC-Valve",           "percent",         "sine",        '{"base":12.0,"amplitude":9.0,"period_hours":24}'),
-                (ahu2, "analog-input", 12, "SA-Flow",            "cubic-feet-per-minute","noise",  '{"base":7800,"noise":220}'),
-                (ahu2, "analog-input", 13, "SA-Static-Pressure", "pascals",         "noise",       '{"base":360,"noise":12}'),
-                (ahu2, "binary-input", 14, "Filter-DP-Alarm",    "no-units",        "manual",      '{"value":false}'),
-                (ahu2, "binary-input", 15, "Freeze-Stat",        "no-units",        "manual",      '{"value":false}'),
+                (ahu2, "analog-input",  5, "SAT",                "degrees-celsius", "noise",       '{"base":13.5,"noise":0.4}', "Supply_Air_Temperature_Sensor"),
+                (ahu2, "analog-input",  6, "RAT",                "degrees-celsius", "sine",        '{"base":21.5,"amplitude":2.0,"period_hours":24}', "Return_Air_Temperature_Sensor"),
+                (ahu2, "analog-input",  7, "MAT",                "degrees-celsius", "noise",       '{"base":15.5,"noise":0.8}', "Mixed_Air_Temperature_Sensor"),
+                (ahu2, "analog-input",  8, "OAT",                "degrees-celsius", "sine",        '{"base":12.0,"amplitude":8.0,"period_hours":24}', "Outside_Air_Temperature_Sensor"),
+                (ahu2, "analog-output", 9, "OAD-Position",       "percent",         "sine",        '{"base":25.0,"amplitude":16.0,"period_hours":24}', "Damper_Position_Command"),
+                (ahu2, "analog-output",10, "CC-Valve",           "percent",         "sine",        '{"base":50.0,"amplitude":22.0,"period_hours":12}', "Valve_Position_Command"),
+                (ahu2, "analog-output",11, "HC-Valve",           "percent",         "sine",        '{"base":12.0,"amplitude":9.0,"period_hours":24}', "Valve_Position_Command"),
+                (ahu2, "analog-input", 12, "SA-Flow",            "cubic-feet-per-minute","noise",  '{"base":7800,"noise":220}', "Air_Flow_Sensor"),
+                (ahu2, "analog-input", 13, "SA-Static-Pressure", "pascals",         "noise",       '{"base":360,"noise":12}', "Static_Pressure_Sensor"),
+                (ahu2, "binary-input", 14, "Filter-DP-Alarm",    "no-units",        "manual",      '{"value":false}', "Change_Filter_Alarm"),
+                (ahu2, "binary-input", 15, "Freeze-Stat",        "no-units",        "manual",      '{"value":false}', "Freeze_Status"),
             ]
 
             # ── VAV boxes ─────────────────────────────────────────────────────
@@ -536,14 +557,14 @@ class Database:
             for (inst, zt, csp, hsp, dmp, flow, rh) in vav_cfg:
                 vd = did(inst)
                 objects += [
-                    (vd, "analog-input",  1, "Zone-Temp",         "degrees-celsius", "noise",  f'{{"base":{zt},"noise":0.3}}'),
-                    (vd, "analog-value",  2, "Cooling-SP",        "degrees-celsius", "manual", f'{{"value":{csp}}}'),
-                    (vd, "analog-value",  3, "Heating-SP",        "degrees-celsius", "manual", f'{{"value":{hsp}}}'),
-                    (vd, "analog-output", 4, "Damper-Cmd",        "percent",         "sine",   f'{{"base":{dmp},"amplitude":14.0,"period_hours":8}}'),
-                    (vd, "analog-input",  5, "Zone-Airflow",      "cubic-feet-per-minute","noise",f'{{"base":{flow},"noise":18}}'),
-                    (vd, "analog-output", 6, "Reheat-Valve",      "percent",         "sine",   f'{{"base":{rh},"amplitude":10.0,"period_hours":12}}'),
-                    (vd, "binary-input",  7, "Occupancy",         "no-units",        "manual", '{"value":true}'),
-                    (vd, "analog-input",  8, "Zone-CO2",          "parts-per-million","random_walk",f'{{"value":650,"step":30,"min":400,"max":1200}}'),
+                    (vd, "analog-input",  1, "Zone-Temp",         "degrees-celsius", "noise",  f'{{"base":{zt},"noise":0.3}}', "Zone_Air_Temperature_Sensor"),
+                    (vd, "analog-value",  2, "Cooling-SP",        "degrees-celsius", "manual", f'{{"value":{csp}}}', "Cooling_Temperature_Setpoint"),
+                    (vd, "analog-value",  3, "Heating-SP",        "degrees-celsius", "manual", f'{{"value":{hsp}}}', "Heating_Temperature_Setpoint"),
+                    (vd, "analog-output", 4, "Damper-Cmd",        "percent",         "sine",   f'{{"base":{dmp},"amplitude":14.0,"period_hours":8}}', "Damper_Position_Command"),
+                    (vd, "analog-input",  5, "Zone-Airflow",      "cubic-feet-per-minute","noise",f'{{"base":{flow},"noise":18}}', "Air_Flow_Sensor"),
+                    (vd, "analog-output", 6, "Reheat-Valve",      "percent",         "sine",   f'{{"base":{rh},"amplitude":10.0,"period_hours":12}}', "Valve_Position_Command"),
+                    (vd, "binary-input",  7, "Occupancy",         "no-units",        "manual", '{"value":true}', "Occupancy_Sensor"),
+                    (vd, "analog-input",  8, "Zone-CO2",          "parts-per-million","random_walk",f'{{"value":650,"step":30,"min":400,"max":1200}}', "CO2_Level_Sensor"),
                 ]
 
             # ── DALI-to-BACnet lighting gateways ─────────────────────────────
@@ -571,10 +592,10 @@ class Database:
                         (gw, "binary-value", next_inst,     f"Zone-{zone}-Lights-On",  "no-units", "schedule", json.dumps({
                             "default": 0,
                             "blocks": [{"start": on_time, "value": 1}, {"start": off_time, "value": 0}],
-                        })),
+                        }), "On_Off_Command"),
                         (gw, "analog-value", next_inst + 1, f"Zone-{zone}-Dim-Level",  "percent",  "sine",     json.dumps({
                             "base": 75.0, "amplitude": 15.0, "period_hours": 24,
-                        })),
+                        }), "Lighting_Level_Command"),
                         (gw, "analog-value", next_inst + 2, f"Zone-{zone}-Scene",      "no-units", "manual",   json.dumps({
                             "value": 2,   # 1=Off 2=Occupied 3=Evening 4=Cleaning 5=Emergency
                         })),
@@ -592,13 +613,17 @@ class Database:
                     ]
                     next_inst += 6
 
+            # Most tuples above are the original 7-element shape (no point_type
+            # tag); only the curated subset tagged with an 8th element carries
+            # one. Normalize before the bulk insert so both shapes work.
+            objects = [(t + (None,)) if len(t) == 7 else t for t in objects]
             conn.executemany(
                 "INSERT OR IGNORE INTO objects "
-                "(device_id, object_type, object_instance, name, units, behavior, behavior_params) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "(device_id, object_type, object_instance, name, units, behavior, behavior_params, point_type) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 objects,
             )
-        log.info("Seeded 4-storey office tower: Honeywell/Trane/JCI/Siemens/LOYTEC – 17 devices, %d objects", len(objects))
+        log.info("Seeded 4-storey office tower: Honeywell/Trane/JCI/Siemens/LOYTEC – 18 devices, %d objects", len(objects))
 
     # ── Locations ────────────────────────────────────────────────────────────
     # Pure organizational grouping for the admin UI/sidebar tree — no BACnet
@@ -614,20 +639,20 @@ class Database:
             r = conn.execute("SELECT * FROM locations WHERE id=?", (location_id,)).fetchone()
             return dict(r) if r else None
 
-    def create_location(self, name: str, parent_location_id: Optional[int], description: str) -> dict:
+    def create_location(self, name: str, parent_location_id: Optional[int], description: str, kind: Optional[str] = None) -> dict:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO locations (name, parent_location_id, description) VALUES (?,?,?)",
-                (name, parent_location_id, description),
+                "INSERT INTO locations (name, parent_location_id, description, kind) VALUES (?,?,?,?)",
+                (name, parent_location_id, description, kind),
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM locations WHERE id=?", (cur.lastrowid,)).fetchone())
 
-    def update_location(self, location_id: int, name: str, parent_location_id: Optional[int], description: str) -> Optional[dict]:
+    def update_location(self, location_id: int, name: str, parent_location_id: Optional[int], description: str, kind: Optional[str] = None) -> Optional[dict]:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE locations SET name=?, parent_location_id=?, description=? WHERE id=?",
-                (name, parent_location_id, description, location_id),
+                "UPDATE locations SET name=?, parent_location_id=?, description=?, kind=? WHERE id=?",
+                (name, parent_location_id, description, kind, location_id),
             )
             conn.commit()
             r = conn.execute("SELECT * FROM locations WHERE id=?", (location_id,)).fetchone()
@@ -662,10 +687,12 @@ class Database:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
-                "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, location_id) "
+                "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, "
+                "location_id, equipment_type) "
                 "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
-                ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, :location_id)",
-                {**data, "location_id": data.get("location_id")},
+                ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, "
+                ":location_id, :equipment_type)",
+                {**data, "location_id": data.get("location_id"), "equipment_type": data.get("equipment_type")},
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM devices WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -677,8 +704,9 @@ class Database:
                 "description=:description, vendor_name=:vendor_name, model_name=:model_name, "
                 "enabled=:enabled, firmware_revision=:firmware_revision, protocol_revision=:protocol_revision, "
                 "max_apdu_length_accepted=:max_apdu_length_accepted, "
-                "segmentation_supported=:segmentation_supported, location_id=:location_id WHERE id=:id",
-                {**data, "location_id": data.get("location_id"), "id": device_id},
+                "segmentation_supported=:segmentation_supported, location_id=:location_id, "
+                "equipment_type=:equipment_type WHERE id=:id",
+                {**data, "location_id": data.get("location_id"), "equipment_type": data.get("equipment_type"), "id": device_id},
             )
             conn.commit()
             r = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
@@ -705,8 +733,8 @@ class Database:
     def create_object(self, device_id: int, data: dict) -> dict:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled, number_of_states, reliability, polarity) "
-                "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled, :number_of_states, :reliability, :polarity)",
+                "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled, number_of_states, reliability, polarity, point_type) "
+                "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled, :number_of_states, :reliability, :polarity, :point_type)",
                 {**data, "device_id": device_id},
             )
             conn.commit()
@@ -718,7 +746,7 @@ class Database:
                 "UPDATE objects SET object_type=:object_type, object_instance=:object_instance, "
                 "name=:name, units=:units, behavior=:behavior, behavior_params=:behavior_params, "
                 "enabled=:enabled, number_of_states=:number_of_states, reliability=:reliability, "
-                "polarity=:polarity WHERE id=:id",
+                "polarity=:polarity, point_type=:point_type WHERE id=:id",
                 {**data, "id": obj_id},
             )
             conn.commit()
@@ -1167,7 +1195,7 @@ class Database:
     # ── BACnet Calendars (GH #18) ────────────────────────────────────────────────
     # Referenced by name from a Schedule's exception_schedule JSON (see
     # bacnet_schedule.build_exception_schedule) rather than by a DB foreign key —
-    # that keeps the reference portable across profile save/load the same way
+    # that keeps the reference portable across project save/load the same way
     # object_type+object_instance already does for schedule targets.
 
     def get_calendars(self, device_id: Optional[int] = None) -> list[dict]:
@@ -1212,22 +1240,25 @@ class Database:
             conn.commit()
             return cur.rowcount > 0
 
-    # ── Profiles ──────────────────────────────────────────────────────────────
+    # ── Projects ──────────────────────────────────────────────────────────────
+    # Persisted as "profiles" in the DB schema (table name unchanged, see
+    # CREATE TABLE above) — only the Python-level naming was renamed to
+    # "project" to match the admin UI ("New Project"/"Open Project"/"Save").
 
-    def get_profiles(self) -> list[dict]:
+    def get_projects(self) -> list[dict]:
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(
                 "SELECT id, name, description, created_at, device_count FROM profiles ORDER BY created_at DESC"
             )]
 
-    def get_profile(self, profile_id: int) -> Optional[dict]:
+    def get_project(self, project_id: int) -> Optional[dict]:
         with self._conn() as conn:
-            r = conn.execute("SELECT * FROM profiles WHERE id=?", (profile_id,)).fetchone()
+            r = conn.execute("SELECT * FROM profiles WHERE id=?", (project_id,)).fetchone()
             return dict(r) if r else None
 
     @staticmethod
     def _attach_trend_logs(conn: sqlite3.Connection, dev: dict) -> None:
-        """Snapshot this device's trend logs for a profile, replacing the
+        """Snapshot this device's trend logs for a project, replacing the
         live monitored_object_id with a portable (object_type, object_instance)
         reference — object ids are reassigned on load, so a raw id wouldn't
         survive the round trip."""
@@ -1245,7 +1276,7 @@ class Database:
             )
             tl.pop("id", None)
             tl.pop("device_id", None)
-            # Historical records aren't part of a profile snapshot, only config.
+            # Historical records aren't part of a project snapshot, only config.
             tl.pop("record_count", None)
             tl.pop("total_record_count", None)
             tl.pop("last_sampled_at", None)
@@ -1284,7 +1315,7 @@ class Database:
         """Calendars need no portable-reference handling of their own — a
         Schedule's calendarReference exceptions already store the calendar by
         name (see bacnet_schedule.build_exception_schedule), which survives
-        the id reassignment on profile load without any extra work here."""
+        the id reassignment on project load without any extra work here."""
         calendars = [dict(r) for r in conn.execute(
             "SELECT * FROM bacnet_calendars WHERE device_id=?", (dev["id"],)
         )]
@@ -1293,7 +1324,7 @@ class Database:
             cal.pop("device_id", None)
         dev["calendars"] = calendars
 
-    def save_profile(self, name: str, description: str) -> dict:
+    def save_project(self, name: str, description: str) -> dict:
         with self._conn() as conn:
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             devices = [dict(r) for r in conn.execute(
@@ -1318,7 +1349,7 @@ class Database:
                 (cur.lastrowid,),
             ).fetchone())
 
-    def update_profile(self, profile_id: int, name: str, description: str) -> bool:
+    def update_project(self, project_id: int, name: str, description: str) -> bool:
         with self._conn() as conn:
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             devices = [dict(r) for r in conn.execute(
@@ -1335,14 +1366,14 @@ class Database:
             data = json.dumps({"locations": locations, "devices": devices})
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
-                (name, description, len(devices), data, profile_id),
+                (name, description, len(devices), data, project_id),
             )
             conn.commit()
             return cur.rowcount > 0
 
-    def load_profile(self, profile_id: int) -> bool:
+    def load_project(self, project_id: int) -> bool:
         with self._conn() as conn:
-            row = conn.execute("SELECT data FROM profiles WHERE id=?", (profile_id,)).fetchone()
+            row = conn.execute("SELECT data FROM profiles WHERE id=?", (project_id,)).fetchone()
             if not row:
                 return False
             payload = json.loads(row["data"])
@@ -1364,8 +1395,8 @@ class Database:
                     old_parent = loc.get("parent_location_id")
                     if old_parent is None or old_parent in location_id_map:
                         cur = conn.execute(
-                            "INSERT INTO locations (name, parent_location_id, description) VALUES (?,?,?)",
-                            (loc["name"], location_id_map.get(old_parent) if old_parent is not None else None, loc.get("description", "")),
+                            "INSERT INTO locations (name, parent_location_id, description, kind) VALUES (?,?,?,?)",
+                            (loc["name"], location_id_map.get(old_parent) if old_parent is not None else None, loc.get("description", ""), loc.get("kind")),
                         )
                         location_id_map[old_id] = cur.lastrowid
                         progressed = True
@@ -1388,9 +1419,11 @@ class Database:
                 old_location_id = dev.get("location_id")
                 cur = conn.execute(
                     "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
-                    "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, location_id) "
+                    "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, "
+                    "location_id, equipment_type) "
                     "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
-                    ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, :location_id)",
+                    ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, "
+                    ":location_id, :equipment_type)",
                     {
                         **dev,
                         "firmware_revision": dev.get("firmware_revision") or "N/A",
@@ -1398,6 +1431,7 @@ class Database:
                         "max_apdu_length_accepted": dev.get("max_apdu_length_accepted") or 1024,
                         "segmentation_supported": dev.get("segmentation_supported") or "segmented-both",
                         "location_id": location_id_map.get(old_location_id) if old_location_id is not None else None,
+                        "equipment_type": dev.get("equipment_type"),
                     },
                 )
                 dev_id = cur.lastrowid
@@ -1408,9 +1442,9 @@ class Database:
                     obj_cur = conn.execute(
                         "INSERT OR IGNORE INTO objects "
                         "(device_id, object_type, object_instance, name, units, behavior, "
-                        "behavior_params, enabled, manual_value, number_of_states, reliability, polarity) "
+                        "behavior_params, enabled, manual_value, number_of_states, reliability, polarity, point_type) "
                         "VALUES (:device_id, :object_type, :object_instance, :name, :units, "
-                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability, :polarity)",
+                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability, :polarity, :point_type)",
                         {
                             **obj,
                             "device_id": dev_id,
@@ -1418,6 +1452,7 @@ class Database:
                             "number_of_states": obj.get("number_of_states") or 2,
                             "reliability": obj.get("reliability") or "no-fault-detected",
                             "polarity": obj.get("polarity") or "normal",
+                            "point_type": obj.get("point_type"),
                         },
                     )
                     obj_id = obj_cur.lastrowid if obj_cur.lastrowid else conn.execute(
@@ -1502,7 +1537,7 @@ class Database:
             conn.commit()
             return True
 
-    def import_profile(self, name: str, description: str, data: dict) -> dict:
+    def import_project(self, name: str, description: str, data: dict) -> dict:
         with self._conn() as conn:
             device_count = len(data.get("devices", []))
             cur = conn.execute(
@@ -1515,9 +1550,9 @@ class Database:
                 (cur.lastrowid,),
             ).fetchone())
 
-    def delete_profile(self, profile_id: int) -> bool:
+    def delete_project(self, project_id: int) -> bool:
         with self._conn() as conn:
-            cur = conn.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
+            cur = conn.execute("DELETE FROM profiles WHERE id=?", (project_id,))
             conn.commit()
             return cur.rowcount > 0
 
@@ -1749,7 +1784,7 @@ class DailyPatternBehavior(Behavior):
     scheduling). Not to be confused with a real BACnet Schedule object (see
     bacnet_schedule.py) — this is purely a value-simulation behavior, stored
     under the historical behavior name "schedule" for backward compatibility
-    with existing profiles/seed data, but renamed at the Python-class level
+    with existing projects/seed data, but renamed at the Python-class level
     now that real BACnet Schedule objects exist too."""
 
     @staticmethod
@@ -2189,7 +2224,7 @@ class SimApplication(Application):
             return
 
         # Persist to DB and update in-memory sim
-        await self._sim_engine.write_object(db_id, value)
+        await self._sim_engine.write_object(db_id, value, source=str(apdu.pduSource))
         await self.response(SimpleAckPDU(context=apdu))
 
     async def do_ReadRangeRequest(self, apdu) -> None:
@@ -2359,7 +2394,7 @@ class SimEngine:
         self._reload_event = asyncio.Event()
         # Guards reload() against overlapping runs. Every device/object CRUD route
         # fires reload() via asyncio.create_task() (fire-and-forget), and start()
-        # does hundreds of awaited DB calls for a large profile — plenty of time
+        # does hundreds of awaited DB calls for a large project — plenty of time
         # for a second reload() to start before the first finishes. Without this
         # lock, two reloads race on self.app/_objects/_device_slots and the loser
         # can leave a stale DeviceObject (e.g. an old instance number for a device
@@ -2399,8 +2434,8 @@ class SimEngine:
         # One of "running" / "paused" / "stopped" — "paused" freezes values in
         # place, "stopped" additionally rewinds elapsed time/history to zero.
         # Starts running on process boot (historical default, pre-dates these
-        # controls); loading/switching a profile explicitly stops it instead
-        # (see load_profile()) so a freshly loaded profile doesn't silently
+        # controls); loading/switching a project explicitly stops it instead
+        # (see load_project()) so a freshly loaded project doesn't silently
         # start ticking.
         self.clock_state: str = "running"
 
@@ -3069,8 +3104,18 @@ class SimEngine:
             self._update_value(bacnet_obj, obj_row["object_type"], value)
         return True
 
-    async def write_object(self, obj_id: int, value: Any) -> bool:
-        """Handle a BACnet WriteProperty — switches the object to manual, persists, updates live."""
+    async def write_object(self, obj_id: int, value: Any, source: Optional[str] = None) -> bool:
+        """Handle a BACnet WriteProperty — switches the object to manual, persists, updates live.
+
+        Unlike the REST "Set" endpoint (set_object_value, which logs its own
+        "Manual override" activity-log entry), this is the path a genuine
+        external BACnet client's WriteProperty request takes — it was
+        previously silent in the per-device Activity Log (still counted in
+        the analytics traffic metrics, just not human-audit-visible), so a
+        real external write left no record of what was written or by whom.
+        `source` is the requesting client's address (apdu.pduSource), when
+        the caller has one, for a real audit trail of who wrote what.
+        """
         if obj_id not in self._objects:
             return False
         bacnet_obj, _ = self._objects[obj_id]
@@ -3081,6 +3126,9 @@ class SimEngine:
         new_b = ManualBehavior({"value": value})
         self._objects[obj_id] = (bacnet_obj, new_b)
         self._update_value(bacnet_obj, obj_row["object_type"], value)
+        val_str = str(value) + (f" {obj_row['units']}" if obj_row.get("units") and obj_row["units"] != "no-units" else "")
+        source_suffix = f" (from {source})" if source else ""
+        _log_event(obj_row["device_id"], "info", f"External write: {obj_row['name']} → {val_str}{source_suffix}")
         return True
 
     @staticmethod
@@ -3674,6 +3722,10 @@ async def meta():
         "reliability_options": sorted(VALID_RELIABILITY),
         "polarity_options": sorted(VALID_POLARITY),
         "segmentation_options": sorted(VALID_SEGMENTATION),
+        "brick_version": BRICK_VERSION,
+        "equipment_types": [{"value": k, "label": v} for k, v in sorted(EQUIPMENT_TYPES.items())],
+        "point_types": [{"value": k, "label": v} for k, v in sorted(POINT_TYPES.items())],
+        "location_kinds": [{"value": k, "label": v} for k, v in sorted(LOCATION_KINDS.items())],
     }
 
 
@@ -3699,6 +3751,7 @@ async def list_devices():
 @api.post("/devices", status_code=201)
 async def create_device(body: DeviceCreate):
     body.validate_device_info()
+    body.validate_semantic()
     if body.location_id is not None and not await asyncio.to_thread(db.get_location, body.location_id):
         raise HTTPException(404, "Location not found")
     try:
@@ -3722,6 +3775,7 @@ async def get_device(device_id: int):
 @api.put("/devices/{device_id}")
 async def update_device(device_id: int, body: DeviceUpdate):
     body.validate_device_info()
+    body.validate_semantic()
     d = await asyncio.to_thread(db.get_device, device_id)
     if not d:
         raise HTTPException(404, "Device not found")
@@ -3777,9 +3831,10 @@ async def list_locations():
 
 @api.post("/locations", status_code=201)
 async def create_location(body: LocationCreate):
+    body.validate_semantic()
     if body.parent_location_id is not None and not await asyncio.to_thread(db.get_location, body.parent_location_id):
         raise HTTPException(404, "Parent location not found")
-    return await asyncio.to_thread(db.create_location, body.name, body.parent_location_id, body.description)
+    return await asyncio.to_thread(db.create_location, body.name, body.parent_location_id, body.description, body.kind)
 
 
 @api.get("/locations/{location_id}")
@@ -3792,6 +3847,7 @@ async def get_location(location_id: int):
 
 @api.put("/locations/{location_id}")
 async def update_location(location_id: int, body: LocationUpdate):
+    body.validate_semantic()
     existing = await asyncio.to_thread(db.get_location, location_id)
     if not existing:
         raise HTTPException(404, "Location not found")
@@ -3800,7 +3856,7 @@ async def update_location(location_id: int, body: LocationUpdate):
             raise HTTPException(404, "Parent location not found")
         if await asyncio.to_thread(_is_descendant_location, db, body.parent_location_id, location_id):
             raise HTTPException(400, "Cannot move a location into itself or one of its own sub-locations")
-    return await asyncio.to_thread(db.update_location, location_id, body.name, body.parent_location_id, body.description)
+    return await asyncio.to_thread(db.update_location, location_id, body.name, body.parent_location_id, body.description, body.kind)
 
 
 @api.delete("/locations/{location_id}", status_code=204)
@@ -3825,6 +3881,7 @@ async def list_objects(device_id: int):
 @api.post("/devices/{device_id}/objects", status_code=201)
 async def create_object(device_id: int, body: ObjectCreate):
     body.validate_type()
+    body.validate_semantic()
     d = await asyncio.to_thread(db.get_device, device_id)
     if not d:
         raise HTTPException(404, "Device not found")
@@ -3849,6 +3906,7 @@ async def get_object(device_id: int, obj_id: int):
 @api.put("/devices/{device_id}/objects/{obj_id}")
 async def update_object(device_id: int, obj_id: int, body: ObjectUpdate):
     body.validate_type()
+    body.validate_semantic()
     obj = await asyncio.to_thread(db.get_object, obj_id)
     if not obj or obj["device_id"] != device_id:
         raise HTTPException(404, "Object not found")
@@ -3937,49 +3995,52 @@ async def write_priority_array(device_id: int, obj_id: int, priority: int, body:
     return engine.get_priority_array(obj_id)
 
 
-# ── Profiles ──
+# ── Projects ──
+# Routes stay under /profiles for now (unchanged URL space) — only the
+# Python-level naming (function names, schema classes, Database methods)
+# was renamed to "project" to match the admin UI.
 
 @api.get("/profiles")
-async def list_profiles():
-    return await asyncio.to_thread(db.get_profiles)
+async def list_projects():
+    return await asyncio.to_thread(db.get_projects)
 
 
 @api.post("/profiles", status_code=201)
-async def save_profile(body: ProfileCreate):
-    return await asyncio.to_thread(db.save_profile, body.name, body.description)
+async def save_project(body: ProjectCreate):
+    return await asyncio.to_thread(db.save_project, body.name, body.description)
 
 
-@api.put("/profiles/{profile_id}")
-async def update_profile(profile_id: int, body: ProfileUpdate):
-    ok = await asyncio.to_thread(db.update_profile, profile_id, body.name, body.description)
+@api.put("/profiles/{project_id}")
+async def update_project(project_id: int, body: ProjectUpdate):
+    ok = await asyncio.to_thread(db.update_project, project_id, body.name, body.description)
     if not ok:
-        raise HTTPException(404, "Profile not found")
+        raise HTTPException(404, "Project not found")
     return {"ok": True}
 
 
-@api.delete("/profiles/{profile_id}", status_code=204)
-async def delete_profile(profile_id: int):
-    deleted = await asyncio.to_thread(db.delete_profile, profile_id)
+@api.delete("/profiles/{project_id}", status_code=204)
+async def delete_project(project_id: int):
+    deleted = await asyncio.to_thread(db.delete_project, project_id)
     if not deleted:
-        raise HTTPException(404, "Profile not found")
+        raise HTTPException(404, "Project not found")
 
 
-@api.post("/profiles/{profile_id}/load")
-async def load_profile(profile_id: int):
-    ok = await asyncio.to_thread(db.load_profile, profile_id)
+@api.post("/profiles/{project_id}/load")
+async def load_project(project_id: int):
+    ok = await asyncio.to_thread(db.load_project, project_id)
     if not ok:
-        raise HTTPException(404, "Profile not found")
+        raise HTTPException(404, "Project not found")
     asyncio.create_task(engine.reload())
-    # A freshly loaded profile starts paused — the user presses Start when ready.
+    # A freshly loaded project starts paused — the user presses Start when ready.
     engine.reset()
     return {"ok": True}
 
 
-@api.get("/profiles/{profile_id}/export")
-async def export_profile(profile_id: int):
-    row = await asyncio.to_thread(db.get_profile, profile_id)
+@api.get("/profiles/{project_id}/export")
+async def export_project(project_id: int):
+    row = await asyncio.to_thread(db.get_project, project_id)
     if not row:
-        raise HTTPException(404, "Profile not found")
+        raise HTTPException(404, "Project not found")
     content = json.dumps(json.loads(row["data"]), indent=2)
     filename = row["name"].replace(" ", "_") + ".json"
     return Response(
@@ -3990,8 +4051,8 @@ async def export_profile(profile_id: int):
 
 
 @api.post("/profiles/import", status_code=201)
-async def import_profile(body: ProfileImport):
-    return await asyncio.to_thread(db.import_profile, body.name, body.description, body.data)
+async def import_project(body: ProjectImport):
+    return await asyncio.to_thread(db.import_project, body.name, body.description, body.data)
 
 
 # ── EDE import/export ──
@@ -4015,11 +4076,11 @@ async def export_device_ede(device_id: int):
     return _ede_response([dev], dev["name"])
 
 
-@api.get("/profiles/{profile_id}/export/ede")
-async def export_profile_ede(profile_id: int):
-    row = await asyncio.to_thread(db.get_profile, profile_id)
+@api.get("/profiles/{project_id}/export/ede")
+async def export_project_ede(project_id: int):
+    row = await asyncio.to_thread(db.get_project, project_id)
     if not row:
-        raise HTTPException(404, "Profile not found")
+        raise HTTPException(404, "Project not found")
     data = json.loads(row["data"])
     return _ede_response(data.get("devices", []), row["name"])
 
@@ -4049,7 +4110,7 @@ async def import_device_ede(device_id: int, file: UploadFile = File(...)):
 
 
 @api.post("/profiles/import/ede", status_code=201)
-async def import_profile_ede(
+async def import_project_ede(
     name: str = Form(...),
     description: str = Form(""),
     device_name: str = Form(""),
@@ -4060,7 +4121,7 @@ async def import_profile_ede(
     if not rows:
         raise HTTPException(400, "No valid EDE rows found in file")
     data = ede.rows_to_devices(rows, device_name)
-    return await asyncio.to_thread(db.import_profile, name, description, data)
+    return await asyncio.to_thread(db.import_project, name, description, data)
 
 
 # ── Alarms & Notification Classes (BACnet Intrinsic Reporting, Phase 1) ──

@@ -53,7 +53,7 @@ function onFileChange(e: Event) {
       const parsed = JSON.parse(reader.result as string)
       const data = Array.isArray(parsed?.devices) ? parsed : { devices: [] }
       if (!Array.isArray(parsed?.devices)) {
-        message.warning('This file has no "devices" array — importing an empty profile')
+        message.warning('This file has no "devices" array — importing an empty project')
       }
       fileData.value = data
       fileName.value = file.name
@@ -75,10 +75,10 @@ async function doImport() {
     let result: { name: string; device_count: number }
     if (format.value === 'ede') {
       if (!rawFile.value) { message.error('Choose an EDE file first'); return }
-      result = await api.profiles.importEde(name.value.trim(), desc.value.trim(), deviceName.value.trim(), rawFile.value)
+      result = await api.projects.importEde(name.value.trim(), desc.value.trim(), deviceName.value.trim(), rawFile.value)
     } else {
-      if (!fileData.value) { message.error('Choose a profile JSON file first'); return }
-      result = await api.profiles.import_(name.value.trim(), desc.value.trim(), fileData.value)
+      if (!fileData.value) { message.error('Choose a project JSON file first'); return }
+      result = await api.projects.import_(name.value.trim(), desc.value.trim(), fileData.value)
     }
     message.success(`"${result.name}" imported — ${result.device_count} device${result.device_count !== 1 ? 's' : ''}`)
     emit('update:open', false)
@@ -94,7 +94,7 @@ async function doImport() {
 <template>
   <a-modal
     :open="open"
-    title="Import Profile"
+    title="Import Project"
     ok-text="Import"
     :confirm-loading="importing"
     @ok="doImport"
@@ -103,11 +103,11 @@ async function doImport() {
     <a-form layout="vertical" style="margin-top:8px">
       <a-form-item label="Format">
         <a-radio-group v-model:value="format" @change="fileName = ''; fileData = null; rawFile = null">
-          <a-radio-button value="json">JSON profile</a-radio-button>
+          <a-radio-button value="json">JSON project</a-radio-button>
           <a-radio-button value="ede">EDE file</a-radio-button>
         </a-radio-group>
       </a-form-item>
-      <a-form-item :label="format === 'ede' ? 'EDE file (.ede/.csv)' : 'Profile JSON file'" required>
+      <a-form-item :label="format === 'ede' ? 'EDE file (.ede/.csv)' : 'Project JSON file'" required>
         <input
           ref="fileInput"
           type="file"

@@ -42,6 +42,7 @@ const form = reactive({
   number_of_states: 2,
   reliability: 'no-fault-detected',
   polarity: 'normal',
+  point_type: null as string | null,
 })
 const params = ref<any>({ value: 0 })
 
@@ -262,6 +263,7 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
       number_of_states: src.number_of_states ?? 2,
       reliability: src.reliability ?? 'no-fault-detected',
       polarity: src.polarity ?? 'normal',
+      point_type: src.point_type ?? null,
     })
     try {
       const raw = src.behavior_params
@@ -273,6 +275,7 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
       object_type: type,
       object_instance: nextInstanceFor(type), name: '', units: 'no-units', behavior: 'constant', enabled: true,
       number_of_states: 2, reliability: 'no-fault-detected', polarity: 'normal',
+      point_type: null,
     })
     params.value = { value: 0 }
   }
@@ -341,6 +344,16 @@ async function save() {
 
       <a-form-item label="Name" required>
         <a-input v-model:value="form.name" placeholder="Supply Temp" />
+      </a-form-item>
+
+      <a-form-item label="Point Type">
+        <a-select
+          v-model:value="form.point_type"
+          show-search
+          allow-clear
+          placeholder="Not tagged"
+          :options="meta.point_types"
+        />
       </a-form-item>
 
       <a-form-item v-if="isMultistate" label="Number of States" required>
