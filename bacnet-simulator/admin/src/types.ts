@@ -12,6 +12,10 @@ export interface Device {
   segmentation_supported: string
   location_id?: number | null
   equipment_type?: string | null
+  /** Explicit per-device override; null means "infer from equipment_type". */
+  can_receive_event_notifications?: boolean | null
+  /** Server-computed: the override if set, otherwise the equipment_type-based inference. */
+  effective_can_receive_event_notifications?: boolean
 }
 
 export interface Location {
@@ -55,6 +59,7 @@ export interface Meta {
   equipment_types: MetaOption[]
   point_types: MetaOption[]
   location_kinds: MetaOption[]
+  network_address: string | null
 }
 
 export interface PriorityArrayInfo {
@@ -86,7 +91,12 @@ export interface Settings {
 }
 
 export interface NotificationRecipient {
-  address?: string
+  recipient_type: 'device' | 'address'
+  device_instance?: number | null
+  ip_address?: string | null
+  port?: number | null
+  /** Legacy rows saved before the device/address split — "ip:port" string. */
+  address?: string | null
   confirmed: boolean
   process_identifier: number
 }

@@ -22,12 +22,14 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from bacpypes3.apdu import ConfirmedEventNotificationRequest, UnconfirmedEventNotificationRequest
 from bacpypes3.basetypes import EventState, EventType, NotifyType, TimeStamp
 from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import Unsigned
+
+from .config import BACNET_PORT
 
 log = logging.getLogger("alarms")
 
@@ -226,6 +228,24 @@ def evaluate_enrollment(
     return _confirm_transition(target, runtime, elapsed_seconds, time_delay, time_delay_normal)
 
 
+def _resolve_recipient_address(recipient: dict) -> Optional[str]:
+    """
+    Resolves an address-type (or pre-split legacy) recipient to a network
+    address. Device-type recipients never reach this — see
+    send_event_notification's on_local_delivery for why.
+    """
+    if recipient.get("recipient_type") == "address":
+        ip = recipient.get("ip_address")
+        if not ip:
+            return None
+        port = recipient.get("port") or BACNET_PORT
+        return f"{ip}:{port}"
+
+    # Legacy rows saved before the device/address split: a plain "address"
+    # string like "192.168.1.50:47808".
+    return recipient.get("address")
+
+
 async def send_event_notification(
     app: Any,
     device_instance: int,
@@ -235,11 +255,32 @@ async def send_event_notification(
     to_state: str,
     priority: int,
     ack_required: bool,
+    *,
+    device_capabilities: Optional[dict[int, bool]] = None,
+    log_fn: Optional[Callable[[str, str], None]] = None,
+    on_local_delivery: Optional[Callable[[int, Optional[int], str, str, str], None]] = None,
 ) -> None:
-    """Best-effort delivery to every recipient with a configured network
-    address. Recipients without an address are still recorded in alarm_log
-    by the caller — they just don't get a live BACnet notification (device-
-    instance-only recipient resolution via Who-Is binding is deferred)."""
+    """Best-effort delivery to every recipient. Recipients that don't
+    resolve are still recorded in alarm_log by the caller — they just don't
+    get a live BACnet notification.
+
+    device_capabilities maps device_instance -> can-receive-events for every
+    currently enabled device (see _effective_can_receive_events in
+    simulator.py). A device-type recipient that can't receive events is
+    skipped — its rejection is reported via log_fn rather than silently
+    treated the same as a successful send.
+
+    Device-type recipients never go over the real network at all: every
+    virtual device in this simulator shares one BACnet/IP socket, so a
+    device-type recipient's address always resolves to our own bound
+    address — and bacpypes3's IPv4 transport (ipv4/__init__.py,
+    IPv4DatagramServer.confirmation()) silently drops any inbound packet
+    whose source equals its own bound address as a reflected-broadcast
+    safety measure, before it ever reaches Application.indication(). A real
+    round-trip therefore cannot work for this case; on_local_delivery
+    simulates receipt in-process instead. Only address-type recipients
+    (genuine external network addresses) go through the real send path
+    below."""
     try:
         recipients = json.loads(notification_class.get("recipients") or "[]")
     except (TypeError, ValueError):
@@ -252,7 +293,21 @@ async def send_event_notification(
     message = f"{obj_row['name']} transitioned {from_state} -> {to_state}"
 
     for recipient in recipients:
-        address = recipient.get("address")
+        if recipient.get("recipient_type") == "device":
+            target_instance = recipient.get("device_instance")
+            if device_capabilities is not None and target_instance in device_capabilities and not device_capabilities[target_instance]:
+                if log_fn:
+                    log_fn(
+                        "warn",
+                        f"Event notification to device {target_instance} rejected — "
+                        f"that device does not support Event Notification reception",
+                    )
+                continue
+            if on_local_delivery:
+                on_local_delivery(device_instance, target_instance, message, from_state, to_state)
+            continue
+
+        address = _resolve_recipient_address(recipient)
         if not address:
             continue
         confirmed = bool(recipient.get("confirmed"))
@@ -273,6 +328,7 @@ async def send_event_notification(
                 toState=EVENT_STATE_CODE.get(to_state, EventState.normal),
             )
             apdu.pduDestination = Address(address)
+            log.info("Sending %s event notification to %s: %s", "confirmed" if confirmed else "unconfirmed", address, message)
             result = app.request(apdu)
             if confirmed:
                 await asyncio.wait_for(result, timeout=5.0)

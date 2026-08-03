@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, type Component } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
+import type { SimObject } from '../types'
 import {
   ControlOutlined,
   FilterOutlined,
@@ -30,6 +31,7 @@ interface TplObject {
   units: string
   behavior: string
   behavior_params: string
+  point_type?: string
 }
 
 interface Template {
@@ -47,21 +49,21 @@ const TEMPLATES: Template[] = [
     desc: 'Supply/return fans, temps, valves, static pressure, alarms',
     icon: ControlOutlined,
     objects: [
-      { object_type: 'binary-input',  object_instance:  1, name: 'SF-Run',              units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'binary-input',  object_instance:  2, name: 'RF-Run',              units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}' },
+      { object_type: 'binary-input',  object_instance:  1, name: 'SF-Run',              units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Fan_Status' },
+      { object_type: 'binary-input',  object_instance:  2, name: 'RF-Run',              units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Fan_Status' },
       { object_type: 'analog-input',  object_instance:  3, name: 'SF-Speed',            units: 'percent',               behavior: 'sine',        behavior_params: '{"base":75,"amplitude":15,"period_hours":12}' },
       { object_type: 'analog-input',  object_instance:  4, name: 'RF-Speed',            units: 'percent',               behavior: 'sine',        behavior_params: '{"base":70,"amplitude":12,"period_hours":12}' },
-      { object_type: 'analog-input',  object_instance:  5, name: 'SAT',                 units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":13,"noise":0.4}' },
-      { object_type: 'analog-input',  object_instance:  6, name: 'RAT',                 units: 'degrees-celsius',       behavior: 'sine',        behavior_params: '{"base":22,"amplitude":2,"period_hours":24}' },
-      { object_type: 'analog-input',  object_instance:  7, name: 'MAT',                 units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":16,"noise":0.8}' },
-      { object_type: 'analog-input',  object_instance:  8, name: 'OAT',                 units: 'degrees-celsius',       behavior: 'sine',        behavior_params: '{"base":12,"amplitude":8,"period_hours":24}' },
-      { object_type: 'analog-output', object_instance:  9, name: 'OAD-Position',        units: 'percent',               behavior: 'sine',        behavior_params: '{"base":28,"amplitude":18,"period_hours":24}' },
-      { object_type: 'analog-output', object_instance: 10, name: 'CC-Valve',            units: 'percent',               behavior: 'sine',        behavior_params: '{"base":55,"amplitude":25,"period_hours":12}' },
-      { object_type: 'analog-output', object_instance: 11, name: 'HC-Valve',            units: 'percent',               behavior: 'sine',        behavior_params: '{"base":10,"amplitude":9,"period_hours":24}' },
-      { object_type: 'analog-input',  object_instance: 12, name: 'SA-Flow',             units: 'cubic-feet-per-minute', behavior: 'noise',       behavior_params: '{"base":8500,"noise":250}' },
-      { object_type: 'analog-input',  object_instance: 13, name: 'SA-Static-Pressure',  units: 'pascals',               behavior: 'noise',       behavior_params: '{"base":375,"noise":12}' },
-      { object_type: 'binary-input',  object_instance: 14, name: 'Filter-DP-Alarm',     units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":false}' },
-      { object_type: 'binary-input',  object_instance: 15, name: 'Freeze-Stat',         units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":false}' },
+      { object_type: 'analog-input',  object_instance:  5, name: 'SAT',                 units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":13,"noise":0.4}', point_type: 'Supply_Air_Temperature_Sensor' },
+      { object_type: 'analog-input',  object_instance:  6, name: 'RAT',                 units: 'degrees-celsius',       behavior: 'sine',        behavior_params: '{"base":22,"amplitude":2,"period_hours":24}', point_type: 'Return_Air_Temperature_Sensor' },
+      { object_type: 'analog-input',  object_instance:  7, name: 'MAT',                 units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":16,"noise":0.8}', point_type: 'Mixed_Air_Temperature_Sensor' },
+      { object_type: 'analog-input',  object_instance:  8, name: 'OAT',                 units: 'degrees-celsius',       behavior: 'sine',        behavior_params: '{"base":12,"amplitude":8,"period_hours":24}', point_type: 'Outside_Air_Temperature_Sensor' },
+      { object_type: 'analog-output', object_instance:  9, name: 'OAD-Position',        units: 'percent',               behavior: 'sine',        behavior_params: '{"base":28,"amplitude":18,"period_hours":24}', point_type: 'Damper_Position_Command' },
+      { object_type: 'analog-output', object_instance: 10, name: 'CC-Valve',            units: 'percent',               behavior: 'sine',        behavior_params: '{"base":55,"amplitude":25,"period_hours":12}', point_type: 'Valve_Position_Command' },
+      { object_type: 'analog-output', object_instance: 11, name: 'HC-Valve',            units: 'percent',               behavior: 'sine',        behavior_params: '{"base":10,"amplitude":9,"period_hours":24}', point_type: 'Valve_Position_Command' },
+      { object_type: 'analog-input',  object_instance: 12, name: 'SA-Flow',             units: 'cubic-feet-per-minute', behavior: 'noise',       behavior_params: '{"base":8500,"noise":250}', point_type: 'Air_Flow_Sensor' },
+      { object_type: 'analog-input',  object_instance: 13, name: 'SA-Static-Pressure',  units: 'pascals',               behavior: 'noise',       behavior_params: '{"base":375,"noise":12}', point_type: 'Static_Pressure_Sensor' },
+      { object_type: 'binary-input',  object_instance: 14, name: 'Filter-DP-Alarm',     units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":false}', point_type: 'Change_Filter_Alarm' },
+      { object_type: 'binary-input',  object_instance: 15, name: 'Freeze-Stat',         units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":false}', point_type: 'Freeze_Status' },
     ],
   },
   {
@@ -70,14 +72,14 @@ const TEMPLATES: Template[] = [
     desc: 'Zone temp, airflow, damper, reheat valve, CO₂, occupancy',
     icon: FilterOutlined,
     objects: [
-      { object_type: 'analog-input',  object_instance: 1, name: 'Zone-Temp',      units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":22,"noise":0.3}' },
-      { object_type: 'analog-value',  object_instance: 2, name: 'Zone-Setpoint',  units: 'degrees-celsius',       behavior: 'constant',    behavior_params: '{"value":22}' },
-      { object_type: 'analog-input',  object_instance: 3, name: 'Damper-Pos',     units: 'percent',               behavior: 'noise',       behavior_params: '{"base":55,"noise":3}' },
-      { object_type: 'analog-output', object_instance: 4, name: 'Damper-Cmd',     units: 'percent',               behavior: 'sine',        behavior_params: '{"base":55,"amplitude":14,"period_hours":8}' },
-      { object_type: 'analog-input',  object_instance: 5, name: 'Zone-Airflow',   units: 'cubic-feet-per-minute', behavior: 'noise',       behavior_params: '{"base":350,"noise":18}' },
-      { object_type: 'analog-output', object_instance: 6, name: 'Reheat-Valve',   units: 'percent',               behavior: 'sine',        behavior_params: '{"base":0,"amplitude":10,"period_hours":12}' },
-      { object_type: 'binary-input',  object_instance: 7, name: 'Occupancy',      units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'analog-input',  object_instance: 8, name: 'Zone-CO2',       units: 'parts-per-million',     behavior: 'random_walk', behavior_params: '{"value":650,"step":30,"min":400,"max":1200}' },
+      { object_type: 'analog-input',  object_instance: 1, name: 'Zone-Temp',      units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":22,"noise":0.3}', point_type: 'Zone_Air_Temperature_Sensor' },
+      { object_type: 'analog-value',  object_instance: 2, name: 'Zone-Setpoint',  units: 'degrees-celsius',       behavior: 'constant',    behavior_params: '{"value":22}', point_type: 'Room_Air_Temperature_Setpoint' },
+      { object_type: 'analog-input',  object_instance: 3, name: 'Damper-Pos',     units: 'percent',               behavior: 'noise',       behavior_params: '{"base":55,"noise":3}', point_type: 'Damper_Position_Status' },
+      { object_type: 'analog-output', object_instance: 4, name: 'Damper-Cmd',     units: 'percent',               behavior: 'sine',        behavior_params: '{"base":55,"amplitude":14,"period_hours":8}', point_type: 'Damper_Position_Command' },
+      { object_type: 'analog-input',  object_instance: 5, name: 'Zone-Airflow',   units: 'cubic-feet-per-minute', behavior: 'noise',       behavior_params: '{"base":350,"noise":18}', point_type: 'Air_Flow_Sensor' },
+      { object_type: 'analog-output', object_instance: 6, name: 'Reheat-Valve',   units: 'percent',               behavior: 'sine',        behavior_params: '{"base":0,"amplitude":10,"period_hours":12}', point_type: 'Valve_Position_Command' },
+      { object_type: 'binary-input',  object_instance: 7, name: 'Occupancy',      units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Occupancy_Sensor' },
+      { object_type: 'analog-input',  object_instance: 8, name: 'Zone-CO2',       units: 'parts-per-million',     behavior: 'random_walk', behavior_params: '{"value":650,"step":30,"min":400,"max":1200}', point_type: 'CO2_Level_Sensor' },
     ],
   },
   {
@@ -86,13 +88,13 @@ const TEMPLATES: Template[] = [
     desc: 'Room temp, setpoint, cooling/heating valves, fan speeds',
     icon: SyncOutlined,
     objects: [
-      { object_type: 'analog-input',  object_instance: 1, name: 'Room-Temp',      units: 'degrees-celsius', behavior: 'sine',     behavior_params: '{"base":23,"amplitude":1,"period_hours":24}' },
-      { object_type: 'analog-value',  object_instance: 2, name: 'Room-Setpoint',  units: 'degrees-celsius', behavior: 'constant', behavior_params: '{"value":22}' },
-      { object_type: 'analog-input',  object_instance: 3, name: 'Coil-Temp',      units: 'degrees-celsius', behavior: 'noise',    behavior_params: '{"base":12,"noise":0.5}' },
-      { object_type: 'analog-output', object_instance: 4, name: 'Cooling-Valve',  units: 'percent',         behavior: 'manual',   behavior_params: '{"value":0}' },
-      { object_type: 'analog-output', object_instance: 5, name: 'Heating-Valve',  units: 'percent',         behavior: 'manual',   behavior_params: '{"value":0}' },
-      { object_type: 'binary-output', object_instance: 6, name: 'Fan-Low-Speed',  units: 'no-units',        behavior: 'manual',   behavior_params: '{"value":true}' },
-      { object_type: 'binary-output', object_instance: 7, name: 'Fan-High-Speed', units: 'no-units',        behavior: 'manual',   behavior_params: '{"value":false}' },
+      { object_type: 'analog-input',  object_instance: 1, name: 'Room-Temp',      units: 'degrees-celsius', behavior: 'sine',     behavior_params: '{"base":23,"amplitude":1,"period_hours":24}', point_type: 'Zone_Air_Temperature_Sensor' },
+      { object_type: 'analog-value',  object_instance: 2, name: 'Room-Setpoint',  units: 'degrees-celsius', behavior: 'constant', behavior_params: '{"value":22}', point_type: 'Room_Air_Temperature_Setpoint' },
+      { object_type: 'analog-input',  object_instance: 3, name: 'Coil-Temp',      units: 'degrees-celsius', behavior: 'noise',    behavior_params: '{"base":12,"noise":0.5}', point_type: 'Temperature_Sensor' },
+      { object_type: 'analog-output', object_instance: 4, name: 'Cooling-Valve',  units: 'percent',         behavior: 'manual',   behavior_params: '{"value":0}', point_type: 'Valve_Position_Command' },
+      { object_type: 'analog-output', object_instance: 5, name: 'Heating-Valve',  units: 'percent',         behavior: 'manual',   behavior_params: '{"value":0}', point_type: 'Valve_Position_Command' },
+      { object_type: 'binary-output', object_instance: 6, name: 'Fan-Low-Speed',  units: 'no-units',        behavior: 'manual',   behavior_params: '{"value":true}', point_type: 'Fan_Speed_Command' },
+      { object_type: 'binary-output', object_instance: 7, name: 'Fan-High-Speed', units: 'no-units',        behavior: 'manual',   behavior_params: '{"value":false}', point_type: 'Fan_Speed_Command' },
     ],
   },
   {
@@ -101,21 +103,21 @@ const TEMPLATES: Template[] = [
     desc: 'Dual chillers, condenser tower, CW loop flow & temps',
     icon: ClusterOutlined,
     objects: [
-      { object_type: 'binary-input', object_instance:  1, name: 'CH-1-Run',              units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'analog-input', object_instance:  2, name: 'CH-1-kW',               units: 'kilowatts',         behavior: 'random_walk', behavior_params: '{"value":212,"step":8,"min":80,"max":320}' },
+      { object_type: 'binary-input', object_instance:  1, name: 'CH-1-Run',              units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Run_Status' },
+      { object_type: 'analog-input', object_instance:  2, name: 'CH-1-kW',               units: 'kilowatts',         behavior: 'random_walk', behavior_params: '{"value":212,"step":8,"min":80,"max":320}', point_type: 'Power_Sensor' },
       { object_type: 'analog-input', object_instance:  3, name: 'CH-1-COP',              units: 'no-units',          behavior: 'noise',       behavior_params: '{"base":5.8,"noise":0.2}' },
-      { object_type: 'binary-input', object_instance:  4, name: 'CH-2-Run',              units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'analog-input', object_instance:  5, name: 'CH-2-kW',               units: 'kilowatts',         behavior: 'random_walk', behavior_params: '{"value":198,"step":8,"min":80,"max":320}' },
+      { object_type: 'binary-input', object_instance:  4, name: 'CH-2-Run',              units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Run_Status' },
+      { object_type: 'analog-input', object_instance:  5, name: 'CH-2-kW',               units: 'kilowatts',         behavior: 'random_walk', behavior_params: '{"value":198,"step":8,"min":80,"max":320}', point_type: 'Power_Sensor' },
       { object_type: 'analog-input', object_instance:  6, name: 'CH-2-COP',              units: 'no-units',          behavior: 'noise',       behavior_params: '{"base":5.6,"noise":0.2}' },
-      { object_type: 'analog-input', object_instance:  7, name: 'CW-Supply-Temp',        units: 'degrees-celsius',   behavior: 'noise',       behavior_params: '{"base":6.5,"noise":0.2}' },
-      { object_type: 'analog-input', object_instance:  8, name: 'CW-Return-Temp',        units: 'degrees-celsius',   behavior: 'noise',       behavior_params: '{"base":12.2,"noise":0.2}' },
-      { object_type: 'analog-input', object_instance:  9, name: 'CW-Flow',               units: 'liters-per-second', behavior: 'noise',       behavior_params: '{"base":48,"noise":1.5}' },
-      { object_type: 'analog-input', object_instance: 10, name: 'CW-Diff-Pressure',      units: 'pascals',           behavior: 'noise',       behavior_params: '{"base":225,"noise":8}' },
-      { object_type: 'binary-input', object_instance: 11, name: 'CT-Fan-1-Run',          units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'binary-input', object_instance: 12, name: 'CT-Fan-2-Run',          units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'analog-input', object_instance: 13, name: 'CT-Leaving-Water-Temp', units: 'degrees-celsius',   behavior: 'noise',       behavior_params: '{"base":29.5,"noise":0.5}' },
-      { object_type: 'binary-input', object_instance: 15, name: 'CW-Pump-1-Run',         units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'binary-input', object_instance: 16, name: 'CW-Pump-2-Run',         units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":false}' },
+      { object_type: 'analog-input', object_instance:  7, name: 'CW-Supply-Temp',        units: 'degrees-celsius',   behavior: 'noise',       behavior_params: '{"base":6.5,"noise":0.2}', point_type: 'Condenser_Water_Temperature_Sensor' },
+      { object_type: 'analog-input', object_instance:  8, name: 'CW-Return-Temp',        units: 'degrees-celsius',   behavior: 'noise',       behavior_params: '{"base":12.2,"noise":0.2}', point_type: 'Condenser_Water_Temperature_Sensor' },
+      { object_type: 'analog-input', object_instance:  9, name: 'CW-Flow',               units: 'liters-per-second', behavior: 'noise',       behavior_params: '{"base":48,"noise":1.5}', point_type: 'Water_Flow_Sensor' },
+      { object_type: 'analog-input', object_instance: 10, name: 'CW-Diff-Pressure',      units: 'pascals',           behavior: 'noise',       behavior_params: '{"base":225,"noise":8}', point_type: 'Water_Differential_Pressure_Sensor' },
+      { object_type: 'binary-input', object_instance: 11, name: 'CT-Fan-1-Run',          units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Fan_Status' },
+      { object_type: 'binary-input', object_instance: 12, name: 'CT-Fan-2-Run',          units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Fan_Status' },
+      { object_type: 'analog-input', object_instance: 13, name: 'CT-Leaving-Water-Temp', units: 'degrees-celsius',   behavior: 'noise',       behavior_params: '{"base":29.5,"noise":0.5}', point_type: 'Condenser_Water_Temperature_Sensor' },
+      { object_type: 'binary-input', object_instance: 15, name: 'CW-Pump-1-Run',         units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Run_Status' },
+      { object_type: 'binary-input', object_instance: 16, name: 'CW-Pump-2-Run',         units: 'no-units',          behavior: 'manual',      behavior_params: '{"value":false}', point_type: 'Run_Status' },
     ],
   },
   {
@@ -124,17 +126,17 @@ const TEMPLATES: Template[] = [
     desc: 'Dual boilers, HW supply/return temps, pumps, gas flow',
     icon: FireOutlined,
     objects: [
-      { object_type: 'binary-input', object_instance:  1, name: 'BLR-1-Run',        units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}' },
+      { object_type: 'binary-input', object_instance:  1, name: 'BLR-1-Run',        units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Run_Status' },
       { object_type: 'analog-input', object_instance:  2, name: 'BLR-1-Firing-Rate', units: 'percent',               behavior: 'noise',       behavior_params: '{"base":62,"noise":5}' },
-      { object_type: 'analog-input', object_instance:  3, name: 'BLR-1-Flue-Temp',  units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":88,"noise":3}' },
-      { object_type: 'binary-input', object_instance:  4, name: 'BLR-2-Run',        units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":false}' },
+      { object_type: 'analog-input', object_instance:  3, name: 'BLR-1-Flue-Temp',  units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":88,"noise":3}', point_type: 'Temperature_Sensor' },
+      { object_type: 'binary-input', object_instance:  4, name: 'BLR-2-Run',        units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":false}', point_type: 'Run_Status' },
       { object_type: 'analog-input', object_instance:  5, name: 'BLR-2-Firing-Rate', units: 'percent',              behavior: 'manual',      behavior_params: '{"value":0}' },
-      { object_type: 'analog-input', object_instance:  6, name: 'HW-Supply-Temp',   units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":71,"noise":0.8}' },
-      { object_type: 'analog-input', object_instance:  7, name: 'HW-Return-Temp',   units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":58.5,"noise":0.8}' },
-      { object_type: 'analog-input', object_instance:  8, name: 'HW-Diff-Pressure', units: 'pascals',               behavior: 'noise',       behavior_params: '{"base":180,"noise":6}' },
+      { object_type: 'analog-input', object_instance:  6, name: 'HW-Supply-Temp',   units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":71,"noise":0.8}', point_type: 'Leaving_Hot_Water_Temperature_Sensor' },
+      { object_type: 'analog-input', object_instance:  7, name: 'HW-Return-Temp',   units: 'degrees-celsius',       behavior: 'noise',       behavior_params: '{"base":58.5,"noise":0.8}', point_type: 'Entering_Hot_Water_Temperature_Sensor' },
+      { object_type: 'analog-input', object_instance:  8, name: 'HW-Diff-Pressure', units: 'pascals',               behavior: 'noise',       behavior_params: '{"base":180,"noise":6}', point_type: 'Water_Differential_Pressure_Sensor' },
       { object_type: 'analog-input', object_instance:  9, name: 'Gas-Flow',         units: 'cubic-feet-per-minute', behavior: 'random_walk', behavior_params: '{"value":44,"step":3,"min":10,"max":85}' },
-      { object_type: 'binary-input', object_instance: 10, name: 'HW-Pump-1-Run',    units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'binary-input', object_instance: 11, name: 'HW-Pump-2-Run',    units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":false}' },
+      { object_type: 'binary-input', object_instance: 10, name: 'HW-Pump-1-Run',    units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Run_Status' },
+      { object_type: 'binary-input', object_instance: 11, name: 'HW-Pump-2-Run',    units: 'no-units',              behavior: 'manual',      behavior_params: '{"value":false}', point_type: 'Run_Status' },
     ],
   },
   {
@@ -143,12 +145,12 @@ const TEMPLATES: Template[] = [
     desc: 'Building occupancy, alarms, energy, outside air conditions',
     icon: DashboardOutlined,
     objects: [
-      { object_type: 'binary-value', object_instance: 1, name: 'Building-Occupied',    units: 'no-units',      behavior: 'manual',      behavior_params: '{"value":true}' },
-      { object_type: 'analog-value', object_instance: 2, name: 'Active-Alarms',        units: 'no-units',      behavior: 'random_walk', behavior_params: '{"value":2,"step":1,"min":0,"max":8}' },
-      { object_type: 'analog-input', object_instance: 3, name: 'Energy-Today-kWh',     units: 'kilowatt-hours',behavior: 'random_walk', behavior_params: '{"value":430,"step":12,"min":0,"max":2000}' },
-      { object_type: 'analog-input', object_instance: 4, name: 'Peak-Demand-kW',       units: 'kilowatts',     behavior: 'random_walk', behavior_params: '{"value":182,"step":4,"min":50,"max":320}' },
-      { object_type: 'analog-input', object_instance: 5, name: 'Outside-Air-Temp',     units: 'degrees-celsius',behavior: 'sine',       behavior_params: '{"base":12,"amplitude":8,"period_hours":24}' },
-      { object_type: 'analog-input', object_instance: 6, name: 'Outside-Air-Humidity', units: 'percent',       behavior: 'sine',        behavior_params: '{"base":55,"amplitude":15,"period_hours":24}' },
+      { object_type: 'binary-value', object_instance: 1, name: 'Building-Occupied',    units: 'no-units',      behavior: 'manual',      behavior_params: '{"value":true}', point_type: 'Occupancy_Status' },
+      { object_type: 'analog-value', object_instance: 2, name: 'Active-Alarms',        units: 'no-units',      behavior: 'random_walk', behavior_params: '{"value":2,"step":1,"min":0,"max":8}', point_type: 'Alarm' },
+      { object_type: 'analog-input', object_instance: 3, name: 'Energy-Today-kWh',     units: 'kilowatt-hours',behavior: 'random_walk', behavior_params: '{"value":430,"step":12,"min":0,"max":2000}', point_type: 'Energy_Sensor' },
+      { object_type: 'analog-input', object_instance: 4, name: 'Peak-Demand-kW',       units: 'kilowatts',     behavior: 'random_walk', behavior_params: '{"value":182,"step":4,"min":50,"max":320}', point_type: 'Peak_Demand_Sensor' },
+      { object_type: 'analog-input', object_instance: 5, name: 'Outside-Air-Temp',     units: 'degrees-celsius',behavior: 'sine',       behavior_params: '{"base":12,"amplitude":8,"period_hours":24}', point_type: 'Outside_Air_Temperature_Sensor' },
+      { object_type: 'analog-input', object_instance: 6, name: 'Outside-Air-Humidity', units: 'percent',       behavior: 'sine',        behavior_params: '{"base":55,"amplitude":15,"period_hours":24}', point_type: 'Outside_Air_Humidity_Sensor' },
     ],
   },
   {
@@ -157,8 +159,8 @@ const TEMPLATES: Template[] = [
     desc: 'Active power, energy, voltage L1/L2, current, power factor',
     icon: ThunderboltOutlined,
     objects: [
-      { object_type: 'analog-input', object_instance: 1, name: 'Active-Power-kW', units: 'kilowatts',     behavior: 'noise',       behavior_params: '{"base":45,"noise":3}' },
-      { object_type: 'analog-input', object_instance: 2, name: 'Energy-kWh',      units: 'kilowatt-hours',behavior: 'random_walk', behavior_params: '{"value":1000,"step":0.05,"min":0,"max":999999}' },
+      { object_type: 'analog-input', object_instance: 1, name: 'Active-Power-kW', units: 'kilowatts',     behavior: 'noise',       behavior_params: '{"base":45,"noise":3}', point_type: 'Power_Sensor' },
+      { object_type: 'analog-input', object_instance: 2, name: 'Energy-kWh',      units: 'kilowatt-hours',behavior: 'random_walk', behavior_params: '{"value":1000,"step":0.05,"min":0,"max":999999}', point_type: 'Energy_Sensor' },
       { object_type: 'analog-input', object_instance: 3, name: 'Voltage-L1',      units: 'volts',         behavior: 'noise',       behavior_params: '{"base":230,"noise":2}' },
       { object_type: 'analog-input', object_instance: 4, name: 'Voltage-L2',      units: 'volts',         behavior: 'noise',       behavior_params: '{"base":230,"noise":2}' },
       { object_type: 'analog-input', object_instance: 5, name: 'Current-L1',      units: 'amperes',       behavior: 'noise',       behavior_params: '{"base":65,"noise":4}' },
@@ -171,12 +173,12 @@ const TEMPLATES: Template[] = [
     desc: '3-zone dimming levels, overrides, occupancy, setpoints',
     icon: BulbOutlined,
     objects: [
-      { object_type: 'analog-output', object_instance: 1, name: 'Zone-1-Level',         units: 'percent',  behavior: 'manual',   behavior_params: '{"value":100}' },
-      { object_type: 'analog-output', object_instance: 2, name: 'Zone-2-Level',         units: 'percent',  behavior: 'manual',   behavior_params: '{"value":80}' },
-      { object_type: 'analog-output', object_instance: 3, name: 'Zone-3-Level',         units: 'percent',  behavior: 'manual',   behavior_params: '{"value":60}' },
-      { object_type: 'binary-output', object_instance: 4, name: 'Zone-1-Override',      units: 'no-units', behavior: 'manual',   behavior_params: '{"value":false}' },
-      { object_type: 'binary-output', object_instance: 5, name: 'Zone-2-Override',      units: 'no-units', behavior: 'manual',   behavior_params: '{"value":false}' },
-      { object_type: 'binary-value',  object_instance: 6, name: 'Occupancy-Status',     units: 'no-units', behavior: 'manual',   behavior_params: '{"value":true}' },
+      { object_type: 'analog-output', object_instance: 1, name: 'Zone-1-Level',         units: 'percent',  behavior: 'manual',   behavior_params: '{"value":100}', point_type: 'Lighting_Level_Command' },
+      { object_type: 'analog-output', object_instance: 2, name: 'Zone-2-Level',         units: 'percent',  behavior: 'manual',   behavior_params: '{"value":80}', point_type: 'Lighting_Level_Command' },
+      { object_type: 'analog-output', object_instance: 3, name: 'Zone-3-Level',         units: 'percent',  behavior: 'manual',   behavior_params: '{"value":60}', point_type: 'Lighting_Level_Command' },
+      { object_type: 'binary-output', object_instance: 4, name: 'Zone-1-Override',      units: 'no-units', behavior: 'manual',   behavior_params: '{"value":false}', point_type: 'On_Off_Command' },
+      { object_type: 'binary-output', object_instance: 5, name: 'Zone-2-Override',      units: 'no-units', behavior: 'manual',   behavior_params: '{"value":false}', point_type: 'On_Off_Command' },
+      { object_type: 'binary-value',  object_instance: 6, name: 'Occupancy-Status',     units: 'no-units', behavior: 'manual',   behavior_params: '{"value":true}', point_type: 'Occupancy_Status' },
       { object_type: 'analog-value',  object_instance: 7, name: 'Occupancy-Setpoint',   units: 'percent',  behavior: 'constant', behavior_params: '{"value":100}' },
       { object_type: 'analog-value',  object_instance: 8, name: 'Standby-Setpoint',     units: 'percent',  behavior: 'constant', behavior_params: '{"value":30}' },
     ],
@@ -255,29 +257,64 @@ function selectTemplate(key: string) {
   selected.value = selected.value === key ? null : key
 }
 
+function objKey(objectType: string, objectInstance: number): string {
+  return `${objectType}:${objectInstance}`
+}
+
 async function apply() {
   if (!selected.value || !props.deviceId) return
   const tpl =
     TEMPLATES.find(t => t.key === selected.value) ??
     userTemplates.value.find(t => t.key === selected.value)
   if (!tpl) return
+
+  let existing: SimObject[] = []
+  try {
+    existing = await api.objects.list(props.deviceId)
+  } catch {
+    // If this fails, fall through with an empty list — apply() will just
+    // create everything, same as before this conflict check existed.
+  }
+  const existingByKey = new Map(existing.map(o => [objKey(o.object_type, o.object_instance), o]))
+  const conflicts = tpl.objects.filter(o => existingByKey.has(objKey(o.object_type, o.object_instance)))
+
+  if (conflicts.length) {
+    Modal.confirm({
+      title: `Overwrite ${conflicts.length} existing object${conflicts.length !== 1 ? 's' : ''}?`,
+      content: `Applying this template will overwrite ${conflicts.length !== 1 ? 'them' : 'it'} with the template's settings.`,
+      okText: 'Overwrite',
+      okType: 'danger',
+      onOk: () => applyTemplate(tpl, existingByKey),
+    })
+  } else {
+    await applyTemplate(tpl, existingByKey)
+  }
+}
+
+async function applyTemplate(tpl: Template | StoredTemplate, existingByKey: Map<string, SimObject>) {
+  if (!props.deviceId) return
   applying.value = true
   progress.value = 0
 
   let ok = 0
   for (const obj of tpl.objects) {
     try {
-      await api.objects.create(props.deviceId, { ...obj, enabled: 1 })
+      const match = existingByKey.get(objKey(obj.object_type, obj.object_instance))
+      if (match) {
+        await api.objects.update(props.deviceId, match.id, { ...obj, enabled: 1 })
+      } else {
+        await api.objects.create(props.deviceId, { ...obj, enabled: 1 })
+      }
       ok++
     } catch {
-      // skip duplicates / instance conflicts
+      // skip genuine failures (e.g. validation errors)
     }
     progress.value = Math.round(((ok) / tpl.objects.length) * 100)
   }
 
   applying.value = false
   selected.value = null
-  message.success(`Applied "${tpl.label}" — ${ok} object${ok !== 1 ? 's' : ''} created`)
+  message.success(`Applied "${tpl.label}" — ${ok} object${ok !== 1 ? 's' : ''} created/updated`)
   emit('update:open', false)
   emit('applied')
 }

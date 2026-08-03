@@ -108,6 +108,12 @@ POINT_TYPES = {
     "Power_Sensor": "Power",
     "Energy_Sensor": "Energy",
     "Demand_Sensor": "Demand",
+    "Peak_Demand_Sensor": "Peak Demand",
+    "Voltage_Sensor": "Voltage",
+    "Current_Sensor": "Current",
+    "Power_Factor_Sensor": "Power Factor",
+    "Frequency_Sensor": "Frequency",
+    "Natural_Gas_Flow_Sensor": "Natural Gas Flow",
     # Setpoints (bricksrc/setpoint.py)
     "Supply_Air_Temperature_Setpoint": "Supply Air Temperature Setpoint",
     "Room_Air_Temperature_Setpoint": "Zone Air Temperature Setpoint",
@@ -123,6 +129,8 @@ POINT_TYPES = {
     "Start_Stop_Command": "Start/Stop Command",
     "On_Off_Command": "On/Off Command",
     "Lighting_Level_Command": "Lighting Level Command",
+    "Cooling_Command": "Cooling Command",
+    "Heating_Command": "Heating Command",
     # Statuses (bricksrc/status.py)
     "Run_Status": "Run Status",
     "Fan_Status": "Fan Status",

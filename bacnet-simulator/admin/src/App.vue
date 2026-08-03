@@ -31,7 +31,7 @@ const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices:
 const simActionLoading = ref(false)
 const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a', paused: '#faad14', stopped: '#ff4d4f' }
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
-const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], point_types: [], location_kinds: [] })
+const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], point_types: [], location_kinds: [], network_address: null })
 const devices = ref<Device[]>([])
 const locations = ref<Location[]>([])
 const deviceSearch = ref('')
@@ -283,6 +283,14 @@ function openEditLocation(l: Location) { editingLocation.value = l; locationDraw
 async function exportDeviceEde(d: Device) {
   try {
     await api.devices.exportEde(d.id, d.name)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Export failed')
+  }
+}
+
+async function exportDeviceBrick(d: Device) {
+  try {
+    await api.devices.exportBrick(d.id, d.name)
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Export failed')
   }
@@ -829,6 +837,9 @@ onUnmounted(() => {
                         <a-menu-item key="import-ede" @click="importDeviceEde(node.device)">
                           <UploadOutlined /> Import EDE
                         </a-menu-item>
+                        <a-menu-item key="export-brick" @click="exportDeviceBrick(node.device)">
+                          <DownloadOutlined /> Export Brick Schema (.ttl)
+                        </a-menu-item>
                         <a-menu-divider />
                         <a-menu-item key="notification-classes" @click="openNotificationClasses(node.device)">
                           <AlertOutlined /> Notification Classes
@@ -984,7 +995,7 @@ onUnmounted(() => {
     />
 
     <!-- Notification classes drawer -->
-    <NotificationClassDrawer v-model:open="notificationClassDrawerOpen" :device="notificationClassDevice" />
+    <NotificationClassDrawer v-model:open="notificationClassDrawerOpen" :device="notificationClassDevice" :devices="devices" />
 
     <!-- Event enrollments drawer -->
     <EventEnrollmentDrawer v-model:open="eventEnrollmentDrawerOpen" :device="eventEnrollmentDevice" />

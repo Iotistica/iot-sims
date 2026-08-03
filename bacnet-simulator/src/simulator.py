@@ -36,6 +36,7 @@ import uvicorn
 # alarms/calendar/schedule/EDE helpers now live alongside this file in src/.
 from . import alarms
 from . import backup
+from . import brick_export
 from . import ede
 from . import schedule as bacnet_schedule
 from . import calendar as bacnet_calendar
@@ -81,6 +82,8 @@ from bacpypes3.apdu import (
     ErrorPDU,
     RejectPDU,
     AbortPDU,
+    ConfirmedEventNotificationRequest,
+    UnconfirmedEventNotificationRequest,
 )
 
 import logging
@@ -365,6 +368,13 @@ class Database:
             # POINT_TYPES/LOCATION_KINDS for the pinned vocabulary.
             if "equipment_type" not in existing_dev_cols:
                 conn.execute("ALTER TABLE devices ADD COLUMN equipment_type TEXT")
+            # Additive migration: explicit per-device override for whether a
+            # device can receive BACnet Event Notifications. NULL (the
+            # default) means "infer from equipment_type" — see
+            # _effective_can_receive_events(). Only an explicit 0/1 overrides
+            # that inference.
+            if "can_receive_event_notifications" not in existing_dev_cols:
+                conn.execute("ALTER TABLE devices ADD COLUMN can_receive_event_notifications INTEGER")
             if "point_type" not in existing_cols:
                 conn.execute("ALTER TABLE objects ADD COLUMN point_type TEXT")
             existing_loc_cols = {row[1] for row in conn.execute("PRAGMA table_info(locations)")}
@@ -689,11 +699,16 @@ class Database:
             cur = conn.execute(
                 "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
                 "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, "
-                "location_id, equipment_type) "
+                "location_id, equipment_type, can_receive_event_notifications) "
                 "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
                 ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, "
-                ":location_id, :equipment_type)",
-                {**data, "location_id": data.get("location_id"), "equipment_type": data.get("equipment_type")},
+                ":location_id, :equipment_type, :can_receive_event_notifications)",
+                {
+                    **data,
+                    "location_id": data.get("location_id"),
+                    "equipment_type": data.get("equipment_type"),
+                    "can_receive_event_notifications": data.get("can_receive_event_notifications"),
+                },
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM devices WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -706,8 +721,15 @@ class Database:
                 "enabled=:enabled, firmware_revision=:firmware_revision, protocol_revision=:protocol_revision, "
                 "max_apdu_length_accepted=:max_apdu_length_accepted, "
                 "segmentation_supported=:segmentation_supported, location_id=:location_id, "
-                "equipment_type=:equipment_type WHERE id=:id",
-                {**data, "location_id": data.get("location_id"), "equipment_type": data.get("equipment_type"), "id": device_id},
+                "equipment_type=:equipment_type, "
+                "can_receive_event_notifications=:can_receive_event_notifications WHERE id=:id",
+                {
+                    **data,
+                    "location_id": data.get("location_id"),
+                    "equipment_type": data.get("equipment_type"),
+                    "can_receive_event_notifications": data.get("can_receive_event_notifications"),
+                    "id": device_id,
+                },
             )
             conn.commit()
             r = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
@@ -1900,6 +1922,24 @@ def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> 
 
 # ─── BACnet Application ───────────────────────────────────────────────────────
 
+def _effective_can_receive_events(dev: dict) -> bool:
+    """
+    Whether this device can receive BACnet Event Notifications — real BACnet
+    devices vary here (BIBBs like AE-N-I-B/AE-N-E-B vs. AE-N-A-only), and not
+    every simulated device should behave as if it were a supervisory alarm
+    sink. can_receive_event_notifications is an explicit per-device override
+    (0/1); when unset (NULL), infer from equipment_type: devices tagged as a
+    piece of physical HVAC/lighting equipment (AHU, VAV, Boiler, ...) are
+    field-level devices and default to False, while untagged devices
+    (workstations, BMS servers, gateways — this vocabulary has no equipment
+    class for those) default to True.
+    """
+    override = dev.get("can_receive_event_notifications")
+    if override is not None:
+        return bool(override)
+    return dev.get("equipment_type") is None
+
+
 def _is_broadcast_address(destination) -> bool:
     # The *source* of a UDP packet is always the sender's own unicast return
     # address, whether the packet was sent broadcast or not — it never tells
@@ -1922,7 +1962,11 @@ def _resolve_base_ip() -> str:
     iface = os.environ.get("BACPYPES_IFACE", "")
     if iface:
         ip = iface.split(":")[0].split("/")[0]
-        if ip:
+        # "0.0.0.0" here means "bind to all interfaces" — a valid bind
+        # address but not a usable destination for self-directed traffic
+        # (e.g. a device-type notification recipient resolving to our own
+        # address). Fall through to hostname resolution for a real one.
+        if ip and ip != "0.0.0.0":
             return ip
     try:
         hostname = socket.gethostname()
@@ -2105,6 +2149,46 @@ class SimApplication(Application):
             metrics.duplicate_id_events.append({
                 "ts": now, "device_instance": instance, "source": src_str,
             })
+
+    def _log_received_event_notification(self, apdu) -> None:
+        """Parses a real, wire-received APDU and defers to the shared logger.
+        Kept only for genuine external (address-type) recipients — see
+        _log_event_notification_received's docstring for why device-type
+        recipients no longer go through this path at all."""
+        try:
+            sender_instance = int(apdu.initiatingDeviceIdentifier[1])
+        except Exception:
+            sender_instance = None
+        message_text = str(getattr(apdu, "messageText", "") or "")
+        from_state = str(getattr(apdu, "fromState", "?"))
+        to_state = str(getattr(apdu, "toState", "?"))
+        _log_event_notification_received(sender_instance, None, message_text, from_state, to_state)
+
+    async def do_UnconfirmedEventNotificationRequest(self, apdu) -> None:
+        # Unconfirmed and previously unhandled — same situation do_IAmRequest
+        # documents above: Application has no default handler, so this was
+        # silently dropped before this override existed. Purely additive.
+        #
+        # Exceptions here would otherwise be swallowed by Application.
+        # indication()'s broad except block, which logs via bacpypes3's own
+        # debug channel (off by default) rather than the standard logging
+        # module — so a bug in this handler would be silent even with normal
+        # log levels turned up. Log explicitly instead of trusting that path.
+        try:
+            self._log_received_event_notification(apdu)
+        except Exception:
+            log.exception("do_UnconfirmedEventNotificationRequest failed on %r", apdu)
+
+    async def do_ConfirmedEventNotificationRequest(self, apdu) -> None:
+        # Same as above, but must ack — Application has no default handler
+        # for this service either, so without this the *sender's* confirmed
+        # wait (alarms.send_event_notification's asyncio.wait_for) would
+        # error out instead of completing.
+        try:
+            self._log_received_event_notification(apdu)
+        except Exception:
+            log.exception("do_ConfirmedEventNotificationRequest failed on %r", apdu)
+        await self.response(SimpleAckPDU(context=apdu))
 
     async def do_ReadPropertyRequest(self, apdu) -> None:
         objid = apdu.objectIdentifier
@@ -2771,6 +2855,7 @@ class SimEngine:
         snapshot: dict[int, dict] = {}
         devices = await asyncio.to_thread(self.db.get_devices)
         dev_map = {d["id"]: d for d in devices}
+        device_capabilities = {d["device_instance"]: _effective_can_receive_events(d) for d in devices}
 
         alarm_configs = {c["object_id"]: c for c in await asyncio.to_thread(self.db.get_all_alarm_configs)}
         event_enrollments = await asyncio.to_thread(self.db.get_all_event_enrollments)
@@ -2812,10 +2897,10 @@ class SimEngine:
 
             cfg = alarm_configs.get(obj_id)
             if cfg is not None:
-                await self._evaluate_alarm(obj_id, obj_row, dev, val, cfg, notification_classes)
+                await self._evaluate_alarm(obj_id, obj_row, dev, val, cfg, notification_classes, device_capabilities)
 
             for enrollment in enrollments_by_object.get(obj_id, []):
-                await self._evaluate_enrollment(enrollment, obj_row, dev, val, notification_classes)
+                await self._evaluate_enrollment(enrollment, obj_row, dev, val, notification_classes, device_capabilities)
 
             for tl in trend_logs_by_object.get(obj_id, []):
                 if tl["logging_type"] == "polled":
@@ -2864,6 +2949,7 @@ class SimEngine:
 
     async def _evaluate_alarm(
         self, obj_id: int, obj_row: dict, dev: dict, val: Any, cfg: dict, notification_classes: dict[int, dict],
+        device_capabilities: dict[int, bool],
     ) -> None:
         """Advance one object's intrinsic-reporting state machine and, on a
         confirmed transition, log it and (best-effort) notify the object's
@@ -2924,10 +3010,14 @@ class SimEngine:
             asyncio.create_task(alarms.send_event_notification(
                 self.app, dev["device_instance"], obj_row, nc,
                 from_state, to_state, priority, ack_required,
+                device_capabilities=device_capabilities,
+                log_fn=lambda level, msg: _log_event(dev["id"], level, msg),
+                on_local_delivery=_log_event_notification_received,
             ))
 
     async def _evaluate_enrollment(
         self, enrollment: dict, obj_row: dict, dev: dict, val: Any, notification_classes: dict[int, dict],
+        device_capabilities: dict[int, bool],
     ) -> None:
         """Same shape as _evaluate_alarm(), but for an Event Enrollment
         watching obj_row's present-value independently of obj_row's own
@@ -2989,6 +3079,9 @@ class SimEngine:
             asyncio.create_task(alarms.send_event_notification(
                 self.app, dev["device_instance"], obj_row, nc,
                 from_state, to_state, priority, ack_required,
+                device_capabilities=device_capabilities,
+                log_fn=lambda level, msg: _log_event(dev["id"], level, msg),
+                on_local_delivery=_log_event_notification_received,
             ))
 
     async def reload(self) -> None:
@@ -3324,18 +3417,66 @@ def _apply_settings_live(values: dict) -> None:
             engine._history[obj_id] = deque(engine._history[obj_id], maxlen=OBJECT_HISTORY_MAXLEN)
 
 
-def _log_event(device_id: int, level: str, message: str) -> None:
+def _log_event(device_id: Optional[int], level: str, message: str) -> None:
+    """
+    device_id=None records a simulator-level event not attributable to any
+    one virtual device — e.g. an incoming Event Notification, which (since
+    every virtual device shares one socket/address) carries the *sender's*
+    device identifier but nothing about which of our devices it was
+    addressed to. That's a real BACnet Event Notification limitation, not
+    something to paper over with a guess.
+    """
     entry = {
         "ts": time.time(),
         "level": level,
         "device_id": device_id,
-        "device_name": _device_names.get(device_id, f"#{device_id}"),
+        "device_name": _device_names.get(device_id, f"#{device_id}") if device_id is not None else "Simulator",
         "message": message,
     }
-    if device_id not in _device_logs:
-        _device_logs[device_id] = deque(maxlen=_MAX_LOG)
-    _device_logs[device_id].append(entry)
+    if device_id is not None:
+        if device_id not in _device_logs:
+            _device_logs[device_id] = deque(maxlen=_MAX_LOG)
+        _device_logs[device_id].append(entry)
     _global_log.append(entry)
+
+
+def _log_event_notification_received(
+    sender_instance: Optional[int],
+    recipient_instance: Optional[int],
+    message_text: str,
+    from_state: str,
+    to_state: str,
+) -> None:
+    """
+    Records that an Event Notification "arrived" — closes the loop on
+    alarms.send_event_notification(). For device-type recipients this is
+    called directly in-process (see send_event_notification's
+    on_local_delivery callback) rather than from a real received APDU:
+    bacpypes3's IPv4 transport (ipv4/__init__.py, IPv4DatagramServer.
+    confirmation()) silently drops any inbound packet whose source address
+    equals our own bound address, treating it as a reflected broadcast — so
+    a genuine network round-trip can never reach Application.indication()
+    for a notification addressed to one of our own devices (every virtual
+    device here shares one socket/address, so that's always the case for a
+    device-type recipient). Simulating receipt directly sidesteps a real,
+    structural bacpypes3 limitation rather than fighting it — and, since
+    it's in-process, we actually know the recipient here, unlike a genuine
+    received APDU (which only ever carries the *sender's* device identifier;
+    recipient_instance is None when called from that path, e.g. an external
+    address-type sender).
+
+    Logged at the simulator level (device_id=None) rather than attributed to
+    the recipient device: it's still a real BACnet Event Notification
+    limitation that a genuinely external client would face — the recipient
+    is only ever a network address on the wire, this simulator just happens
+    to have out-of-band knowledge of it for its own device-type recipients.
+    """
+    sender = f"device {sender_instance}" if sender_instance is not None else "an unknown device"
+    recipient = f" to device {recipient_instance}" if recipient_instance is not None else ""
+    level = "info" if to_state == "normal" else "error" if to_state == "fault" else "warn"
+    msg = f"Received Event Notification from {sender}{recipient}: {message_text} ({from_state} -> {to_state})"
+    log.info(msg)
+    _log_event(None, level, msg)
 
 
 # ─── WebSocket broadcaster ────────────────────────────────────────────────────
@@ -3716,6 +3857,10 @@ async def sim_stop():
 
 @api.get("/meta")
 async def meta():
+    # All virtual devices share this simulator's single BACnet/IP socket —
+    # there's no per-device address, so notification recipients that target
+    # one of our own devices all resolve to this same network address.
+    own_ip = engine.app._own_ip if engine and engine.app else None
     return {
         "object_types": sorted(VALID_OBJECT_TYPES),
         "behaviors": sorted(VALID_BEHAVIORS),
@@ -3727,6 +3872,7 @@ async def meta():
         "equipment_types": [{"value": k, "label": v} for k, v in sorted(EQUIPMENT_TYPES.items())],
         "point_types": [{"value": k, "label": v} for k, v in sorted(POINT_TYPES.items())],
         "location_kinds": [{"value": k, "label": v} for k, v in sorted(LOCATION_KINDS.items())],
+        "network_address": f"{own_ip}:{BACNET_PORT}" if own_ip and own_ip != "0.0.0.0" else None,
     }
 
 
@@ -3746,7 +3892,10 @@ async def update_settings(body: SettingsPayload):
 
 @api.get("/devices")
 async def list_devices():
-    return await asyncio.to_thread(db.get_devices)
+    devices = await asyncio.to_thread(db.get_devices)
+    for dev in devices:
+        dev["effective_can_receive_event_notifications"] = _effective_can_receive_events(dev)
+    return devices
 
 
 @api.post("/devices", status_code=201)
@@ -4086,6 +4235,37 @@ async def export_project_ede(project_id: int):
     return _ede_response(data.get("devices", []), row["name"])
 
 
+# ── Brick Schema export ──
+
+def _brick_response(devices: list[dict], name: str, project_id: Optional[int] = None) -> Response:
+    graph, warnings = brick_export.build_brick_graph(devices, project_id=project_id)
+    content = brick_export.graph_to_ttl(graph, warnings)
+    filename = (name or "export").replace(" ", "_") + ".ttl"
+    return Response(
+        content=content,
+        media_type="text/turtle",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api.get("/devices/{device_id}/export/brick")
+async def export_device_brick(device_id: int):
+    dev = await asyncio.to_thread(db.get_device, device_id)
+    if not dev:
+        raise HTTPException(404, "Device not found")
+    dev["objects"] = await asyncio.to_thread(db.get_objects, device_id)
+    return _brick_response([dev], dev["name"])
+
+
+@api.get("/profiles/{project_id}/export/brick")
+async def export_project_brick(project_id: int):
+    row = await asyncio.to_thread(db.get_project, project_id)
+    if not row:
+        raise HTTPException(404, "Project not found")
+    data = json.loads(row["data"])
+    return _brick_response(data.get("devices", []), row["name"], project_id=project_id)
+
+
 @api.post("/devices/{device_id}/import/ede")
 async def import_device_ede(device_id: int, file: UploadFile = File(...)):
     if not await asyncio.to_thread(db.get_device, device_id):
@@ -4240,6 +4420,8 @@ async def create_notification_class(device_id: int, body: NotificationClassCreat
     if not await asyncio.to_thread(db.get_device, device_id):
         raise HTTPException(404, "Device not found")
     row = await asyncio.to_thread(db.create_notification_class, device_id, _nc_to_db(body))
+    n_recipients = len(body.recipients)
+    _log_event(device_id, "info", f"Notification class created: {row['name']} ({n_recipients} recipient{'s' if n_recipients != 1 else ''})")
     return _nc_to_api(row)
 
 
@@ -4248,14 +4430,20 @@ async def update_notification_class(nc_id: int, body: NotificationClassUpdate):
     row = await asyncio.to_thread(db.update_notification_class, nc_id, _nc_to_db(body))
     if not row:
         raise HTTPException(404, "Notification class not found")
+    n_recipients = len(body.recipients)
+    _log_event(row["device_id"], "info", f"Notification class updated: {row['name']} ({n_recipients} recipient{'s' if n_recipients != 1 else ''})")
     return _nc_to_api(row)
 
 
 @api.delete("/notification-classes/{nc_id}", status_code=204)
 async def delete_notification_class(nc_id: int):
+    existing = await asyncio.to_thread(db.get_notification_class, nc_id)
+    if not existing:
+        raise HTTPException(404, "Notification class not found")
     deleted = await asyncio.to_thread(db.delete_notification_class, nc_id)
     if not deleted:
         raise HTTPException(404, "Notification class not found")
+    _log_event(existing["device_id"], "warn", f"Notification class removed: {existing['name']}")
 
 
 @api.get("/devices/{device_id}/objects/{obj_id}/alarm-config")

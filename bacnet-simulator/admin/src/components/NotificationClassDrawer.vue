@@ -1,12 +1,69 @@
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { PlusOutlined, MinusCircleOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type { Device, NotificationClass, NotificationRecipient } from '../types'
 
-const props = defineProps<{ open: boolean; device: Device | null }>()
+const props = defineProps<{ open: boolean; device: Device | null; devices?: Device[] }>()
 const emit = defineEmits<{ 'update:open': [v: boolean] }>()
+
+// Recipients follow BACnet's own Recipient CHOICE: either a Device object
+// identifier or a network Address, never both at once. Every virtual device
+// in this simulator shares one BACnet/IP socket, so a device-type recipient
+// always resolves to this same address server-side — the picker just saves
+// you from knowing/typing it, and from converting device -> address by hand.
+//
+// Not every device supports receiving Event Notifications (real BACnet
+// devices vary here too — see effective_can_receive_event_notifications).
+// Incapable devices stay selectable (for teaching purposes) but are visibly
+// flagged, and the server records the delivery attempt as rejected rather
+// than pretending it succeeded.
+const deviceOptions = computed(() =>
+  (props.devices ?? []).map(d => ({
+    value: d.device_instance,
+    label: d.effective_can_receive_event_notifications === false
+      ? `⚠ ${d.name} (${d.device_instance}) — cannot receive Event Notifications`
+      : `${d.name} (${d.device_instance})`,
+  }))
+)
+
+function recipientDeviceCapable(r: NotificationRecipient): boolean {
+  if (r.recipient_type !== 'device' || r.device_instance == null) return true
+  const d = (props.devices ?? []).find(dev => dev.device_instance === r.device_instance)
+  return d?.effective_can_receive_event_notifications !== false
+}
+
+function filterRecipientOption(input: string, opt: { value?: string | number; label?: string }) {
+  return (opt.label ?? '').toLowerCase().includes(input.toLowerCase())
+}
+
+function newRecipient(): NotificationRecipient {
+  return { recipient_type: 'address', device_instance: null, ip_address: '', port: 47808, confirmed: false, process_identifier: 1 }
+}
+
+/** Normalizes both current-shape and pre-split legacy rows ({address: "ip:port"}) into the editable shape. */
+function normalizeRecipient(r: NotificationRecipient): NotificationRecipient {
+  if (r.recipient_type === 'device' || r.recipient_type === 'address') {
+    return {
+      recipient_type: r.recipient_type,
+      device_instance: r.device_instance ?? null,
+      ip_address: r.ip_address ?? '',
+      port: r.port ?? 47808,
+      confirmed: !!r.confirmed,
+      process_identifier: r.process_identifier ?? 1,
+    }
+  }
+  const [ip, portStr] = (r.address ?? '').split(':')
+  return {
+    recipient_type: 'address',
+    device_instance: null,
+    ip_address: ip ?? '',
+    port: portStr ? Number(portStr) : 47808,
+    confirmed: !!r.confirmed,
+    process_identifier: r.process_identifier ?? 1,
+  }
+}
 
 const list = ref<NotificationClass[]>([])
 const loading = ref(false)
@@ -63,16 +120,20 @@ function openEdit(nc: NotificationClass) {
     priority_to_fault: nc.priority_to_fault,
     priority_to_normal: nc.priority_to_normal,
     ack_required_transitions: [...nc.ack_required_transitions],
-    recipients: nc.recipients.map(r => ({ ...r })),
+    recipients: nc.recipients.map(normalizeRecipient),
   })
   formOpen.value = true
 }
 
 function addRecipient() {
-  form.recipients.push({ address: '', confirmed: false, process_identifier: 1 })
+  form.recipients.push(newRecipient())
 }
 function removeRecipient(i: number) {
   form.recipients.splice(i, 1)
+}
+
+function isRecipientFilled(r: NotificationRecipient): boolean {
+  return r.recipient_type === 'device' ? r.device_instance != null : !!r.ip_address?.trim()
 }
 
 async function save() {
@@ -80,7 +141,7 @@ async function save() {
   if (!form.name.trim()) { message.error('Name is required'); return }
   saving.value = true
   try {
-    const body = { ...form, recipients: form.recipients.filter(r => r.address?.trim()) }
+    const body = { ...form, recipients: form.recipients.filter(isRecipientFilled) }
     if (editing.value) {
       await api.notificationClasses.update(editing.value.id, body)
       message.success('Notification class updated')
@@ -139,7 +200,7 @@ function confirmDelete(nc: NotificationClass) {
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
-              <div style="font-weight:600;font-size:14px">{{ nc.name }}</div>
+              <div style="font-weight:600;font-size:14px;color:var(--text-primary)">{{ nc.name }}</div>
               <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 Priorities: {{ nc.priority_to_offnormal }} / {{ nc.priority_to_fault }} / {{ nc.priority_to_normal }}
                 (offnormal / fault / normal)
@@ -192,18 +253,50 @@ function confirmDelete(nc: NotificationClass) {
 
         <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin:12px 0 6px">
           Recipients
-          <span style="font-weight:400;color:var(--text-secondary)">— network address to send Event Notifications to; recipients without an address are skipped on send but still visible in the Alarms log</span>
+          <span style="font-weight:400;color:var(--text-secondary)">— either one of this simulator's devices, or a network address; recipients that don't resolve to an address are skipped on send but still visible in the Alarms log</span>
         </div>
         <div
           v-for="(r, i) in form.recipients" :key="i"
-          style="display:flex;gap:8px;align-items:center;margin-bottom:8px;background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:8px"
+          style="margin-bottom:8px;background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:10px"
         >
-          <a-input v-model:value="r.address" placeholder="192.168.1.50:47808" style="flex:1" />
-          <a-input-number v-model:value="r.process_identifier" :min="0" style="width:80px" title="Process ID" />
-          <a-checkbox v-model:checked="r.confirmed">Confirmed</a-checkbox>
-          <a-button type="text" size="small" danger @click="removeRecipient(i)">
-            <template #icon><MinusCircleOutlined /></template>
-          </a-button>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <a-radio-group v-model:value="r.recipient_type" size="small" button-style="solid">
+              <a-radio-button value="device">BACnet Device</a-radio-button>
+              <a-radio-button value="address">Network Address</a-radio-button>
+            </a-radio-group>
+            <a-button type="text" size="small" danger @click="removeRecipient(i)">
+              <template #icon><MinusCircleOutlined /></template>
+            </a-button>
+          </div>
+
+          <template v-if="r.recipient_type === 'device'">
+            <a-select
+              v-model:value="r.device_instance"
+              :options="deviceOptions"
+              :filter-option="filterRecipientOption"
+              show-search
+              allow-clear
+              placeholder="Select device…"
+              style="width:100%;margin-bottom:8px"
+            />
+            <div v-if="!recipientDeviceCapable(r)" style="font-size:11px;color:#faad14;margin:-4px 0 8px">
+              ⚠ This device does not support Event Notification reception — delivery will be recorded as rejected, not sent.
+            </div>
+          </template>
+          <a-row v-else :gutter="8" style="margin-bottom:8px">
+            <a-col :span="16">
+              <a-input v-model:value="r.ip_address" placeholder="IP Address, e.g. 192.168.1.50" />
+            </a-col>
+            <a-col :span="8">
+              <a-input-number v-model:value="r.port" :min="1" :max="65535" placeholder="Port" style="width:100%" />
+            </a-col>
+          </a-row>
+
+          <div style="display:flex;gap:10px;align-items:center">
+            <span style="font-size:12px;color:var(--text-secondary)">Process ID</span>
+            <a-input-number v-model:value="r.process_identifier" :min="0" style="width:80px" />
+            <a-checkbox v-model:checked="r.confirmed">Confirmed</a-checkbox>
+          </div>
         </div>
         <a-button size="small" block @click="addRecipient">
           <template #icon><PlusOutlined /></template>

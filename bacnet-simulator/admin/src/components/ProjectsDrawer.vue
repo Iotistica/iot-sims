@@ -59,6 +59,14 @@ async function exportProjectEde(p: Project) {
   }
 }
 
+async function exportProjectBrick(p: Project) {
+  try {
+    await api.projects.exportBrick(p.id, p.name)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Export failed')
+  }
+}
+
 function confirmDelete(p: Project) {
   Modal.confirm({
     title: `Delete "${p.name}"?`,
@@ -124,6 +132,7 @@ watch(() => props.open, (isOpen) => {
               <template #icon><DownloadOutlined /></template>
             </a-button>
             <a-button size="small" title="Export as EDE" @click="exportProjectEde(p)">EDE</a-button>
+            <a-button size="small" title="Export as Brick Schema (.ttl)" @click="exportProjectBrick(p)">Brick</a-button>
             <a-button size="small" danger title="Delete" @click="confirmDelete(p)">
               <template #icon><DeleteOutlined /></template>
             </a-button>

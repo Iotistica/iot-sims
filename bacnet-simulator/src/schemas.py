@@ -39,6 +39,7 @@ class DeviceCreate(BaseModel):
     segmentation_supported: str = "segmented-both"
     location_id: Optional[int] = None
     equipment_type: Optional[str] = None
+    can_receive_event_notifications: Optional[bool] = None
 
     def validate_device_info(self) -> None:
         if self.segmentation_supported not in VALID_SEGMENTATION:

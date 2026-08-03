@@ -1,0 +1,113 @@
+name: Parse BACnet PICS (AI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pdf_url:
+        description: 'URL to a full vendor PICS PDF to download and parse (use this OR pdf_path, not both)'
+        required: false
+        type: string
+      pdf_path:
+        description: 'Path (relative to repo root) to a PICS PDF already committed to the repo (use this OR pdf_url, not both)'
+        required: false
+        type: string
+      deployment:
+        description: 'Azure OpenAI deployment name (defaults to the AZURE_OPENAI_DEPLOYMENT secret)'
+        required: false
+        type: string
+
+jobs:
+  parse:
+    name: Parse PICS PDF with Azure OpenAI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          PDF_URL: ${{ inputs.pdf_url }}
+          PDF_PATH: ${{ inputs.pdf_path }}
+        run: |
+          if [ -z "$PDF_URL" ] && [ -z "$PDF_PATH" ]; then
+            echo "::error::Provide either pdf_url or pdf_path."
+            exit 1
+          fi
+          if [ -n "$PDF_URL" ] && [ -n "$PDF_PATH" ]; then
+            echo "::error::Provide only one of pdf_url or pdf_path, not both."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install openai python-dotenv pdfplumber pydantic
+
+      - name: Resolve input PDF
+        id: resolve
+        env:
+          PDF_URL: ${{ inputs.pdf_url }}
+          PDF_PATH: ${{ inputs.pdf_path }}
+        run: |
+          mkdir -p work
+          if [ -n "$PDF_URL" ]; then
+            curl -sSL -A "Mozilla/5.0" -o work/input.pdf "$PDF_URL"
+            echo "pdf_path=work/input.pdf" >> "$GITHUB_OUTPUT"
+          else
+            if [ ! -f "$PDF_PATH" ]; then
+              echo "::error::pdf_path not found in repo: $PDF_PATH"
+              exit 1
+            fi
+            echo "pdf_path=$PDF_PATH" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run PICS parser
+        id: parse
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
+          DEPLOYMENT_OVERRIDE: ${{ inputs.deployment }}
+          PDF_PATH: ${{ steps.resolve.outputs.pdf_path }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          DEPLOY_ARG=""
+          if [ -n "$DEPLOYMENT_OVERRIDE" ]; then
+            DEPLOY_ARG="--deployment $DEPLOYMENT_OVERRIDE"
+          fi
+          python bacnet-simulator/scripts/parse_pics.py \
+            "$PDF_PATH" \
+            --output result.json \
+            $DEPLOY_ARG
+
+      - name: Show result summary
+        if: always() && steps.parse.outcome == 'success'
+        run: |
+          OBJECTS=$(jq '.objects | length' result.json)
+          LAYOUT=$(jq -r '.document_layout' result.json)
+          STATUS=$(jq -r '.status' result.json)
+          CONFIDENCE=$(jq -r '.confidence' result.json)
+          WARNINGS=$(jq '.warnings | length' result.json)
+          VENDOR=$(jq -r '.identity.vendor_name // "unknown"' result.json)
+          PRODUCT=$(jq -r '.identity.product_name // "unknown"' result.json)
+          echo "## PICS Parse Result" >> $GITHUB_STEP_SUMMARY
+          echo "- **Vendor / Product:** $VENDOR / $PRODUCT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Document layout:** $LAYOUT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** $STATUS (confidence $CONFIDENCE)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Objects extracted:** $OBJECTS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Warnings:** $WARNINGS" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload result
+        if: always() && steps.parse.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pics-result
+          path: result.json
+          retention-days: 30

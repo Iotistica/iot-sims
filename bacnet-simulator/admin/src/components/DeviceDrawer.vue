@@ -36,9 +36,16 @@ const form = reactive({
   segmentation_supported: 'segmented-both',
   location_id: null as number | null,
   equipment_type: null as string | null,
+  can_receive_event_notifications: null as boolean | null,
 })
 
 const locationTreeOptions = computed(() => buildLocationTreeOptions(props.locations ?? []))
+
+// Mirrors _effective_can_receive_events() in src/simulator.py: untagged
+// devices (no equipment_type — workstations, BMS servers, gateways have no
+// equipment class in this vocabulary) default to "can receive"; devices
+// tagged as a piece of physical equipment default to "cannot receive".
+const inferredCanReceiveEvents = computed(() => form.equipment_type === null)
 
 // ── Import points from EDE (only offered when adding a new, non-draft device) ──
 
@@ -103,6 +110,8 @@ interface VendorModel {
   type?: string
   typeLabel?: string
   pics_url?: string
+  listing_url?: string
+  certificate_url?: string
   object_types?: Record<string, number | boolean>
   pics_error?: string
 }
@@ -179,6 +188,7 @@ watch(() => props.open, (v) => {
       segmentation_supported: src.segmentation_supported ?? 'segmented-both',
       location_id: src.location_id ?? null,
       equipment_type: src.equipment_type ?? null,
+      can_receive_event_notifications: src.can_receive_event_notifications ?? null,
     })
   } else {
     Object.assign(form, {
@@ -186,6 +196,7 @@ watch(() => props.open, (v) => {
       firmware_revision: 'N/A', protocol_revision: 22, max_apdu_length_accepted: 1024, segmentation_supported: 'segmented-both',
       location_id: null,
       equipment_type: null,
+      can_receive_event_notifications: null,
     })
   }
 })
@@ -294,6 +305,20 @@ function doDelete() {
           :options="meta.equipment_types"
           :filter-option="filterOption"
         />
+      </a-form-item>
+
+      <a-form-item label="Event Notification Reception">
+        <a-select
+          v-model:value="form.can_receive_event_notifications"
+          :options="[
+            { value: null, label: `Auto (${inferredCanReceiveEvents ? 'can' : 'cannot'} receive, based on Equipment Type)` },
+            { value: true, label: 'Yes — can receive Event Notifications' },
+            { value: false, label: 'No — cannot receive Event Notifications' },
+          ]"
+        />
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+          Real BACnet devices vary here (e.g. field controllers often can't receive alarms the way an operator workstation can) — this decides whether this device shows up as a viable Notification Class recipient.
+        </div>
       </a-form-item>
 
       <a-row :gutter="12">

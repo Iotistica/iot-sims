@@ -186,15 +186,26 @@ def get_products(mfr_id: str) -> list[dict]:
                         if p in PROFILE_LABELS:
                             entry["typeLabel"] = PROFILE_LABELS[p]
 
-                # Capture PICS PDF link from any cell in the row
+                # Capture links from the row. The "PICS" column is a JS
+                # button (href="#") carrying the real, full vendor-submitted
+                # PICS document in a data-path attribute — not every product
+                # has one. The two .pdf hrefs are the auto-generated
+                # short-form BTL Listing certificate, then the 1-page
+                # Certificate of Conformance (always present as a pair).
+                pdf_urls: list[str] = []
                 for cell in cells:
-                    for a in cell.find_all("a", href=True):
-                        href = a["href"]
-                        if href.lower().endswith(".pdf"):
-                            entry["pics_url"] = urljoin(url, href)
-                            break
-                    if "pics_url" in entry:
-                        break
+                    for a in cell.find_all("a"):
+                        data_path = a.get("data-path")
+                        if data_path and "pics_url" not in entry:
+                            entry["pics_url"] = data_path
+                        href = a.get("href")
+                        if href and href.lower().endswith(".pdf"):
+                            pdf_urls.append(urljoin(url, href))
+
+                if pdf_urls:
+                    entry["listing_url"] = pdf_urls[0]
+                if len(pdf_urls) > 1:
+                    entry["certificate_url"] = pdf_urls[1]
 
                 products.append(entry)
 
@@ -351,10 +362,21 @@ def parse_pics_pdf(url: str) -> dict[str, int | bool]:
 # Scrape modes
 # ---------------------------------------------------------------------------
 
-def _pics_stats(products: list[dict]) -> tuple[int, int]:
-    """Return (products_with_pics_url, products_with_object_types)."""
+def _object_types_source_url(product: dict) -> str | None:
+    """
+    The URL to feed the object-type extractor. Prefer the real, full
+    vendor-submitted PICS document (pics_url) when the product has one;
+    fall back to the short auto-generated BTL Listing certificate
+    (listing_url) otherwise — both are handled by parse_pics_pdf.
+    """
+    return product.get("pics_url") or product.get("listing_url")
+
+
+def _pics_stats(products: list[dict]) -> tuple[int, int, int]:
+    """Return (products_with_real_pics, products_with_listing_only, products_with_object_types)."""
     return (
         sum(1 for p in products if "pics_url" in p),
+        sum(1 for p in products if "pics_url" not in p and "listing_url" in p),
         sum(1 for p in products if "object_types" in p),
     )
 
@@ -403,11 +425,11 @@ def scrape(parse_pics: bool = False, only_mfr_id: str | None = None, out_path: P
             unique = [p for p in products if p["name"] not in seen and not seen.add(p["name"])]  # type: ignore[func-returns-value]
 
             # Carry forward previously-parsed PICS data when the product's
-            # pics_url hasn't changed, so a plain re-scrape never throws
+            # source URL hasn't changed, so a plain re-scrape never throws
             # away work a prior --parse-pics/--update-pics run already did.
             for p in unique:
                 prev = existing.get((name, p["name"]))
-                if prev and prev.get("pics_url") == p.get("pics_url"):
+                if prev and _object_types_source_url(prev) == _object_types_source_url(p):
                     if "object_types" in prev:
                         p["object_types"] = prev["object_types"]
                     if "pics_error" in prev:
@@ -415,12 +437,13 @@ def scrape(parse_pics: bool = False, only_mfr_id: str | None = None, out_path: P
 
             if parse_pics:
                 for p in unique:
-                    if "pics_url" not in p:
+                    source_url = _object_types_source_url(p)
+                    if not source_url:
                         continue
                     if "object_types" in p or "pics_error" in p:
                         continue  # already have a result carried forward
                     try:
-                        ot = parse_pics_pdf(p["pics_url"])
+                        ot = parse_pics_pdf(source_url)
                         if ot:
                             p["object_types"] = ot
                     except Exception as e:
@@ -429,8 +452,8 @@ def scrape(parse_pics: bool = False, only_mfr_id: str | None = None, out_path: P
 
             if unique:
                 vendors[name] = unique
-                n_links, n_parsed = _pics_stats(unique)
-                tag = f" ({n_links} PICS"
+                n_real, n_listing_only, n_parsed = _pics_stats(unique)
+                tag = f" ({n_real} PICS, {n_listing_only} listing-only"
                 if parse_pics:
                     tag += f", {n_parsed} parsed"
                 tag += ")"
@@ -446,8 +469,9 @@ def scrape(parse_pics: bool = False, only_mfr_id: str | None = None, out_path: P
 
 def update_pics(out_path: Path, only_mfr_name: str | None = None, force: bool = False) -> dict:
     """
-    Read existing JSON, parse PDFs for products that have a pics_url but
-    no object_types yet (or all of them if --force).  No HTML re-scrape.
+    Read existing JSON, parse PDFs for products that have a pics_url or
+    listing_url but no object_types yet (or all of them if --force).  No
+    HTML re-scrape.
     """
     if not out_path.exists():
         print(f"ERROR: {out_path} not found — run without --update-pics first", file=sys.stderr)
@@ -461,14 +485,15 @@ def update_pics(out_path: Path, only_mfr_name: str | None = None, force: bool = 
         if only_mfr_name and only_mfr_name.lower() not in vendor["name"].lower():
             continue
         for product in vendor["models"]:
-            if "pics_url" not in product:
+            source_url = _object_types_source_url(product)
+            if not source_url:
                 continue
             if not force and "object_types" in product:
                 continue
             total += 1
             print(f"  Parsing {vendor['name']} / {product['name']} …", end="", flush=True)
             try:
-                ot = parse_pics_pdf(product["pics_url"])
+                ot = parse_pics_pdf(source_url)
                 if ot:
                     product["object_types"] = ot
                     updated += 1
@@ -526,12 +551,14 @@ def main():
             print("PICS parsing enabled")
         data = scrape(parse_pics=args.parse_pics, only_mfr_id=args.manufacturer, out_path=out_path)
 
-    vendor_count  = len(data["vendors"])
-    product_count = sum(len(v["models"]) for v in data["vendors"])
-    pics_links    = sum(1 for v in data["vendors"] for m in v["models"] if "pics_url" in m)
-    pics_parsed   = sum(1 for v in data["vendors"] for m in v["models"] if "object_types" in m)
+    vendor_count   = len(data["vendors"])
+    product_count  = sum(len(v["models"]) for v in data["vendors"])
+    real_pics      = sum(1 for v in data["vendors"] for m in v["models"] if "pics_url" in m)
+    listing_only   = sum(1 for v in data["vendors"] for m in v["models"] if "pics_url" not in m and "listing_url" in m)
+    pics_parsed    = sum(1 for v in data["vendors"] for m in v["models"] if "object_types" in m)
     print(f"Result: {vendor_count} vendors, {product_count} products, "
-          f"{pics_links} PICS links, {pics_parsed} parsed")
+          f"{real_pics} with a real PICS document, {listing_only} listing-only, "
+          f"{pics_parsed} object_types parsed")
 
     if vendor_count == 0 and not args.update_pics:
         print("WARNING: 0 vendors — preserving existing file.", file=sys.stderr)

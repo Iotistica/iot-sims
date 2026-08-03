@@ -101,6 +101,7 @@ export const api = {
     exportEde: (id: number, name: string)  => downloadFile(`/devices/${id}/export/ede`, `${name}.ede`),
     importEde: (id: number, file: File)    =>
       uploadFile<{ ok: boolean; objects_imported: number }>(`/devices/${id}/import/ede`, file),
+    exportBrick: (id: number, name: string) => downloadFile(`/devices/${id}/export/brick`, `${name}.ttl`),
   },
 
   locations: {
@@ -140,6 +141,7 @@ export const api = {
     exportEde: (id: number, name: string) => downloadFile(`/profiles/${id}/export/ede`, `${name}.ede`),
     importEde: (name: string, description: string, deviceName: string, file: File) =>
       uploadFile<Project>('/profiles/import/ede', file, { name, description, device_name: deviceName }),
+    exportBrick: (id: number, name: string) => downloadFile(`/profiles/${id}/export/brick`, `${name}.ttl`),
   },
 
   // Whole-database snapshot/restore — distinct from `projects` above (which

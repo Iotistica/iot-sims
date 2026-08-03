@@ -7,6 +7,7 @@ bcrypt==4.2.1
 pyjwt==2.10.1
 psutil==6.1.1
 python-multipart==0.0.20
+rdflib>=7.0
 
 # scrape-btl.py dependencies
 requests>=2.31
