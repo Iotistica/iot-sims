@@ -113,6 +113,54 @@ from .api.routers.calendars import (
     router as calendars_router,
 )
 
+from .api.routers.alarms import (
+    router as alarms_router,
+)
+
+from .api.routers.trend_logs import (
+    router as trend_logs_router,
+)
+
+from .api.routers.schedules import (
+    router as schedules_router,
+)
+
+
+from .api.routers.devices import (
+    router as devices_router,
+)
+
+from .api.routers.analytics import (
+    router as analytics_router,
+)
+
+from .api.routers.auth import (
+    router as auth_router,
+)
+
+from .api.routers.events import (
+    router as events_router,
+)
+
+from .api.routers.exports import (
+    router as exports_router,
+)
+
+from .api.routers.objects import (
+    router as objects_router,
+)
+
+from .api.routers.projects import (
+    router as projects_router,
+)
+
+from .api.routers.simulation import (
+    router as simulation_router,
+)
+
+from .api.routers.websocket import (
+    router as websocket_router,
+)
 
 _debug = 0
 _log = ModuleLogger(globals())
@@ -1938,6 +1986,21 @@ def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> 
         return FaultBehavior(params)
     return ConstantBehavior({"value": 0})
 
+def get_device_log_entries(
+    device_id: int,
+    limit: int,
+) -> list[dict]:
+    entries = list(
+        _device_logs.get(device_id, [])
+    )
+    return entries[-limit:]
+
+
+def get_global_log_entries(
+    limit: int,
+) -> list[dict]:
+    entries = list(_global_log)
+    return entries[-limit:]
 
 # ─── BACnet Application ───────────────────────────────────────────────────────
 
@@ -3719,15 +3782,22 @@ def _log_event_notification_received(
 async def broadcast_state() -> None:
     if not ws_clients:
         return
-    data = json.dumps(engine.get_state())
-    dead = []
-    for ws in ws_clients:
+
+    data = json.dumps(
+        engine.get_state()
+    )
+
+    dead_clients: list[WebSocket] = []
+
+    for websocket in list(ws_clients):
         try:
-            await ws.send_text(data)
+            await websocket.send_text(data)
         except Exception:
-            dead.append(ws)
-    for ws in dead:
-        ws_clients.remove(ws)
+            dead_clients.append(websocket)
+
+    for websocket in dead_clients:
+        if websocket in ws_clients:
+            ws_clients.remove(websocket)
 
 
 # ─── Analytics aggregation ─────────────────────────────────────────────────────
@@ -3932,6 +4002,39 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.packet_capture = packet_capture
 
+    app.state.get_current_user = get_current_user
+    app.state.log_event = _log_event
+
+    app.state.device_names = _device_names
+    app.state.effective_can_receive_events = (
+        _effective_can_receive_events
+    )
+
+    app.state.build_metrics_snapshot = (
+    build_metrics_snapshot
+    )
+
+    app.state.user_from_token = user_from_token
+    app.state.metrics_ws_clients = (
+        metrics_ws_clients
+    )
+
+    app.state.hash_password = hash_password
+    app.state.verify_password = verify_password
+    app.state.create_access_token = create_access_token
+
+    app.state.device_logs = _device_logs
+    app.state.global_log = _global_log
+    app.state.get_device_logs = (
+    get_device_log_entries
+    )
+    app.state.get_global_logs = (
+        get_global_log_entries
+    )
+
+    app.state.ws_clients = ws_clients
+    app.state.metrics_ws_clients = metrics_ws_clients
+
     _apply_settings_live(await asyncio.to_thread(db.get_settings))
     await engine.start()
     tick_task = asyncio.create_task(tick_loop())
@@ -3956,6 +4059,18 @@ api.include_router(packet_capture_router)
 api.include_router(backups_router)
 api.include_router(locations_router)
 api.include_router(calendars_router)
+api.include_router(alarms_router)
+api.include_router(trend_logs_router)
+api.include_router(schedules_router)
+api.include_router(devices_router)
+api.include_router(analytics_router)
+api.include_router(auth_router)
+api.include_router(exports_router)
+api.include_router(events_router)
+api.include_router(objects_router)
+api.include_router(projects_router)
+api.include_router(simulation_router)
+api.include_router(websocket_router)
 
 api.add_middleware(
     CORSMiddleware,
@@ -4009,98 +4124,6 @@ async def bacnet_vendors():
     return JSONResponse({"vendors": []})
 
 
-@api.get("/auth/setup-required")
-async def auth_setup_required():
-    count = await asyncio.to_thread(db.count_users)
-    return {"setup_required": count == 0}
-
-
-@api.post("/auth/setup", status_code=201)
-async def auth_setup(body: Credentials):
-    count = await asyncio.to_thread(db.count_users)
-    if count > 0:
-        raise HTTPException(status_code=409, detail="Setup already completed")
-    password_hash = hash_password(body.password)
-    user = await asyncio.to_thread(db.create_user, body.username, password_hash)
-    token = create_access_token(user["id"], user["username"])
-    return {"access_token": token, "user": user}
-
-
-@api.post("/auth/login")
-async def auth_login(body: Credentials):
-    user = await asyncio.to_thread(db.get_user_by_username, body.username)
-    if not user or not verify_password(body.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-    await asyncio.to_thread(db.touch_last_login, user["id"])
-    token = create_access_token(user["id"], user["username"])
-    return {"access_token": token, "user": {"id": user["id"], "username": user["username"]}}
-
-
-@api.get("/auth/me")
-async def auth_me(current_user: dict = Depends(get_current_user)):
-    return current_user
-
-
-@api.get("/users")
-async def list_users():
-    return await asyncio.to_thread(db.list_users)
-
-
-@api.post("/users", status_code=201)
-async def create_user(body: Credentials):
-    if await asyncio.to_thread(db.get_user_by_username, body.username):
-        raise HTTPException(status_code=409, detail="Username already exists")
-    password_hash = hash_password(body.password)
-    return await asyncio.to_thread(db.create_user, body.username, password_hash)
-
-
-@api.post("/users/{user_id}/password")
-async def reset_user_password(user_id: int, body: PasswordReset):
-    if not await asyncio.to_thread(db.get_user, user_id):
-        raise HTTPException(status_code=404, detail="User not found")
-    password_hash = hash_password(body.password)
-    await asyncio.to_thread(db.update_user_password, user_id, password_hash)
-    return {"ok": True}
-
-
-@api.delete("/users/{user_id}", status_code=204)
-async def delete_user(user_id: int):
-    if not await asyncio.to_thread(db.get_user, user_id):
-        raise HTTPException(status_code=404, detail="User not found")
-    if await asyncio.to_thread(db.count_users) <= 1:
-        raise HTTPException(status_code=400, detail="Cannot delete the last remaining user")
-    await asyncio.to_thread(db.delete_user, user_id)
-
-
-@api.get("/health")
-async def health():
-    devices = await asyncio.to_thread(db.get_devices)
-    return {
-        "status": "ok",
-        "devices": len(devices),
-        "bacnet_running": engine.app is not None,
-        "sim_state": engine.clock_state,
-        "elapsed_seconds": engine.state.elapsed_seconds,
-    }
-
-
-@api.post("/sim/start")
-async def sim_start():
-    engine.resume()
-    return {"sim_state": engine.clock_state}
-
-
-@api.post("/sim/pause")
-async def sim_pause():
-    engine.pause()
-    return {"sim_state": engine.clock_state}
-
-
-@api.post("/sim/stop")
-async def sim_stop():
-    engine.reset()
-    return {"sim_state": engine.clock_state, "elapsed_seconds": engine.state.elapsed_seconds}
-
 
 @api.get("/meta")
 async def meta():
@@ -4134,322 +4157,6 @@ async def update_settings(body: SettingsPayload):
     _apply_settings_live(body.model_dump())
     return body
 
-
-# ── Devices ──
-
-@api.get("/devices")
-async def list_devices():
-    devices = await asyncio.to_thread(db.get_devices)
-    for dev in devices:
-        dev["effective_can_receive_event_notifications"] = _effective_can_receive_events(dev)
-    return devices
-
-
-@api.post("/devices", status_code=201)
-async def create_device(body: DeviceCreate):
-    body.validate_device_info()
-    body.validate_semantic()
-    if body.location_id is not None and not await asyncio.to_thread(db.get_location, body.location_id):
-        raise HTTPException(404, "Location not found")
-    try:
-        device = await asyncio.to_thread(db.create_device, body.model_dump())
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, f"Device instance {body.device_instance} already exists")
-    _device_names[device["id"]] = device["name"]
-    _log_event(device["id"], "info", f"Device created: {device['name']} (instance {device['device_instance']})")
-    asyncio.create_task(engine.reload())
-    return device
-
-
-@api.get("/devices/{device_id}")
-async def get_device(device_id: int):
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    return d
-
-
-@api.put("/devices/{device_id}")
-async def update_device(device_id: int, body: DeviceUpdate):
-    body.validate_device_info()
-    body.validate_semantic()
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    if body.location_id is not None and not await asyncio.to_thread(db.get_location, body.location_id):
-        raise HTTPException(404, "Location not found")
-    try:
-        updated = await asyncio.to_thread(db.update_device, device_id, body.model_dump())
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, f"Device instance {body.device_instance} already exists")
-    _device_names[device_id] = body.name
-    enabled_changed = d["enabled"] != body.enabled
-    if enabled_changed:
-        _log_event(device_id, "info", f"Device {'enabled' if body.enabled else 'disabled'}")
-    elif d["name"] != body.name:
-        _log_event(device_id, "info", f"Device renamed to '{body.name}'")
-    elif d.get("location_id") != body.location_id:
-        _log_event(device_id, "info", "Device moved to a different location")
-    else:
-        _log_event(device_id, "info", "Device configuration updated")
-    asyncio.create_task(engine.reload())
-    return updated
-
-
-@api.delete("/devices/{device_id}", status_code=204)
-async def delete_device(device_id: int):
-    deleted = await asyncio.to_thread(db.delete_device, device_id)
-    if not deleted:
-        raise HTTPException(404, "Device not found")
-    asyncio.create_task(engine.reload())
-
-
-# ── Objects ──
-
-@api.get("/devices/{device_id}/objects")
-async def list_objects(device_id: int):
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    return await asyncio.to_thread(db.get_objects, device_id)
-
-
-@api.post("/devices/{device_id}/objects", status_code=201)
-async def create_object(device_id: int, body: ObjectCreate):
-    body.validate_type()
-    body.validate_semantic()
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    try:
-        obj = await asyncio.to_thread(db.create_object, device_id, body.model_dump())
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, f"Object {body.object_type},{body.object_instance} already exists on this device")
-    _log_event(device_id, "info", f"Object added: {body.name} ({body.object_type}:{body.object_instance})")
-    if d["enabled"] and body.enabled:
-        asyncio.create_task(engine.add_object_hot(d["device_instance"], obj))
-    return obj
-
-
-@api.get("/devices/{device_id}/objects/{obj_id}")
-async def get_object(device_id: int, obj_id: int):
-    obj = await asyncio.to_thread(db.get_object, obj_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(404, "Object not found")
-    return obj
-
-
-@api.put("/devices/{device_id}/objects/{obj_id}")
-async def update_object(device_id: int, obj_id: int, body: ObjectUpdate):
-    body.validate_type()
-    body.validate_semantic()
-    obj = await asyncio.to_thread(db.get_object, obj_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(404, "Object not found")
-    updated = await asyncio.to_thread(db.update_object, obj_id, body.model_dump())
-    enabled_changed = obj["enabled"] != body.enabled
-    if enabled_changed:
-        _log_event(device_id, "info", f"Object {obj['name']}: {'enabled' if body.enabled else 'disabled'}")
-    elif obj["behavior"] != body.behavior:
-        _log_event(device_id, "info", f"Object {obj['name']}: behavior changed to {body.behavior}")
-    else:
-        _log_event(device_id, "info", f"Object {obj['name']}: configuration updated")
-    asyncio.create_task(engine.reload())
-    return updated
-
-
-@api.delete("/devices/{device_id}/objects/{obj_id}", status_code=204)
-async def delete_object(device_id: int, obj_id: int):
-    obj = await asyncio.to_thread(db.get_object, obj_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(404, "Object not found")
-    _log_event(device_id, "warn", f"Object removed: {obj['name']} ({obj['object_type']}:{obj['object_instance']})")
-    await asyncio.to_thread(db.delete_object, obj_id)
-    asyncio.create_task(engine.reload())
-
-
-@api.get("/devices/{device_id}/logs")
-async def get_device_logs(device_id: int, limit: int = 100):
-    entries = list(_device_logs.get(device_id, []))
-    return entries[-limit:]
-
-
-@api.get("/logs")
-async def get_all_logs(limit: int = 200):
-    entries = list(_global_log)
-    return entries[-limit:]
-
-
-@api.post("/devices/{device_id}/objects/{obj_id}/value")
-async def set_object_value(device_id: int, obj_id: int, body: SetValueRequest):
-    obj = await asyncio.to_thread(db.get_object, obj_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(404, "Object not found")
-    await asyncio.to_thread(db.set_manual_value, obj_id, body.value)
-    engine.set_manual_value(obj_id, body.value)
-    val_str = str(body.value) + (f" {obj['units']}" if obj.get("units") and obj["units"] != "no-units" else "")
-    _log_event(device_id, "info", f"Manual override: {obj['name']} → {val_str}")
-    return {"ok": True}
-
-
-@api.get("/devices/{device_id}/objects/{obj_id}/history")
-async def get_object_history(device_id: int, obj_id: int):
-    obj = await asyncio.to_thread(db.get_object, obj_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(404, "Object not found")
-    hist = engine._history.get(obj_id, deque())
-    return [{"ts": ts, "value": v} for ts, v in hist]
-
-
-@api.get("/devices/{device_id}/objects/{obj_id}/priority-array")
-async def get_priority_array(device_id: int, obj_id: int):
-    obj = await asyncio.to_thread(db.get_object, obj_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(404, "Object not found")
-    if obj["object_type"] not in COMMANDABLE_TYPES:
-        raise HTTPException(400, f"{obj['object_type']} has no BACnet priority array (not Commandable)")
-    result = engine.get_priority_array(obj_id)
-    if result is None:
-        raise HTTPException(409, "Object is not currently live in the running application")
-    return result
-
-
-@api.put("/devices/{device_id}/objects/{obj_id}/priority-array/{priority}")
-async def write_priority_array(device_id: int, obj_id: int, priority: int, body: PriorityWrite):
-    if not (1 <= priority <= 16):
-        raise HTTPException(400, "priority must be between 1 and 16")
-    obj = await asyncio.to_thread(db.get_object, obj_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(404, "Object not found")
-    if obj["object_type"] not in COMMANDABLE_TYPES:
-        raise HTTPException(400, f"{obj['object_type']} has no BACnet priority array (not Commandable)")
-    ok = await engine.write_priority(obj_id, priority, body.value)
-    if not ok:
-        raise HTTPException(409, "Object is not currently live in the running application")
-    action = "relinquished" if body.value is None else f"set to {body.value}"
-    _log_event(device_id, "info", f"Priority array: {obj['name']} priority {priority} {action}")
-    return engine.get_priority_array(obj_id)
-
-
-# ── Projects ──
-# Routes stay under /profiles for now (unchanged URL space) — only the
-# Python-level naming (function names, schema classes, Database methods)
-# was renamed to "project" to match the admin UI.
-
-@api.get("/profiles")
-async def list_projects():
-    return await asyncio.to_thread(db.get_projects)
-
-
-@api.post("/profiles", status_code=201)
-async def save_project(body: ProjectCreate):
-    return await asyncio.to_thread(db.save_project, body.name, body.description)
-
-
-@api.put("/profiles/{project_id}")
-async def update_project(project_id: int, body: ProjectUpdate):
-    ok = await asyncio.to_thread(db.update_project, project_id, body.name, body.description)
-    if not ok:
-        raise HTTPException(404, "Project not found")
-    return {"ok": True}
-
-
-@api.delete("/profiles/{project_id}", status_code=204)
-async def delete_project(project_id: int):
-    deleted = await asyncio.to_thread(db.delete_project, project_id)
-    if not deleted:
-        raise HTTPException(404, "Project not found")
-
-
-@api.post("/profiles/{project_id}/load")
-async def load_project(project_id: int):
-    ok = await asyncio.to_thread(db.load_project, project_id)
-    if not ok:
-        raise HTTPException(404, "Project not found")
-    asyncio.create_task(engine.reload())
-    # A freshly loaded project starts paused — the user presses Start when ready.
-    engine.reset()
-    return {"ok": True}
-
-
-@api.get("/profiles/{project_id}/export")
-async def export_project(project_id: int):
-    row = await asyncio.to_thread(db.get_project, project_id)
-    if not row:
-        raise HTTPException(404, "Project not found")
-    content = json.dumps(json.loads(row["data"]), indent=2)
-    filename = row["name"].replace(" ", "_") + ".json"
-    return Response(
-        content=content,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@api.post("/profiles/import", status_code=201)
-async def import_project(body: ProjectImport):
-    return await asyncio.to_thread(db.import_project, body.name, body.description, body.data)
-
-
-# ── EDE import/export ──
-
-def _ede_response(devices: list[dict], project_name: str) -> Response:
-    content = ede.devices_to_ede(devices, project_name)
-    filename = (project_name or "export").replace(" ", "_") + ".ede"
-    return Response(
-        content=content,
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@api.get("/devices/{device_id}/export/ede")
-async def export_device_ede(device_id: int):
-    dev = await asyncio.to_thread(db.get_device, device_id)
-    if not dev:
-        raise HTTPException(404, "Device not found")
-    dev["objects"] = await asyncio.to_thread(db.get_objects, device_id)
-    return _ede_response([dev], dev["name"])
-
-
-@api.get("/profiles/{project_id}/export/ede")
-async def export_project_ede(project_id: int):
-    row = await asyncio.to_thread(db.get_project, project_id)
-    if not row:
-        raise HTTPException(404, "Project not found")
-    data = json.loads(row["data"])
-    return _ede_response(data.get("devices", []), row["name"])
-
-
-# ── Brick Schema export ──
-
-def _brick_response(devices: list[dict], name: str, project_id: Optional[int] = None) -> Response:
-    graph, warnings = brick_export.build_brick_graph(devices, project_id=project_id)
-    content = brick_export.graph_to_ttl(graph, warnings)
-    filename = (name or "export").replace(" ", "_") + ".ttl"
-    return Response(
-        content=content,
-        media_type="text/turtle",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@api.get("/devices/{device_id}/export/brick")
-async def export_device_brick(device_id: int):
-    dev = await asyncio.to_thread(db.get_device, device_id)
-    if not dev:
-        raise HTTPException(404, "Device not found")
-    dev["objects"] = await asyncio.to_thread(db.get_objects, device_id)
-    return _brick_response([dev], dev["name"])
-
-
-@api.get("/profiles/{project_id}/export/brick")
-async def export_project_brick(project_id: int):
-    row = await asyncio.to_thread(db.get_project, project_id)
-    if not row:
-        raise HTTPException(404, "Project not found")
-    data = json.loads(row["data"])
-    return _brick_response(data.get("devices", []), row["name"], project_id=project_id)
 
 
 @api.post("/devices/{device_id}/import/ede")
@@ -4490,616 +4197,6 @@ async def import_project_ede(
     data = ede.rows_to_devices(rows, device_name)
     return await asyncio.to_thread(db.import_project, name, description, data)
 
-
-# ── Alarms & Notification Classes (BACnet Intrinsic Reporting, Phase 1) ──
-
-def _nc_to_api(row: dict) -> dict:
-    return {
-        "id": row["id"],
-        "device_id": row["device_id"],
-        "name": row["name"],
-        "priority_to_offnormal": row["priority_to_offnormal"],
-        "priority_to_fault": row["priority_to_fault"],
-        "priority_to_normal": row["priority_to_normal"],
-        "ack_required_transitions": json.loads(row["ack_required_transitions"] or "[]"),
-        "recipients": json.loads(row["recipients"] or "[]"),
-    }
-
-
-def _nc_to_db(body: NotificationClassCreate) -> dict:
-    return {
-        "name": body.name,
-        "priority_to_offnormal": body.priority_to_offnormal,
-        "priority_to_fault": body.priority_to_fault,
-        "priority_to_normal": body.priority_to_normal,
-        "ack_required_transitions": json.dumps(body.ack_required_transitions),
-        "recipients": json.dumps(body.recipients),
-    }
-
-
-def _alarm_cfg_to_api(row: dict) -> dict:
-    return {
-        "object_id": row["object_id"],
-        "notification_class_id": row["notification_class_id"],
-        "enabled": bool(row["enabled"]),
-        "event_enable": json.loads(row["event_enable"] or "[]"),
-        "notify_type": row["notify_type"],
-        "time_delay": row["time_delay"],
-        "time_delay_normal": row["time_delay_normal"],
-        "params": json.loads(row["params"] or "{}"),
-    }
-
-
-@api.get("/devices/{device_id}/notification-classes")
-async def list_notification_classes(device_id: int):
-    rows = await asyncio.to_thread(db.get_notification_classes, device_id)
-    return [_nc_to_api(r) for r in rows]
-
-
-@api.post("/devices/{device_id}/notification-classes", status_code=201)
-async def create_notification_class(device_id: int, body: NotificationClassCreate):
-    if not await asyncio.to_thread(db.get_device, device_id):
-        raise HTTPException(404, "Device not found")
-    row = await asyncio.to_thread(db.create_notification_class, device_id, _nc_to_db(body))
-    n_recipients = len(body.recipients)
-    _log_event(device_id, "info", f"Notification class created: {row['name']} ({n_recipients} recipient{'s' if n_recipients != 1 else ''})")
-    return _nc_to_api(row)
-
-
-@api.put("/notification-classes/{nc_id}")
-async def update_notification_class(nc_id: int, body: NotificationClassUpdate):
-    row = await asyncio.to_thread(db.update_notification_class, nc_id, _nc_to_db(body))
-    if not row:
-        raise HTTPException(404, "Notification class not found")
-    n_recipients = len(body.recipients)
-    _log_event(row["device_id"], "info", f"Notification class updated: {row['name']} ({n_recipients} recipient{'s' if n_recipients != 1 else ''})")
-    return _nc_to_api(row)
-
-
-@api.delete("/notification-classes/{nc_id}", status_code=204)
-async def delete_notification_class(nc_id: int):
-    existing = await asyncio.to_thread(db.get_notification_class, nc_id)
-    if not existing:
-        raise HTTPException(404, "Notification class not found")
-    deleted = await asyncio.to_thread(db.delete_notification_class, nc_id)
-    if not deleted:
-        raise HTTPException(404, "Notification class not found")
-    _log_event(existing["device_id"], "warn", f"Notification class removed: {existing['name']}")
-
-
-@api.get("/devices/{device_id}/objects/{obj_id}/alarm-config")
-async def get_object_alarm_config(device_id: int, obj_id: int):
-    row = await asyncio.to_thread(db.get_alarm_config, obj_id)
-    return _alarm_cfg_to_api(row) if row else None
-
-
-@api.put("/devices/{device_id}/objects/{obj_id}/alarm-config")
-async def set_object_alarm_config(device_id: int, obj_id: int, body: AlarmConfigSet):
-    obj = await asyncio.to_thread(db.get_object, obj_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(404, "Object not found")
-    data = {
-        "notification_class_id": body.notification_class_id,
-        "enabled": 1 if body.enabled else 0,
-        "event_enable": json.dumps(body.event_enable),
-        "notify_type": body.notify_type,
-        "time_delay": body.time_delay,
-        "time_delay_normal": body.time_delay_normal,
-        "params": json.dumps(body.params),
-    }
-    row = await asyncio.to_thread(db.set_alarm_config, obj_id, data)
-    return _alarm_cfg_to_api(row)
-
-
-@api.delete("/devices/{device_id}/objects/{obj_id}/alarm-config", status_code=204)
-async def delete_object_alarm_config(device_id: int, obj_id: int):
-    await asyncio.to_thread(db.delete_alarm_config, obj_id)
-
-
-@api.get("/alarms")
-async def list_alarms(limit: int = 200, unacked_only: bool = False):
-    return await asyncio.to_thread(db.get_alarm_log, limit, unacked_only)
-
-
-@api.post("/alarms/{alarm_id}/ack")
-async def ack_alarm(alarm_id: int, body: AckAlarmRequest, current_user: dict = Depends(get_current_user)):
-    row = await asyncio.to_thread(db.ack_alarm, alarm_id, body.ack_by or current_user["username"])
-    if not row:
-        raise HTTPException(404, "Alarm not found")
-    return row
-
-
-# ── Event Enrollments (Algorithmic Reporting, Phase 3) ──
-
-def _ee_to_api(row: dict) -> dict:
-    return {
-        "id": row["id"],
-        "device_id": row["device_id"],
-        "name": row["name"],
-        "monitored_object_id": row["monitored_object_id"],
-        "algorithm": row["algorithm"],
-        "event_parameters": json.loads(row["event_parameters"] or "{}"),
-        "notification_class_id": row["notification_class_id"],
-        "enabled": bool(row["enabled"]),
-        "event_enable": json.loads(row["event_enable"] or "[]"),
-        "notify_type": row["notify_type"],
-        "time_delay": row["time_delay"],
-        "time_delay_normal": row["time_delay_normal"],
-    }
-
-
-def _ee_to_db(body: EventEnrollmentCreate) -> dict:
-    return {
-        "name": body.name,
-        "monitored_object_id": body.monitored_object_id,
-        "algorithm": body.algorithm,
-        "event_parameters": json.dumps(body.event_parameters),
-        "notification_class_id": body.notification_class_id,
-        "enabled": 1 if body.enabled else 0,
-        "event_enable": json.dumps(body.event_enable),
-        "notify_type": body.notify_type,
-        "time_delay": body.time_delay,
-        "time_delay_normal": body.time_delay_normal,
-    }
-
-
-async def _validate_enrollment(device_id: int, body: EventEnrollmentCreate) -> None:
-    if body.algorithm not in alarms.ENROLLMENT_ALGORITHMS:
-        raise HTTPException(400, f"Unknown algorithm. Must be one of: {sorted(alarms.ENROLLMENT_ALGORITHMS)}")
-    obj = await asyncio.to_thread(db.get_object, body.monitored_object_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(400, "monitored_object_id must be an object on this device")
-    otype = obj["object_type"]
-    if body.algorithm == "change-of-state" and otype not in (alarms.BINARY_TYPES | alarms.MULTISTATE_TYPES):
-        raise HTTPException(
-            400,
-            "Change-of-State enrollments can only monitor binary-*/multi-state-* objects "
-            "(analog uses the Out-of-Range algorithm instead)",
-        )
-    if body.algorithm == "out-of-range" and otype not in alarms.ANALOG_TYPES:
-        raise HTTPException(400, "Out-of-Range enrollments can only monitor analog-* objects")
-
-
-@api.get("/devices/{device_id}/event-enrollments")
-async def list_event_enrollments(device_id: int):
-    rows = await asyncio.to_thread(db.get_event_enrollments, device_id)
-    return [_ee_to_api(r) for r in rows]
-
-
-@api.post("/devices/{device_id}/event-enrollments", status_code=201)
-async def create_event_enrollment(device_id: int, body: EventEnrollmentCreate):
-    if not await asyncio.to_thread(db.get_device, device_id):
-        raise HTTPException(404, "Device not found")
-    await _validate_enrollment(device_id, body)
-    row = await asyncio.to_thread(db.create_event_enrollment, device_id, _ee_to_db(body))
-    return _ee_to_api(row)
-
-
-@api.put("/event-enrollments/{ee_id}")
-async def update_event_enrollment(ee_id: int, body: EventEnrollmentUpdate):
-    existing = await asyncio.to_thread(db.get_event_enrollment, ee_id)
-    if not existing:
-        raise HTTPException(404, "Event enrollment not found")
-    await _validate_enrollment(existing["device_id"], body)
-    row = await asyncio.to_thread(db.update_event_enrollment, ee_id, _ee_to_db(body))
-    return _ee_to_api(row)
-
-
-@api.delete("/event-enrollments/{ee_id}", status_code=204)
-async def delete_event_enrollment(ee_id: int):
-    deleted = await asyncio.to_thread(db.delete_event_enrollment, ee_id)
-    if not deleted:
-        raise HTTPException(404, "Event enrollment not found")
-
-
-# ── Trend Logs (Phase 1: config, circular buffer, polled + manual sampling) ──
-
-async def _validate_trend_log(device_id: int, body: TrendLogCreate) -> None:
-    if body.logging_type not in ("polled", "cov", "triggered"):
-        raise HTTPException(400, 'logging_type must be "polled", "cov", or "triggered"')
-    obj = await asyncio.to_thread(db.get_object, body.monitored_object_id)
-    if not obj or obj["device_id"] != device_id:
-        raise HTTPException(400, "monitored_object_id must be an object on this device")
-
-
-@api.get("/devices/{device_id}/trend-logs")
-async def list_trend_logs(device_id: int):
-    return await asyncio.to_thread(db.get_trend_logs, device_id)
-
-
-@api.post("/devices/{device_id}/trend-logs", status_code=201)
-async def create_trend_log(device_id: int, body: TrendLogCreate):
-    if not await asyncio.to_thread(db.get_device, device_id):
-        raise HTTPException(404, "Device not found")
-    await _validate_trend_log(device_id, body)
-    data = body.model_dump()
-    if data["log_interval"] is None or data["buffer_size"] is None:
-        current_settings = await asyncio.to_thread(db.get_settings)
-        if data["log_interval"] is None:
-            data["log_interval"] = current_settings["trend_log_default_interval"]
-        if data["buffer_size"] is None:
-            data["buffer_size"] = current_settings["trend_log_default_buffer_size"]
-    tl = await asyncio.to_thread(db.create_trend_log, device_id, data)
-    asyncio.create_task(engine.reload())
-    return tl
-
-
-@api.get("/trend-logs/{tl_id}")
-async def get_trend_log(tl_id: int):
-    tl = await asyncio.to_thread(db.get_trend_log, tl_id)
-    if not tl:
-        raise HTTPException(404, "Trend log not found")
-    return tl
-
-
-@api.put("/trend-logs/{tl_id}")
-async def update_trend_log(tl_id: int, body: TrendLogUpdate):
-    existing = await asyncio.to_thread(db.get_trend_log, tl_id)
-    if not existing:
-        raise HTTPException(404, "Trend log not found")
-    await _validate_trend_log(existing["device_id"], body)
-    tl = await asyncio.to_thread(db.update_trend_log, tl_id, body.model_dump())
-    asyncio.create_task(engine.reload())
-    return tl
-
-
-@api.delete("/trend-logs/{tl_id}", status_code=204)
-async def delete_trend_log(tl_id: int):
-    deleted = await asyncio.to_thread(db.delete_trend_log, tl_id)
-    if not deleted:
-        raise HTTPException(404, "Trend log not found")
-    asyncio.create_task(engine.reload())
-
-
-@api.get("/trend-logs/{tl_id}/records")
-async def get_trend_log_records(
-    tl_id: int,
-    from_: Optional[str] = Query(None, alias="from"),
-    to: Optional[str] = None,
-    start_sequence: Optional[int] = None,
-    limit: int = Query(200, le=5000),
-    order: str = "asc",
-):
-    if not await asyncio.to_thread(db.get_trend_log, tl_id):
-        raise HTTPException(404, "Trend log not found")
-    return await asyncio.to_thread(
-        db.get_trend_log_records, tl_id, from_, to, start_sequence, limit, order
-    )
-
-
-@api.post("/trend-logs/{tl_id}/trigger")
-async def trigger_trend_log(tl_id: int):
-    tl = await asyncio.to_thread(db.get_trend_log, tl_id)
-    if not tl:
-        raise HTTPException(404, "Trend log not found")
-    value = engine.get_object_value(tl["monitored_object_id"])
-    if value is None:
-        raise HTTPException(409, "Monitored object has no live value yet (simulator not ticked)")
-    seq = await engine._sample_trend_log(tl["id"], value)
-    if seq is None:
-        raise HTTPException(409, "Buffer is full and stop_when_full is set")
-    return {"ok": True, "sequence_number": seq, "value": value}
-
-
-@api.post("/trend-logs/{tl_id}/clear")
-async def clear_trend_log(tl_id: int):
-    ok = await asyncio.to_thread(db.clear_trend_log_records, tl_id)
-    if not ok:
-        raise HTTPException(404, "Trend log not found")
-    engine.refresh_trend_log_buffer_empty(tl_id)
-    return {"ok": True}
-
-
-# ── BACnet Schedules (Phase 3) ──
-
-_SCHEDULE_TARGET_TYPES = {
-    "real": ("analog-input", "analog-output", "analog-value"),
-    "boolean": ("binary-input", "binary-output", "binary-value"),
-    "unsigned": ("multi-state-input", "multi-state-output", "multi-state-value"),
-}
-
-
-def _schedule_to_api(row: dict, targets: list[dict]) -> dict:
-    return {
-        "id": row["id"],
-        "device_id": row["device_id"],
-        "name": row["name"],
-        "description": row["description"],
-        "value_type": row["value_type"],
-        "schedule_default": json.loads(row["schedule_default"]),
-        "effective_start": row["effective_start"],
-        "effective_end": row["effective_end"],
-        "weekly_schedule": json.loads(row["weekly_schedule"] or "{}"),
-        "exception_schedule": json.loads(row["exception_schedule"] or "[]"),
-        "priority_for_writing": row["priority_for_writing"],
-        "enabled": bool(row["enabled"]),
-        "targets": [
-            {
-                "object_id": t["object_id"],
-                "property_identifier": t["property_identifier"],
-                "object_name": t["object_name"],
-                "object_type": t["object_type"],
-                "object_instance": t["object_instance"],
-            }
-            for t in targets
-        ],
-    }
-
-
-async def _validate_schedule(device_id: int, body: ScheduleCreate) -> None:
-    if body.value_type not in _SCHEDULE_TARGET_TYPES:
-        raise HTTPException(400, f"value_type must be one of: {sorted(_SCHEDULE_TARGET_TYPES)}")
-    allowed_types = _SCHEDULE_TARGET_TYPES[body.value_type]
-    for t in body.targets:
-        obj = await asyncio.to_thread(db.get_object, t.object_id)
-        if not obj or obj["device_id"] != device_id:
-            raise HTTPException(400, f"target object {t.object_id} must belong to this device")
-        if obj["object_type"] not in allowed_types:
-            raise HTTPException(
-                400,
-                f"target object {t.object_id} ({obj['object_type']}) doesn't match value_type "
-                f"'{body.value_type}' — expected one of: {allowed_types}",
-            )
-    device_calendar_names = None
-    for exc in body.exception_schedule:
-        period = (exc or {}).get("period") or {}
-        if period.get("type") != "calendar-reference":
-            continue
-        if device_calendar_names is None:
-            device_calendar_names = {c["name"] for c in await asyncio.to_thread(db.get_calendars, device_id)}
-        if period.get("calendar_name") not in device_calendar_names:
-            raise HTTPException(
-                400,
-                f"exception references unknown calendar {period.get('calendar_name')!r} on this device",
-            )
-
-
-def _schedule_to_db(body: ScheduleCreate) -> dict:
-    return {
-        "name": body.name,
-        "description": body.description,
-        "value_type": body.value_type,
-        "schedule_default": json.dumps(body.schedule_default),
-        "effective_start": body.effective_start,
-        "effective_end": body.effective_end,
-        "weekly_schedule": json.dumps(body.weekly_schedule),
-        "exception_schedule": json.dumps(body.exception_schedule),
-        "priority_for_writing": body.priority_for_writing,
-        "enabled": 1 if body.enabled else 0,
-    }
-
-
-@api.get("/devices/{device_id}/schedules")
-async def list_schedules(device_id: int):
-    rows = await asyncio.to_thread(db.get_schedules, device_id)
-    out = []
-    for r in rows:
-        targets = await asyncio.to_thread(db.get_schedule_targets, r["id"])
-        out.append(_schedule_to_api(r, targets))
-    return out
-
-
-@api.post("/devices/{device_id}/schedules", status_code=201)
-async def create_schedule(device_id: int, body: ScheduleCreate):
-    if not await asyncio.to_thread(db.get_device, device_id):
-        raise HTTPException(404, "Device not found")
-    await _validate_schedule(device_id, body)
-    row = await asyncio.to_thread(
-        db.create_schedule, device_id, _schedule_to_db(body),
-        [t.model_dump() for t in body.targets],
-    )
-    asyncio.create_task(engine.reload())
-    return _schedule_to_api(row, await asyncio.to_thread(db.get_schedule_targets, row["id"]))
-
-
-@api.get("/schedules/{schedule_id}")
-async def get_schedule(schedule_id: int):
-    row = await asyncio.to_thread(db.get_schedule, schedule_id)
-    if not row:
-        raise HTTPException(404, "Schedule not found")
-    return _schedule_to_api(row, await asyncio.to_thread(db.get_schedule_targets, schedule_id))
-
-
-@api.put("/schedules/{schedule_id}")
-async def update_schedule(schedule_id: int, body: ScheduleUpdate):
-    existing = await asyncio.to_thread(db.get_schedule, schedule_id)
-    if not existing:
-        raise HTTPException(404, "Schedule not found")
-    await _validate_schedule(existing["device_id"], body)
-    row = await asyncio.to_thread(
-        db.update_schedule, schedule_id, _schedule_to_db(body),
-        [t.model_dump() for t in body.targets],
-    )
-    asyncio.create_task(engine.reload())
-    return _schedule_to_api(row, await asyncio.to_thread(db.get_schedule_targets, schedule_id))
-
-
-@api.delete("/schedules/{schedule_id}", status_code=204)
-async def delete_schedule(schedule_id: int):
-    deleted = await asyncio.to_thread(db.delete_schedule, schedule_id)
-    if not deleted:
-        raise HTTPException(404, "Schedule not found")
-    asyncio.create_task(engine.reload())
-
-
-@api.post("/schedules/{schedule_id}/enable")
-async def enable_schedule(schedule_id: int):
-    row = await asyncio.to_thread(db.set_schedule_enabled, schedule_id, True)
-    if not row:
-        raise HTTPException(404, "Schedule not found")
-    asyncio.create_task(engine.reload())
-    return {"ok": True}
-
-
-@api.post("/schedules/{schedule_id}/disable")
-async def disable_schedule(schedule_id: int):
-    row = await asyncio.to_thread(db.set_schedule_enabled, schedule_id, False)
-    if not row:
-        raise HTTPException(404, "Schedule not found")
-    asyncio.create_task(engine.reload())
-    return {"ok": True}
-
-
-@api.post("/schedules/{schedule_id}/evaluate")
-async def evaluate_schedule(schedule_id: int):
-    """Best-effort read of the schedule's currently effective value, reusing
-    the live bacpypes3 object's own eval() rather than re-deriving the
-    weekly/exception/priority logic ourselves. Returns None fields if the
-    schedule is disabled or not currently built on the wire (e.g. all its
-    targets are missing)."""
-    sched = await asyncio.to_thread(db.get_schedule, schedule_id)
-    if not sched:
-        raise HTTPException(404, "Schedule not found")
-    bacnet_obj = engine._schedule_objects.get(schedule_id)
-    if bacnet_obj is None:
-        return {"present_value": None, "source": "not-active", "matching_exception": None, "next_transition": None}
-
-    now = datetime.now()
-    current_date = Date((now.year - 1900, now.month, now.day, now.isoweekday()))
-    current_time = Time((now.hour, now.minute, now.second, 0))
-    result = bacnet_obj.eval(current_date, current_time)
-    if result is None:
-        return {"present_value": None, "source": "outside-effective-period", "matching_exception": None, "next_transition": None}
-
-    value, next_transition_time = result
-    python_value = bacnet_schedule.atomic_to_python(value, sched["value_type"])
-
-    matching_exception = None
-    source = "weekly"
-    for exc in json.loads(sched["exception_schedule"] or "[]"):
-        period = exc.get("period") or {}
-        try:
-            if period.get("type") == "date":
-                y, m, d = bacnet_schedule.parse_date_tuple(period["date"])
-                match = (y, m, d) == (current_date[0], current_date[1], current_date[2])
-            elif period.get("type") == "date-range":
-                ys, ms, ds = bacnet_schedule.parse_date_tuple(period["start"])
-                ye, me, de = bacnet_schedule.parse_date_tuple(period["end"])
-                match = (ys, ms, ds) <= (current_date[0], current_date[1], current_date[2]) <= (ye, me, de)
-            elif period.get("type") == "calendar-reference":
-                cal_row = next(
-                    (c for c in await asyncio.to_thread(db.get_calendars, sched["device_id"])
-                     if c["name"] == period.get("calendar_name")),
-                    None,
-                )
-                match = bool(cal_row) and bacnet_calendar.today_in_date_list(json.loads(cal_row["date_list"] or "[]"))
-            else:
-                match = False
-        except Exception:
-            match = False
-        if match:
-            source = "exception"
-            matching_exception = exc.get("period")
-            break
-
-    if next_transition_time[0] == 24:
-        next_dt = datetime.combine(now.date() + timedelta(days=1), datetime.min.time())
-    else:
-        next_dt = now.replace(
-            hour=next_transition_time[0], minute=next_transition_time[1],
-            second=next_transition_time[2], microsecond=0,
-        )
-    return {
-        "present_value": python_value,
-        "source": source,
-        "matching_exception": matching_exception,
-        "next_transition": next_dt.isoformat(),
-    }
-
-
-
-# ── State + reload ──
-
-@api.get("/state")
-async def get_state():
-    return engine.get_state()
-
-
-@api.post("/reload")
-async def reload():
-    asyncio.create_task(engine.reload())
-    return {"ok": True, "message": "Reload scheduled"}
-
-
-# ── WebSocket ──
-
-@api.websocket("/ws")
-async def ws_endpoint(websocket: WebSocket):
-    # Browsers can't set custom headers on the WS handshake, so the token
-    # travels as a query param instead of Authorization: Bearer.
-    token = websocket.query_params.get("token", "")
-    if not await asyncio.to_thread(user_from_token, token):
-        await websocket.close(code=4401)
-        return
-    await websocket.accept()
-    ws_clients.append(websocket)
-    try:
-        # Send current state immediately on connect
-        await websocket.send_text(json.dumps(engine.get_state()))
-        while True:
-            await websocket.receive_text()  # keep alive (ping)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if websocket in ws_clients:
-            ws_clients.remove(websocket)
-
-
-# ── Analytics ──
-# Fully separate from the /ws + tick_loop() device-simulation path above —
-# different cadence (1s vs TICK_SECONDS=5s), different client list, so the
-# dashboard can never add latency to actual device-value simulation.
-
-@api.get("/analytics/snapshot")
-async def analytics_snapshot():
-    return await build_metrics_snapshot()
-
-
-@api.get("/analytics/export")
-async def analytics_export(format: str = "json"):
-    snapshot = await build_metrics_snapshot()
-    if format == "json":
-        return JSONResponse(content=snapshot)
-
-    if format != "csv":
-        raise HTTPException(400, "format must be 'json' or 'csv'")
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["section", "key", "value"])
-    for section, payload in snapshot.items():
-        if section == "ts":
-            continue
-        if isinstance(payload, dict):
-            for k, v in payload.items():
-                if isinstance(v, (dict, list)):
-                    continue
-                writer.writerow([section, k, v])
-    content = buf.getvalue()
-    return Response(
-        content=content,
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="analytics_{int(time.time())}.csv"'},
-    )
-
-
-@api.websocket("/ws/analytics")
-async def ws_analytics_endpoint(websocket: WebSocket):
-    token = websocket.query_params.get("token", "")
-    if not await asyncio.to_thread(user_from_token, token):
-        await websocket.close(code=4401)
-        return
-    await websocket.accept()
-    metrics_ws_clients.append(websocket)
-    try:
-        await websocket.send_text(json.dumps(await build_metrics_snapshot()))
-        while True:
-            await websocket.receive_text()  # keep alive (ping)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if websocket in metrics_ws_clients:
-            metrics_ws_clients.remove(websocket)
 
 
 # ── Admin static assets (Vite build output) ──
