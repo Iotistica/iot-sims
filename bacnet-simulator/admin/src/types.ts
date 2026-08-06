@@ -406,3 +406,57 @@ export interface AnalyticsSnapshot {
     new_devices_timeline: NewDeviceEvent[]
   }
 }
+
+export type PacketDirection = 'inbound' | 'outbound'
+export type PacketCaptureState = 'running' | 'stopped'
+
+export interface PacketCaptureStatus {
+  state: PacketCaptureState
+  session_id: string | null
+  started_at: string | null
+  stopped_at: string | null
+  packets_seen: number
+  packets_stored: number
+  packets_dropped: number
+  inbound_count: number
+  outbound_count: number
+  bytes_captured: number
+  max_packets: number
+}
+
+export interface CapturedPacket {
+  packet_id: string
+  session_id: string
+  timestamp: number
+  timestamp_utc: string
+  direction: PacketDirection
+
+  source_ip: string
+  source_port: number
+  destination_ip: string
+  destination_port: number
+
+  length: number
+  raw_hex?: string
+
+  decode_status: 'decoded' | 'partial' | 'warning' | 'error' | 'unknown'
+  bvlc_function: string | null
+  service_name: string | null
+  decode_error: string | null
+}
+
+export interface CapturedPacketPage {
+  items: CapturedPacket[]
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface PacketCaptureFilters {
+  direction?: PacketDirection
+  sourceIp?: string
+  destinationIp?: string
+  service?: string
+  offset?: number
+  limit?: number
+}

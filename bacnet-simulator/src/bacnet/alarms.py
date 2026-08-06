@@ -29,7 +29,7 @@ from bacpypes3.basetypes import EventState, EventType, NotifyType, TimeStamp
 from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import Unsigned
 
-from .config import BACNET_PORT
+from ..core.config import BACNET_PORT
 
 log = logging.getLogger("alarms")
 

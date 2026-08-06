@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import DATA_DIR, DB_PATH
+from ..core.config import DATA_DIR, DB_PATH
 
 _META_SUFFIX = ".meta.json"
 

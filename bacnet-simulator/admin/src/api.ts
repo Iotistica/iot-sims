@@ -1,4 +1,33 @@
-import type { Device, SimObject, Meta, Health, Settings, Project, BackupEntry, LogEntry, HistoryPoint, User, AuthResponse, AnalyticsSnapshot, NotificationClass, AlarmConfig, AlarmLogEntry, EventEnrollment, TrendLog, TrendLogRecord, Schedule, ScheduleEvaluation, PriorityArrayInfo, Calendar, Location } from './types'
+import type {
+  Device,
+  SimObject,
+  Meta,
+  Health,
+  Settings,
+  Project,
+  BackupEntry,
+  LogEntry,
+  HistoryPoint,
+  User,
+  AuthResponse,
+  AnalyticsSnapshot,
+  NotificationClass,
+  AlarmConfig,
+  AlarmLogEntry,
+  EventEnrollment,
+  TrendLog,
+  TrendLogRecord,
+  Schedule,
+  ScheduleEvaluation,
+  PriorityArrayInfo,
+  Calendar,
+  Location,
+  PacketCaptureStatus,
+  CapturedPacket,
+  CapturedPacketPage,
+  PacketCaptureFilters,
+} from './types'
+
 import { authToken, logout } from './auth'
 
 function authHeaders(): Record<string, string> {
@@ -228,6 +257,74 @@ export const api = {
       req<Calendar>(`/calendars/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
     del: (id: number) => req<null>(`/calendars/${id}`, { method: 'DELETE' }),
   },
+
+  packetCapture: {
+  status: () =>
+    req<PacketCaptureStatus>('/packet-capture/status'),
+
+  start: () =>
+    req<PacketCaptureStatus>('/packet-capture/start', {
+      method: 'POST',
+    }),
+
+  stop: () =>
+    req<PacketCaptureStatus>('/packet-capture/stop', {
+      method: 'POST',
+    }),
+
+  clear: () =>
+    req<PacketCaptureStatus>('/packet-capture/clear', {
+      method: 'POST',
+    }),
+
+  list: (filters: PacketCaptureFilters = {}) => {
+    const params = new URLSearchParams()
+
+    if (filters.direction) {
+      params.set('direction', filters.direction)
+    }
+
+    if (filters.sourceIp) {
+      params.set('source_ip', filters.sourceIp)
+    }
+
+    if (filters.destinationIp) {
+      params.set('destination_ip', filters.destinationIp)
+    }
+
+    if (filters.service) {
+      params.set('service', filters.service)
+    }
+
+    if (filters.offset !== undefined) {
+      params.set('offset', String(filters.offset))
+    }
+
+    if (filters.limit !== undefined) {
+      params.set('limit', String(filters.limit))
+    }
+
+    const query = params.toString()
+
+    return req<CapturedPacketPage>(
+      `/packet-capture/packets${query ? `?${query}` : ''}`,
+    )
+  },
+
+  get: (packetId: string) =>
+    req<CapturedPacket>(
+      `/packet-capture/packets/${encodeURIComponent(packetId)}`,
+    ),
+
+  exportPcap: () =>
+    downloadFile(
+      '/packet-capture/export',
+      `bacnet-capture-${new Date()
+        .toISOString()
+        .replace(/:/g, '-')
+        .replace(/\.\d{3}Z$/, 'Z')}.pcap`,
+    ),
+},
 
   analytics: {
     snapshot: () => req<AnalyticsSnapshot>('/analytics/snapshot'),

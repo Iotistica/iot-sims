@@ -57,16 +57,101 @@ function fmtDate(iso: string): string {
   return new Date(iso.replace(' ', 'T') + 'Z').toLocaleString()
 }
 
-const columns: TableColumnsType = [
-  { title: 'Time', dataIndex: 'ts', key: 'ts', width: 170 },
-  { title: 'Device', key: 'device', width: 160 },
-  { title: 'Object', dataIndex: 'object_name', key: 'object_name' },
-  { title: 'Transition', key: 'transition' },
-  { title: 'Priority', dataIndex: 'priority', key: 'priority', width: 90 },
-  { title: 'Value', dataIndex: 'value', key: 'value', width: 90 },
-  { title: 'Ack', key: 'ack', width: 140 },
-]
+function compareText(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): number {
+  return (a ?? '').localeCompare(b ?? '', undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
 
+function timestampValue(ts: string): number {
+  const parsed = new Date(ts.replace(' ', 'T') + 'Z').getTime()
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+const columns: TableColumnsType<AlarmLogEntry> = [
+  {
+    title: 'Time',
+    dataIndex: 'ts',
+    key: 'ts',
+    width: 170,
+    sorter: (a, b) => timestampValue(a.ts) - timestampValue(b.ts),
+    defaultSortOrder: 'descend',
+    sortDirections: ['descend', 'ascend'],
+  },
+  {
+    title: 'Device',
+    key: 'device',
+    width: 160,
+    sorter: (a, b) =>
+      compareText(
+        deviceLabel(a.device_id),
+        deviceLabel(b.device_id),
+      ),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Object',
+    dataIndex: 'object_name',
+    key: 'object_name',
+    sorter: (a, b) => compareText(a.object_name, b.object_name),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Transition',
+    key: 'transition',
+    sorter: (a, b) => {
+      const aTransition = `${a.from_state} → ${a.to_state}`
+      const bTransition = `${b.from_state} → ${b.to_state}`
+
+      return compareText(aTransition, bTransition)
+    },
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Priority',
+    dataIndex: 'priority',
+    key: 'priority',
+    width: 90,
+    sorter: (a, b) => a.priority - b.priority,
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Value',
+    dataIndex: 'value',
+    key: 'value',
+    width: 90,
+    sorter: (a, b) => {
+      const aNumber = Number(a.value)
+      const bNumber = Number(b.value)
+
+      if (!Number.isNaN(aNumber) && !Number.isNaN(bNumber)) {
+        return aNumber - bNumber
+      }
+
+      return compareText(String(a.value ?? ''), String(b.value ?? ''))
+    },
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Ack',
+    key: 'ack',
+    width: 140,
+    sorter: (a, b) => {
+      function ackSortValue(alarm: AlarmLogEntry): number {
+        if (!alarm.ack_required) return 0
+        if (!alarm.acknowledged) return 1
+        return 2
+      }
+
+      return ackSortValue(a) - ackSortValue(b)
+    },
+    sortDirections: ['ascend', 'descend'],
+  },
+]
 onMounted(() => {
   load()
   poll = setInterval(load, 5000)

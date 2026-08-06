@@ -178,3 +178,4 @@ def _get_jwt_secret() -> str:
         _jwt_secret_cache = secrets.token_hex(32)
         _JWT_SECRET_FILE.write_text(_jwt_secret_cache)
     return _jwt_secret_cache
+

@@ -14,18 +14,26 @@ import LoginView from './components/LoginView.vue'
 import AnalyticsDashboard from './components/AnalyticsDashboard.vue'
 import AlarmsPanel from './components/AlarmsPanel.vue'
 import SettingsView from './components/SettingsView.vue'
+import PacketCapturePanel from './components/PacketCapturePanel.vue'
 import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
 import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
+
 import type { Device, SimObject, Meta, Health, HistoryPoint, Location } from './types'
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
-import { EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined } from '@ant-design/icons-vue'
+import { ClusterOutlined, EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined } from '@ant-design/icons-vue'
 
-const activeView = ref<'devices' | 'analytics' | 'alarms' | 'settings'>('devices')
+const activeView = ref<
+  'devices' |
+  'analytics' |
+  'alarms' |
+  'packet-capture' |
+  'settings'
+>('devices')
 
 const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
 const simActionLoading = ref(false)
@@ -615,16 +623,109 @@ const equipmentTypeLabel = computed(() => {
   return map
 })
 
-const columns: TableColumnsType = [
-  { title: 'Name',       dataIndex: 'name',            key: 'name' },
-  { title: 'Type',       key: 'type',                  width: 170 },
-  { title: 'Inst.',      dataIndex: 'object_instance', key: 'instance', width: 65 },
-  { title: 'Behavior',   key: 'behavior',              width: 120 },
-  { title: 'Point Type', key: 'point_type',            width: 190 },
-  { title: 'Units',      dataIndex: 'units',           key: 'units',    width: 150 },
-  { title: 'Live Value', key: 'value',                 width: 110 },
-  { title: 'On',         key: 'enabled',               width: 50  },
-  { title: '',           key: 'actions',               width: 200 },
+function compareText(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): number {
+  return (a ?? '').localeCompare(b ?? '', undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
+
+function sortableLiveValue(obj: SimObject): number {
+  const value = liveVal(obj.id)
+
+  // Put objects without a live value at the beginning in ascending order.
+  if (value === null) return Number.NEGATIVE_INFINITY
+  if (typeof value === 'boolean') return value ? 1 : 0
+
+  const numericValue = Number(value)
+  return Number.isNaN(numericValue)
+    ? Number.NEGATIVE_INFINITY
+    : numericValue
+}
+
+const columns: TableColumnsType<SimObject> = [
+  {
+    title: 'Name',
+    dataIndex: 'name',
+    key: 'name',
+    sorter: (a, b) => compareText(a.name, b.name),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Type',
+    key: 'type',
+    width: 170,
+    sorter: (a, b) => compareText(a.object_type, b.object_type),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Inst.',
+    dataIndex: 'object_instance',
+    key: 'instance',
+    width: 65,
+    sorter: (a, b) => a.object_instance - b.object_instance,
+    sortDirections: ['ascend', 'descend'],
+    // Optional initial sorting:
+    // defaultSortOrder: 'ascend',
+  },
+  {
+    title: 'Behavior',
+    key: 'behavior',
+    width: 120,
+    sorter: (a, b) => compareText(a.behavior, b.behavior),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Point Type',
+    key: 'point_type',
+    width: 190,
+    sorter: (a, b) => {
+      const aLabel = a.point_type
+        ? pointTypeLabel.value[a.point_type] ?? a.point_type
+        : ''
+
+      const bLabel = b.point_type
+        ? pointTypeLabel.value[b.point_type] ?? b.point_type
+        : ''
+
+      return compareText(aLabel, bLabel)
+    },
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Units',
+    dataIndex: 'units',
+    key: 'units',
+    width: 150,
+    sorter: (a, b) =>
+      compareText(
+        a.units === 'no-units' ? '' : a.units,
+        b.units === 'no-units' ? '' : b.units,
+      ),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'Live Value',
+    key: 'value',
+    width: 110,
+    sorter: (a, b) => sortableLiveValue(a) - sortableLiveValue(b),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: 'On',
+    key: 'enabled',
+    width: 50,
+    sorter: (a, b) => Number(Boolean(a.enabled)) - Number(Boolean(b.enabled)),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
+    title: '',
+    key: 'actions',
+    width: 200,
+  },
 ]
 
 // Lifecycle — gated behind auth: protected endpoints 401 until logged in
@@ -683,7 +784,7 @@ onUnmounted(() => {
         <IotisticaLogo :size="24" />
         <span style="color:rgba(255,255,255,0.85);font-size:15px;font-weight:600;letter-spacing:.3px">Iotistica</span>
         <span style="color:rgba(255,255,255,0.25);font-size:13px;font-weight:400">BACnet Simulator</span>
-        <span style="color:#555;font-size:12px;margin-left:8px">{{ health.devices }} device(s)</span>
+        
 
         <div style="display:flex;align-items:center;gap:2px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
           <a-tooltip title="Start simulation clock">
@@ -720,6 +821,7 @@ onUnmounted(() => {
           <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
           <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
+          <a-radio-button value="packet-capture"><ClusterOutlined /> Network</a-radio-button>
         </a-radio-group>
 
         <div style="flex:1" />
@@ -751,13 +853,16 @@ onUnmounted(() => {
 
       <AnalyticsDashboard v-if="activeView === 'analytics'" />
       <AlarmsPanel v-else-if="activeView === 'alarms'" />
+      <PacketCapturePanel v-else-if="activeView === 'packet-capture'"/>
       <SettingsView v-else-if="activeView === 'settings'" />
+
+
       <a-layout v-else>
 
         <!-- Sidebar: devices -->
         <a-layout-sider :width="320" style="background:var(--surface);border-right:1px solid var(--border);overflow:auto">
           <div style="padding:10px 12px 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-            <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Devices</span>
+            <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Devices ({{ health.devices }})</span>
             <a-space :size="4">
               <a-button size="small" title="Add Location" @click="openAddLocation">
                 <template #icon><FolderAddOutlined /></template>

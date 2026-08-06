@@ -39,7 +39,7 @@ from typing import Optional
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS, XSD
 
-from .config import EQUIPMENT_TYPES, POINT_TYPES
+from ..core.config import EQUIPMENT_TYPES, POINT_TYPES
 
 BRICK = Namespace("https://brickschema.org/schema/Brick#")
 REF = Namespace("https://brickschema.org/schema/Brick/ref#")

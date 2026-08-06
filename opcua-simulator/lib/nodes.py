@@ -155,12 +155,30 @@ class NodeManager:
         if tag_row.get("writable"):
             await var.set_writable()
         if tag_row.get("unit"):
+            unit_text = tag_row["unit"]
             try:
                 await var.write_attribute(
-                    ua.AttributeIds.Description, ua.DataValue(ua.LocalizedText(tag_row["unit"]))
+                    ua.AttributeIds.Description, ua.DataValue(ua.LocalizedText(unit_text))
                 )
             except Exception as e:
                 logger.debug("Could not set unit description for %s: %s", tag_row["name"], e)
+            # Standard OPC-UA unit exposure (Part 8, EUInformation) — a child
+            # "EngineeringUnits" property, same as a real AnalogItemType server
+            # would expose. The Description-attribute write above is kept as a
+            # secondary/legacy signal for simpler clients that don't browse for
+            # the real property.
+            try:
+                eu_info = ua.EUInformation()
+                eu_info.DisplayName = ua.LocalizedText(unit_text)
+                eu_info.Description = ua.LocalizedText(unit_text)
+                await var.add_property(
+                    ua.NodeId(f"tag/{tag_row['id']}/EngineeringUnits", self.idx),
+                    "EngineeringUnits",
+                    eu_info,
+                    varianttype=ua.VariantType.ExtensionObject,
+                )
+            except Exception as e:
+                logger.debug("Could not add EngineeringUnits property for %s: %s", tag_row["name"], e)
 
         live_tag = LiveTag(
             tag_id=tag_row["id"], device_id=device_id, node=var, name=tag_row["name"],
@@ -173,7 +191,9 @@ class NodeManager:
         live = self._tags.pop(tag_id, None)
         if not live:
             return
-        await live.node.delete(delete_references=True)
+        # recursive=True: tags with a unit now own a child EngineeringUnits
+        # property node (see create_tag) that would otherwise be orphaned.
+        await live.node.delete(delete_references=True, recursive=True)
 
     def get_tag(self, tag_id: int) -> Optional[LiveTag]:
         return self._tags.get(tag_id)

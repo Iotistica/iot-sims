@@ -34,19 +34,19 @@ import uvicorn
 
 # GH #15 refactor, pass 1 — constants/JWT-secret, Pydantic schemas, and the
 # alarms/calendar/schedule/EDE helpers now live alongside this file in src/.
-from . import alarms
-from . import backup
-from . import brick_export
-from . import ede
-from . import schedule as bacnet_schedule
-from . import calendar as bacnet_calendar
-from .config import (
+from .bacnet import alarms
+from .bacnet import backup
+from .bacnet import brick_export
+from .bacnet import ede
+from .bacnet import schedule as bacnet_schedule
+from .bacnet import calendar as bacnet_calendar
+from .core.config import (
     BACNET_PORT, BACNET_UNITS, BRICK_VERSION, COMMANDABLE_TYPES, DATA_DIR, DB_PATH,
     EQUIPMENT_TYPES, JWT_ALGORITHM, JWT_EXPIRE_HOURS, LOCATION_KINDS, MULTISTATE_TYPES,
     POINT_TYPES, SIM_API_PORT, VALID_BEHAVIORS, VALID_OBJECT_TYPES, VALID_POLARITY,
     VALID_RELIABILITY, VALID_SEGMENTATION, _get_jwt_secret,
 )
-from .schemas import (
+from .bacnet.schemas import (
     AckAlarmRequest, AlarmConfigSet, CalendarCreate, CalendarUpdate,
     Credentials, DeviceCreate, DeviceUpdate, EventEnrollmentCreate,
     EventEnrollmentUpdate, LocationCreate, LocationUpdate,
@@ -86,6 +86,8 @@ from bacpypes3.apdu import (
     UnconfirmedEventNotificationRequest,
 )
 
+from bacpypes3.ipv4 import IPv4DatagramServer
+
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -93,6 +95,23 @@ logging.basicConfig(
 )
 log = logging.getLogger("bacnet-sim")
 
+from .bacnet.packet_capture import PacketCapture
+
+from .api.routers.packet_capture import (
+    router as packet_capture_router,
+)
+
+from .api.routers.backups import (
+    router as backups_router,
+)
+
+from .api.routers.locations import (
+    router as locations_router,
+)
+
+from .api.routers.calendars import (
+    router as calendars_router,
+)
 
 
 _debug = 0
@@ -2550,6 +2569,12 @@ class SimEngine:
             return
 
         base_ip = _resolve_base_ip()
+
+        install_bacpypes_packet_capture_hooks(
+            local_ip=base_ip,
+            local_port=BACNET_PORT,
+        )
+        
         loop = asyncio.get_running_loop()
         orig = loop.get_exception_handler()
 
@@ -2829,6 +2854,70 @@ class SimEngine:
             if otype == "binary-input":
                 _apply_polarity(bacnet_obj, obj_row.get("polarity") or "normal")
         return bacnet_obj, behavior
+
+    def resolve_wire_object(
+        self,
+        object_type: str,
+        physical_instance: int,
+    ) -> Optional[dict]:
+        """Resolve a wire-visible BACnet object back to its simulator row.
+
+        Regular simulator objects are stored in ``self._objects`` as:
+            database object id -> (live BACpypes object, Behavior)
+
+        Matching the actual live ``objectIdentifier`` is safer than trying to
+        reverse the slot-offset formula because it also stays correct after
+        reloads and for any future changes to instance allocation.
+        """
+        normalized_type = str(object_type).strip().lower().replace('_', '-')
+
+        for object_db_id, (bacnet_obj, behavior) in self._objects.items():
+            try:
+                identifier = bacnet_obj.objectIdentifier
+                wire_type = str(identifier[0]).strip().lower().replace('_', '-')
+                wire_instance = int(identifier[1])
+            except Exception:
+                continue
+
+            if (
+                wire_type != normalized_type
+                or wire_instance != int(physical_instance)
+            ):
+                continue
+
+            obj_row = self.db.get_object(object_db_id)
+            if obj_row is None:
+                return None
+
+            device = self.db.get_device(int(obj_row['device_id']))
+            if device is None:
+                return None
+
+            current_value = self._current_values.get(object_db_id)
+            if isinstance(current_value, dict):
+                current_value = current_value.get('value')
+
+            return {
+                'device_id': int(device['id']),
+                'device_instance': int(device['device_instance']),
+                'device_name': str(device['name']),
+                'object_id': int(obj_row['id']),
+                'object_name': str(obj_row['name']),
+                'object_type': str(obj_row['object_type']),
+                'object_instance': int(obj_row['object_instance']),
+                'wire_object_identifier': (
+                    f"{wire_type}:{wire_instance}"
+                ),
+                'local_object_identifier': (
+                    f"{obj_row['object_type']}:{obj_row['object_instance']}"
+                ),
+                'current_value': current_value,
+                'units': obj_row.get('units'),
+                'behavior': obj_row.get('behavior'),
+                'point_type': obj_row.get('point_type'),
+            }
+
+        return None
 
     def _update_value(self, bacnet_obj: Any, otype: str, val: Any) -> None:
         if otype in ("analog-input", "analog-output", "analog-value"):
@@ -3340,11 +3429,157 @@ db: Database = None  # type: ignore
 engine: SimEngine = None  # type: ignore
 ws_clients: list[WebSocket] = []
 
+packet_capture = PacketCapture(
+    max_packets=10_000,
+    max_payload_bytes=65_535,
+)
+
+# ─── BACpypes3 packet-capture transport hooks ─────────────────────────────────
+
+_bacpypes_capture_hooks_installed = False
+
+
+def _bacpypes_address_tuple(
+    address: Any,
+    *,
+    fallback_ip: str,
+    fallback_port: int,
+) -> tuple[str, int]:
+    """
+    Convert a BACpypes3 IPv4Address-like object into (IP, port).
+
+    BACpypes3 versions may expose the tuple under slightly different
+    attributes, so this deliberately uses defensive fallbacks.
+    """
+    if address is None:
+        return fallback_ip, fallback_port
+
+    for attribute in ("addrTuple", "addr_tuple"):
+        value = getattr(address, attribute, None)
+
+        if (
+            isinstance(value, tuple)
+            and len(value) >= 2
+        ):
+            return str(value[0]), int(value[1])
+
+    text = str(address)
+
+    # BACpypes3 may stringify an address as "10.0.0.60:47808".
+    if ":" in text:
+        host, possible_port = text.rsplit(":", 1)
+
+        try:
+            return host, int(possible_port)
+        except ValueError:
+            pass
+
+    return text or fallback_ip, fallback_port
+
+
+def install_bacpypes_packet_capture_hooks(
+    *,
+    local_ip: str,
+    local_port: int,
+) -> None:
+    """
+    Install one process-wide hook around BACpypes3's IPv4 UDP transport.
+
+    indication()   = outbound toward the UDP socket
+    confirmation() = inbound from the UDP socket
+    """
+    global _bacpypes_capture_hooks_installed
+
+    if _bacpypes_capture_hooks_installed:
+        return
+
+    original_indication = IPv4DatagramServer.indication
+    original_confirmation = IPv4DatagramServer.confirmation
+
+    async def captured_indication(
+        transport_self: IPv4DatagramServer,
+        pdu: Any,
+    ) -> None:
+        try:
+            payload = bytes(getattr(pdu, "pduData", b""))
+
+            destination = _bacpypes_address_tuple(
+                getattr(pdu, "pduDestination", None),
+                fallback_ip="255.255.255.255",
+                fallback_port=local_port,
+            )
+
+            source = _bacpypes_address_tuple(
+                getattr(pdu, "pduSource", None),
+                fallback_ip=local_ip,
+                fallback_port=local_port,
+            )
+
+            if payload:
+                packet_capture.record_outbound(
+                    payload,
+                    source=source,
+                    destination=destination,
+                )
+        except Exception:
+            # Capture must never interrupt BACnet communication.
+            log.exception(
+                "Failed to record outbound BACnet/IP packet"
+            )
+
+        await original_indication(transport_self, pdu)
+
+    async def captured_confirmation(
+        transport_self: IPv4DatagramServer,
+        pdu: Any,
+    ) -> None:
+        try:
+            payload = bytes(getattr(pdu, "pduData", b""))
+
+            source = _bacpypes_address_tuple(
+                getattr(pdu, "pduSource", None),
+                fallback_ip="0.0.0.0",
+                fallback_port=local_port,
+            )
+
+            destination = _bacpypes_address_tuple(
+                getattr(pdu, "pduDestination", None),
+                fallback_ip=local_ip,
+                fallback_port=local_port,
+            )
+
+            if payload:
+                packet_capture.record_inbound(
+                    payload,
+                    source=source,
+                    destination=destination,
+                )
+        except Exception:
+            log.exception(
+                "Failed to record inbound BACnet/IP packet"
+            )
+
+        await original_confirmation(transport_self, pdu)
+
+    IPv4DatagramServer.indication = captured_indication
+    IPv4DatagramServer.confirmation = captured_confirmation
+
+    _bacpypes_capture_hooks_installed = True
+
+    log.info(
+        "Installed BACpypes3 packet-capture hooks for %s:%s",
+        local_ip,
+        local_port,
+    )
+
 # ─── Per-device event log ─────────────────────────────────────────────────────
 _device_logs: dict[int, deque] = {}
 _global_log: deque = deque(maxlen=1000)
 _device_names: dict[int, str] = {}
 _MAX_LOG = 300
+
+
+
 
 
 # ─── Analytics metrics store ───────────────────────────────────────────────────
@@ -3691,6 +3926,12 @@ async def lifespan(app: FastAPI):
     for d in db.get_devices():
         _device_names[d["id"]] = d["name"]
     engine = SimEngine(db)
+
+     # Expose shared runtime objects to extracted routers.
+    app.state.db = db
+    app.state.engine = engine
+    app.state.packet_capture = packet_capture
+
     _apply_settings_live(await asyncio.to_thread(db.get_settings))
     await engine.start()
     tick_task = asyncio.create_task(tick_loop())
@@ -3710,6 +3951,12 @@ async def lifespan(app: FastAPI):
 # ─── FastAPI app ──────────────────────────────────────────────────────────────
 
 api = FastAPI(title="BACnet Simulator", lifespan=lifespan)
+
+api.include_router(packet_capture_router)
+api.include_router(backups_router)
+api.include_router(locations_router)
+api.include_router(calendars_router)
+
 api.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -3955,67 +4202,6 @@ async def delete_device(device_id: int):
     if not deleted:
         raise HTTPException(404, "Device not found")
     asyncio.create_task(engine.reload())
-
-
-# ── Locations ──
-# Pure organizational grouping for the sidebar tree — no BACnet protocol
-# meaning, so (unlike opcua-simulator's analogous Folder feature) there's no
-# live-engine resync on any of these, no `key`/`enabled` fields to manage.
-
-def _is_descendant_location(database: "Database", candidate_id: int, of_location_id: int) -> bool:
-    """True if candidate_id is of_location_id itself or lives anywhere under
-    it — used to refuse a reparent that would create a cycle."""
-    lid: Optional[int] = candidate_id
-    while lid is not None:
-        if lid == of_location_id:
-            return True
-        location = database.get_location(lid)
-        lid = location["parent_location_id"] if location else None
-    return False
-
-
-@api.get("/locations")
-async def list_locations():
-    return await asyncio.to_thread(db.get_locations)
-
-
-@api.post("/locations", status_code=201)
-async def create_location(body: LocationCreate):
-    body.validate_semantic()
-    if body.parent_location_id is not None and not await asyncio.to_thread(db.get_location, body.parent_location_id):
-        raise HTTPException(404, "Parent location not found")
-    return await asyncio.to_thread(db.create_location, body.name, body.parent_location_id, body.description, body.kind)
-
-
-@api.get("/locations/{location_id}")
-async def get_location(location_id: int):
-    loc = await asyncio.to_thread(db.get_location, location_id)
-    if not loc:
-        raise HTTPException(404, "Location not found")
-    return loc
-
-
-@api.put("/locations/{location_id}")
-async def update_location(location_id: int, body: LocationUpdate):
-    body.validate_semantic()
-    existing = await asyncio.to_thread(db.get_location, location_id)
-    if not existing:
-        raise HTTPException(404, "Location not found")
-    if body.parent_location_id is not None:
-        if not await asyncio.to_thread(db.get_location, body.parent_location_id):
-            raise HTTPException(404, "Parent location not found")
-        if await asyncio.to_thread(_is_descendant_location, db, body.parent_location_id, location_id):
-            raise HTTPException(400, "Cannot move a location into itself or one of its own sub-locations")
-    return await asyncio.to_thread(db.update_location, location_id, body.name, body.parent_location_id, body.description, body.kind)
-
-
-@api.delete("/locations/{location_id}", status_code=204)
-async def delete_location(location_id: int):
-    if not await asyncio.to_thread(db.get_location, location_id):
-        raise HTTPException(404, "Location not found")
-    deleted = await asyncio.to_thread(db.delete_location, location_id)
-    if not deleted:
-        raise HTTPException(409, "Location is not empty — move or remove its sub-locations and devices first")
 
 
 # ── Objects ──
@@ -4303,71 +4489,6 @@ async def import_project_ede(
         raise HTTPException(400, "No valid EDE rows found in file")
     data = ede.rows_to_devices(rows, device_name)
     return await asyncio.to_thread(db.import_project, name, description, data)
-
-
-# ── Backups ──
-# Whole-database snapshot/restore, independent of the Projects feature above
-# (Projects save/restore the device/object *contents*; Backups save/restore
-# the entire SQLite file, including users, settings, alarm history, trend
-# log data, etc.). See src/backup.py for the actual implementation.
-
-@api.get("/backups")
-async def list_backups():
-    return await asyncio.to_thread(backup.list_backups)
-
-
-@api.post("/backups", status_code=201)
-async def create_backup():
-    try:
-        return await asyncio.to_thread(backup.create_backup)
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
-@api.post("/backups/{file_name}/restore")
-async def restore_backup(file_name: str):
-    try:
-        result = await asyncio.to_thread(backup.restore_backup, file_name)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    except Exception as e:
-        raise HTTPException(400, str(e))
-    # Same sequence load_project() already uses after swapping in a whole
-    # different DB snapshot — Database caches no connection and SimEngine
-    # re-queries fresh on reload(), so this hot-swaps without a restart.
-    asyncio.create_task(engine.reload())
-    engine.reset()
-    return result
-
-
-@api.delete("/backups/{file_name}", status_code=204)
-async def delete_backup(file_name: str):
-    deleted = await asyncio.to_thread(backup.delete_backup, file_name)
-    if not deleted:
-        raise HTTPException(404, "Backup not found")
-
-
-@api.get("/backups/{file_name}/download")
-async def download_backup(file_name: str):
-    path = backup.get_backup_dir() / Path(file_name).name
-    if not path.exists():
-        raise HTTPException(404, "Backup not found")
-    return FileResponse(
-        str(path),
-        media_type="application/octet-stream",
-        filename=path.name,
-    )
-
-
-@api.post("/backups/upload", status_code=201)
-async def upload_backup(file: UploadFile = File(...)):
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "Uploaded file is empty")
-    try:
-        return await asyncio.to_thread(backup.save_uploaded_backup, file.filename or "backup.db", data)
-    except Exception as e:
-        raise HTTPException(400, str(e))
 
 
 # ── Alarms & Notification Classes (BACnet Intrinsic Reporting, Phase 1) ──
@@ -4885,81 +5006,6 @@ async def evaluate_schedule(schedule_id: int):
         "next_transition": next_dt.isoformat(),
     }
 
-
-# ── BACnet Calendars (GH #18) ──
-
-def _calendar_to_api(row: dict) -> dict:
-    return {
-        "id": row["id"],
-        "device_id": row["device_id"],
-        "name": row["name"],
-        "description": row["description"],
-        "date_list": json.loads(row["date_list"] or "[]"),
-        "enabled": bool(row["enabled"]),
-    }
-
-
-@api.get("/devices/{device_id}/calendars")
-async def list_calendars(device_id: int):
-    rows = await asyncio.to_thread(db.get_calendars, device_id)
-    return [_calendar_to_api(r) for r in rows]
-
-
-@api.post("/devices/{device_id}/calendars", status_code=201)
-async def create_calendar(device_id: int, body: CalendarCreate):
-    body.validate_date_list()
-    d = await asyncio.to_thread(db.get_device, device_id)
-    if not d:
-        raise HTTPException(404, "Device not found")
-    existing_names = {c["name"] for c in await asyncio.to_thread(db.get_calendars, device_id)}
-    if body.name in existing_names:
-        raise HTTPException(409, f"Calendar {body.name!r} already exists on this device — names must be "
-                                  "unique since Schedules reference calendars by name")
-    row = await asyncio.to_thread(
-        db.create_calendar, device_id,
-        {"name": body.name, "description": body.description,
-         "date_list": json.dumps(body.date_list), "enabled": 1 if body.enabled else 0},
-    )
-    asyncio.create_task(engine.reload())
-    return _calendar_to_api(row)
-
-
-@api.get("/calendars/{calendar_id}")
-async def get_calendar(calendar_id: int):
-    row = await asyncio.to_thread(db.get_calendar, calendar_id)
-    if not row:
-        raise HTTPException(404, "Calendar not found")
-    return _calendar_to_api(row)
-
-
-@api.put("/calendars/{calendar_id}")
-async def update_calendar(calendar_id: int, body: CalendarUpdate):
-    body.validate_date_list()
-    existing = await asyncio.to_thread(db.get_calendar, calendar_id)
-    if not existing:
-        raise HTTPException(404, "Calendar not found")
-    other_names = {
-        c["name"] for c in await asyncio.to_thread(db.get_calendars, existing["device_id"])
-        if c["id"] != calendar_id
-    }
-    if body.name in other_names:
-        raise HTTPException(409, f"Calendar {body.name!r} already exists on this device — names must be "
-                                  "unique since Schedules reference calendars by name")
-    row = await asyncio.to_thread(
-        db.update_calendar, calendar_id,
-        {"name": body.name, "description": body.description,
-         "date_list": json.dumps(body.date_list), "enabled": 1 if body.enabled else 0},
-    )
-    asyncio.create_task(engine.reload())
-    return _calendar_to_api(row)
-
-
-@api.delete("/calendars/{calendar_id}", status_code=204)
-async def delete_calendar(calendar_id: int):
-    deleted = await asyncio.to_thread(db.delete_calendar, calendar_id)
-    if not deleted:
-        raise HTTPException(404, "Calendar not found")
-    asyncio.create_task(engine.reload())
 
 
 # ── State + reload ──

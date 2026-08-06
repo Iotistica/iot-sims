@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from . import calendar as bacnet_calendar
-from .config import (
+from ..core.config import (
     EQUIPMENT_TYPES,
     LOCATION_KINDS,
     POINT_TYPES,
