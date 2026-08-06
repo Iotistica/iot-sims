@@ -97,6 +97,9 @@ log = logging.getLogger("bacnet-sim")
 
 from .bacnet.packet_capture import PacketCapture
 
+from .fault_detection import (FaultDetectionEngine,build_default_registry,)
+
+
 from .api.routers.packet_capture import (
     router as packet_capture_router,
 )
@@ -161,6 +164,12 @@ from .api.routers.simulation import (
 from .api.routers.websocket import (
     router as websocket_router,
 )
+
+from .api.routers.fault_detection import (
+    router as fault_router,
+)
+
+
 
 _debug = 0
 _log = ModuleLogger(globals())
@@ -398,6 +407,35 @@ class Database:
                     date_list TEXT NOT NULL DEFAULT '[]',
                     enabled INTEGER NOT NULL DEFAULT 1
                 );
+                CREATE TABLE IF NOT EXISTS fault_rule_configs (
+                    id INTEGER PRIMARY KEY,
+                    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    rule_id TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    parameters TEXT NOT NULL DEFAULT '{}',
+                    persistence_seconds REAL,
+                    clear_seconds REAL,
+                    severity TEXT,
+                    UNIQUE(device_id, rule_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS fault_events (
+                    id INTEGER PRIMARY KEY,
+                    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    rule_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    previous_state TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    evidence TEXT NOT NULL DEFAULT '[]',
+                    timestamp REAL NOT NULL,
+                    activated_at REAL,
+                    cleared_at REAL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_fault_events_device_id ON fault_events(device_id);
+                CREATE INDEX IF NOT EXISTS idx_fault_events_rule_id ON fault_events(rule_id);
+
             """)
             # Additive migration: number_of_states was added to the objects
             # table after it first shipped — backfill it on existing DBs
@@ -1346,6 +1384,196 @@ class Database:
             r = conn.execute("SELECT * FROM profiles WHERE id=?", (project_id,)).fetchone()
             return dict(r) if r else None
 
+
+    # ── Fault Detection  ──────────────────────────────────────────────────────────────
+    def get_fault_rule_configs(
+    self,
+    device_id: int,
+        ) -> list[dict]:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM fault_rule_configs
+                    WHERE device_id = ?
+                    ORDER BY rule_id
+                    """,
+                    (device_id,),
+                )
+
+                return [
+                    dict(row)
+                    for row in rows
+                ]
+
+
+    def upsert_fault_rule_config(
+        self,
+        device_id: int,
+        rule_id: str,
+        data: dict,
+    ) -> dict:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO fault_rule_configs (
+                    device_id,
+                    rule_id,
+                    enabled,
+                    parameters,
+                    persistence_seconds,
+                    clear_seconds,
+                    severity
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id, rule_id)
+                DO UPDATE SET
+                    enabled = excluded.enabled,
+                    parameters = excluded.parameters,
+                    persistence_seconds =
+                        excluded.persistence_seconds,
+                    clear_seconds =
+                        excluded.clear_seconds,
+                    severity = excluded.severity
+                """,
+                (
+                    device_id,
+                    rule_id,
+                    int(bool(data.get("enabled", True))),
+                    data.get("parameters", "{}"),
+                    data.get("persistence_seconds"),
+                    data.get("clear_seconds"),
+                    data.get("severity"),
+                ),
+            )
+
+            conn.commit()
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM fault_rule_configs
+                WHERE device_id = ?
+                AND rule_id = ?
+                """,
+                (
+                    device_id,
+                    rule_id,
+                ),
+            ).fetchone()
+
+            if row is None:
+                raise RuntimeError(
+                    "Fault rule configuration was not saved"
+                )
+
+            return dict(row)
+
+
+    def record_fault_evaluation(
+        self,
+        data: dict,
+    ) -> dict:
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO fault_events (
+                    device_id,
+                    rule_id,
+                    state,
+                    previous_state,
+                    severity,
+                    message,
+                    evidence,
+                    timestamp,
+                    activated_at,
+                    cleared_at
+                )
+                VALUES (
+                    :device_id,
+                    :rule_id,
+                    :state,
+                    :previous_state,
+                    :severity,
+                    :message,
+                    :evidence,
+                    :timestamp,
+                    :activated_at,
+                    :cleared_at
+                )
+                """,
+                data,
+            )
+
+            conn.commit()
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM fault_events
+                WHERE id = ?
+                """,
+                (cursor.lastrowid,),
+            ).fetchone()
+
+            if row is None:
+                raise RuntimeError(
+                    "Fault event was not recorded"
+                )
+
+            return dict(row)
+
+
+    def get_fault_events(
+        self,
+        *,
+        device_id: int | None = None,
+        active_only: bool = False,
+        limit: int = 200,
+    ) -> list[dict]:
+        query = """
+            SELECT *
+            FROM fault_events
+        """
+
+        clauses: list[str] = []
+        values: list = []
+
+        if device_id is not None:
+            clauses.append(
+                "device_id = ?"
+            )
+            values.append(device_id)
+
+        if active_only:
+            clauses.append(
+                "state = 'active'"
+            )
+
+        if clauses:
+            query += (
+                " WHERE "
+                + " AND ".join(clauses)
+            )
+
+        query += """
+            ORDER BY id DESC
+            LIMIT ?
+        """
+
+        values.append(limit)
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                query,
+                values,
+            )
+
+            return [
+                dict(row)
+                for row in rows
+            ]
+
     @staticmethod
     def _attach_trend_logs(conn: sqlite3.Connection, dev: dict) -> None:
         """Snapshot this device's trend logs for a project, replacing the
@@ -1961,6 +2189,7 @@ class FaultBehavior(Behavior):
             return 0.0 if self.fault_type == "offline" else self.fault_value
 
         return float(self._inner.compute(state))
+
 
 
 def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> Behavior:
@@ -3491,6 +3720,7 @@ class SimEngine:
 db: Database = None  # type: ignore
 engine: SimEngine = None  # type: ignore
 ws_clients: list[WebSocket] = []
+fault_detection_engine: FaultDetectionEngine | None = None
 
 packet_capture = PacketCapture(
     max_packets=10_000,
@@ -3959,6 +4189,11 @@ async def tick_loop() -> None:
         await asyncio.sleep(TICK_SECONDS)
         try:
             await engine.tick()
+
+            if fault_detection_engine is not None:
+                await fault_detection_engine.evaluate_all()
+
+
             await broadcast_state()
             state = engine.get_state()
             for dev in state.get("devices", []):
@@ -4001,6 +4236,7 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     app.state.engine = engine
     app.state.packet_capture = packet_capture
+ 
 
     app.state.get_current_user = get_current_user
     app.state.log_event = _log_event
@@ -4015,10 +4251,6 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.user_from_token = user_from_token
-    app.state.metrics_ws_clients = (
-        metrics_ws_clients
-    )
-
     app.state.hash_password = hash_password
     app.state.verify_password = verify_password
     app.state.create_access_token = create_access_token
@@ -4034,6 +4266,19 @@ async def lifespan(app: FastAPI):
 
     app.state.ws_clients = ws_clients
     app.state.metrics_ws_clients = metrics_ws_clients
+
+
+    fault_detection_engine = FaultDetectionEngine(
+        database=db,
+        simulation_engine=engine,
+        registry=build_default_registry(),
+        event_callback=_log_event,
+    )
+
+    app.state.fault_detection_engine = fault_detection_engine
+
+
+    
 
     _apply_settings_live(await asyncio.to_thread(db.get_settings))
     await engine.start()
@@ -4071,6 +4316,7 @@ api.include_router(objects_router)
 api.include_router(projects_router)
 api.include_router(simulation_router)
 api.include_router(websocket_router)
+api.include_router(fault_router)
 
 api.add_middleware(
     CORSMiddleware,

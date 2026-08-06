@@ -85,6 +85,11 @@ LOCATION_KINDS = {
 POINT_TYPES = {
     # Sensors (bricksrc/sensor.py)
     "Supply_Air_Temperature_Sensor": "Supply Air Temperature",
+    "Supply_Fan_Command": "Supply Fan Command",
+    "Supply_Fan_Status": "Supply Fan Status",
+    "Supply_Air_Temperature_Setpoint": (
+        "Supply Air Temperature Setpoint"
+    ),
     "Return_Air_Temperature_Sensor": "Return Air Temperature",
     "Mixed_Air_Temperature_Sensor": "Mixed Air Temperature",
     "Outside_Air_Temperature_Sensor": "Outside Air Temperature",
