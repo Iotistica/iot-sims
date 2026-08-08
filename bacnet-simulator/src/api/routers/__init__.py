@@ -14,6 +14,7 @@ from .schedules import router as schedules_router
 from .simulation import router as simulation_router
 from .trend_logs import router as trend_logs_router
 from .websocket import router as websocket_router
+from .energy import router as energy_router
 
 __all__ = [
     "alarms_router",
@@ -32,4 +33,5 @@ __all__ = [
     "simulation_router",
     "trend_logs_router",
     "websocket_router",
+    "energy_router"
 ]

@@ -39,7 +39,7 @@ from typing import Optional
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS, XSD
 
-from ..core.config import EQUIPMENT_TYPES, POINT_TYPES
+from ..core.config import EQUIPMENT_TYPES, LOCATION_KINDS, POINT_TYPES
 
 BRICK = Namespace("https://brickschema.org/schema/Brick#")
 REF = Namespace("https://brickschema.org/schema/Brick/ref#")
@@ -74,6 +74,18 @@ UNIT_TO_QUDT = {
     "luxes": "LUX",
 }
 
+# Brick Core semantic relationships (semantic_entities/semantic_relationships,
+# src/legacy.py's Database.setup() + src/semantics/) -> (forward, inverse)
+# Brick predicate pairs. All four verified against the pinned v1.4.4
+# bricksrc/relationships.py, same "confirm against the real source" rule as
+# EQUIPMENT_TYPES/POINT_TYPES above -- see src/core/config.py.
+PREDICATE_TO_BRICK = {
+    "isPointOf": (BRICK.isPointOf, BRICK.hasPoint),
+    "isPartOf": (BRICK.isPartOf, BRICK.hasPart),
+    "feeds": (BRICK.feeds, BRICK.isFedBy),
+    "hasLocation": (BRICK.hasLocation, BRICK.isLocationOf),
+}
+
 
 def _device_uri(device_id: int, project_id: Optional[int]) -> URIRef:
     if project_id is not None:
@@ -87,13 +99,40 @@ def _object_uri(object_id: int, project_id: Optional[int]) -> URIRef:
     return URIRef(f"urn:iotistica:sim:object:{object_id}")
 
 
-def build_brick_graph(devices: list[dict], project_id: Optional[int] = None) -> tuple[Graph, list[str]]:
+def _location_uri(location_id: int, project_id: Optional[int]) -> URIRef:
+    if project_id is not None:
+        return URIRef(f"urn:iotistica:project:{project_id}:location:{location_id}")
+    return URIRef(f"urn:iotistica:sim:location:{location_id}")
+
+
+def _entity_uri(entity_id: int, project_id: Optional[int]) -> URIRef:
+    """Last-resort URI for a semantic entity that isn't backed by an
+    existing device/object/location row -- sub-equipment (Supply_Fan/
+    Return_Fan) and virtual, device-hosted locations (Lighting_Zone)."""
+    if project_id is not None:
+        return URIRef(f"urn:iotistica:project:{project_id}:entity:{entity_id}")
+    return URIRef(f"urn:iotistica:sim:entity:{entity_id}")
+
+
+def build_brick_graph(
+    devices: list[dict],
+    project_id: Optional[int] = None,
+    entities: Optional[list[dict]] = None,
+    relationships: Optional[list[dict]] = None,
+) -> tuple[Graph, list[str]]:
     """
     Builds the shared semantic model for every device (each with an
     "objects" list, same shape EDE export/project data already uses).
     Returns (graph, warnings) — warnings covers requirement 8 (a point
     missing a Brick class, or a device missing an equipment class) without
     aborting the export; everything that *can* be exported still is.
+
+    entities/relationships (semantic_entities/semantic_relationships rows,
+    Brick Core -- optional, default-empty, zero behavior change for
+    existing callers that don't pass them) add isPartOf/feeds/hasLocation
+    triples on top of the per-device/per-object hasPoint/isPointOf this
+    function already emits unconditionally. See _resolve_entity_uri()
+    below for how each entity's node is chosen.
     """
     graph = Graph()
     graph.bind("brick", BRICK)
@@ -162,7 +201,89 @@ def build_brick_graph(devices: list[dict], project_id: Optional[int] = None) -> 
             graph.add((reference, BACNET["object-name"], Literal(object_name)))
             graph.add((reference, BACNET.objectOf, device_uri))
 
+    entities = entities or []
+    relationships = relationships or []
+
+    # Sub-equipment (e.g. a Supply_Fan) is any entity that is itself the
+    # SOURCE of an isPartOf edge -- distinguishes it from a device's own
+    # top-level equipment entity, which reuses the device's URI instead of
+    # minting a new one (see _resolve_entity_uri).
+    sub_equipment_ids = {
+        rel["source_entity_id"] for rel in relationships if rel["predicate"] == "isPartOf"
+    }
+
+    entity_uri_by_id: dict[int, URIRef] = {}
+    for ent in entities:
+        uri = _resolve_entity_uri(ent, project_id, sub_equipment_ids)
+        entity_uri_by_id[ent["id"]] = uri
+
+        graph.add((uri, RDFS.label, Literal(ent["name"])))
+
+        brick_class = ent["brick_class"]
+        if brick_class in EQUIPMENT_TYPES or brick_class in POINT_TYPES or brick_class in LOCATION_KINDS:
+            graph.add((uri, RDF.type, BRICK[brick_class]))
+        else:
+            warnings.append(f"semantic entity {ent['name']!r}: brick_class {brick_class!r} is not canonical, skipping RDF.type")
+
+    for rel in relationships:
+        pair = PREDICATE_TO_BRICK.get(rel["predicate"])
+        if pair is None:
+            continue  # defensive -- the DB CHECK constraint already rejects unknown predicates
+
+        source_uri = entity_uri_by_id.get(rel["source_entity_id"])
+        target_uri = entity_uri_by_id.get(rel["target_entity_id"])
+        if source_uri is None or target_uri is None:
+            # Endpoint entity wasn't included in `entities` (out of this
+            # export's scope, e.g. a device-scoped export where the other
+            # endpoint belongs to a different device) -- skip the triple
+            # rather than fail the whole export.
+            continue
+
+        forward, inverse = pair
+        graph.add((source_uri, forward, target_uri))
+        graph.add((target_uri, inverse, source_uri))
+
     return graph, warnings
+
+
+def _resolve_entity_uri(
+    entity: dict,
+    project_id: Optional[int],
+    sub_equipment_ids: set[int],
+) -> URIRef:
+    """Reuses the same URI the per-device/per-object loop above already
+    minted wherever the entity is backed by an existing device/object/
+    location row, so new Brick Core triples land on the SAME node rather
+    than a disconnected duplicate:
+      - point entity with object_id set -> the object's URI.
+      - location entity with location_id set -> the location's URI (a
+        real row in `locations`, part of the site/building/floor/room
+        hierarchy).
+      - equipment entity with device_id set, that is NOT itself
+        sub-equipment (not a source of an isPartOf edge) -> the device's
+        URI -- this is "the device's own equipment", already typed by the
+        per-device loop.
+    Everything else -- sub-equipment (Supply_Fan/Return_Fan) and virtual,
+    device-hosted locations (Lighting_Zone with location_id IS NULL) --
+    mints a fresh entity URI, since there's no existing device/object/
+    location row that represents it on its own.
+    """
+    entity_kind = entity["entity_kind"]
+
+    if entity_kind == "point" and entity.get("object_id") is not None:
+        return _object_uri(entity["object_id"], project_id)
+
+    if entity_kind == "location" and entity.get("location_id") is not None:
+        return _location_uri(entity["location_id"], project_id)
+
+    if (
+        entity_kind == "equipment"
+        and entity.get("device_id") is not None
+        and entity["id"] not in sub_equipment_ids
+    ):
+        return _device_uri(entity["device_id"], project_id)
+
+    return _entity_uri(entity["id"], project_id)
 
 
 def graph_to_ttl(graph: Graph, warnings: list[str]) -> str:

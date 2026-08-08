@@ -595,6 +595,12 @@ const discoveryColumns = [
   height: 220px;
   position: relative;
 }
+
+
+
+
+
+
 @media (max-width: 700px) {
   .chart-card.wide { grid-column: span 1; }
 }

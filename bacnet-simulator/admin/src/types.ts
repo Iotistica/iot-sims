@@ -59,7 +59,32 @@ export interface Meta {
   equipment_types: MetaOption[]
   point_types: MetaOption[]
   location_kinds: MetaOption[]
+  semantic_predicates: MetaOption[]
   network_address: string | null
+}
+
+/** Brick Core semantic entity. Exactly one of device_id/object_id/location_id
+ * is set for 'equipment'/'point' kinds; 'location' allows either location_id
+ * (a real locations row) or device_id (a virtual, device-hosted location
+ * such as a Lighting_Zone) but not both. semantic_key is always
+ * server-derived -- never settable, see src/semantics/keys.py. */
+export interface SemanticEntity {
+  id: number
+  name: string
+  local_slug?: string | null
+  semantic_key?: string | null
+  brick_class: string
+  entity_kind: 'equipment' | 'point' | 'location'
+  device_id?: number | null
+  object_id?: number | null
+  location_id?: number | null
+}
+
+export interface SemanticRelationship {
+  id: number
+  source_entity_id: number
+  predicate: 'isPointOf' | 'isPartOf' | 'feeds' | 'hasLocation'
+  target_entity_id: number
 }
 
 export interface PriorityArrayInfo {

@@ -296,12 +296,12 @@ function doDelete() {
         />
       </a-form-item>
 
-      <a-form-item label="Equipment Type">
+      <a-form-item label="Brick Class" help="Semantic classification (Brick is the source of truth — assigning it here automatically creates/updates this device's semantic entity, no separate step needed in the Semantic Model panel).">
         <a-select
           v-model:value="form.equipment_type"
           show-search
           allow-clear
-          placeholder="Not tagged"
+          placeholder="Not classified"
           :options="meta.equipment_types"
           :filter-option="filterOption"
         />

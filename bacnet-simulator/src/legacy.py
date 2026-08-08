@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import bcrypt
 import jwt
@@ -41,10 +41,10 @@ from .bacnet import ede
 from .bacnet import schedule as bacnet_schedule
 from .bacnet import calendar as bacnet_calendar
 from .core.config import (
-    BACNET_PORT, BACNET_UNITS, BRICK_VERSION, COMMANDABLE_TYPES, DATA_DIR, DB_PATH,
+    BACNET_PORT, BACNET_UNITS, BINARY_TYPES, BRICK_VERSION, COMMANDABLE_TYPES, DATA_DIR, DB_PATH,
     EQUIPMENT_TYPES, JWT_ALGORITHM, JWT_EXPIRE_HOURS, LOCATION_KINDS, MULTISTATE_TYPES,
-    POINT_TYPES, SIM_API_PORT, VALID_BEHAVIORS, VALID_OBJECT_TYPES, VALID_POLARITY,
-    VALID_RELIABILITY, VALID_SEGMENTATION, _get_jwt_secret,
+    POINT_TYPES, SEMANTIC_PREDICATES, SIM_API_PORT, VALID_BEHAVIORS, VALID_OBJECT_TYPES,
+    VALID_POLARITY, VALID_RELIABILITY, VALID_SEGMENTATION, _get_jwt_secret,
 )
 from .bacnet.schemas import (
     AckAlarmRequest, AlarmConfigSet, CalendarCreate, CalendarUpdate,
@@ -56,6 +56,15 @@ from .bacnet.schemas import (
     ScheduleUpdate, SetValueRequest, SettingsPayload, TrendLogCreate,
     TrendLogUpdate,
 )
+from .semantics.backfill import (
+    backfill_semantic_entities,
+    migrate_ahu_fan_aliases,
+    upsert_semantic_entity,
+    upsert_semantic_relationship,
+)
+from .semantics.keys import derive_semantic_key
+from .semantics.mirror import sync_entity_from_flat_field, sync_flat_field_from_entity
+from .semantics.validation import validate_semantic_entity
 
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.analog import AnalogInputObject, AnalogOutputObject, AnalogValueObject
@@ -99,6 +108,7 @@ from .bacnet.packet_capture import PacketCapture
 
 from .fault_detection import (FaultDetectionEngine,build_default_registry,)
 
+from .energy import EnergyEngine
 
 from .api.routers.packet_capture import (
     router as packet_capture_router,
@@ -110,6 +120,10 @@ from .api.routers.backups import (
 
 from .api.routers.locations import (
     router as locations_router,
+)
+
+from .api.routers.semantic import (
+    router as semantic_router,
 )
 
 from .api.routers.calendars import (
@@ -169,6 +183,7 @@ from .api.routers.fault_detection import (
     router as fault_router,
 )
 
+from .api.routers.energy import router as energy_router
 
 
 _debug = 0
@@ -232,6 +247,47 @@ class Database:
         self.path_obj.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
             conn.executescript("""
+                
+                CREATE TABLE IF NOT EXISTS energy_history (
+                    id INTEGER PRIMARY KEY,
+                    timestamp REAL NOT NULL,
+                    device_id INTEGER NOT NULL,
+                    model_type TEXT NOT NULL,
+
+                    power_kw REAL,
+                    total_energy_kwh REAL,
+
+                    source TEXT,
+                    confidence TEXT,
+                    metrics TEXT NOT NULL DEFAULT '{}',
+
+                    FOREIGN KEY(device_id)
+                        REFERENCES devices(id)
+                        ON DELETE CASCADE
+                );
+
+                 CREATE INDEX IF NOT EXISTS
+                    idx_energy_history_device_time
+                    ON energy_history(
+                        device_id,
+                        timestamp
+                    );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_energy_history_timestamp
+                    ON energy_history(timestamp);
+
+                CREATE TABLE IF NOT EXISTS energy_model_configs (
+                    id INTEGER PRIMARY KEY,
+                    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    model_type TEXT NOT NULL,   
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    parameters TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE(device_id, model_type)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_energy_model_configs_device_id ON energy_model_configs(device_id);
+
                 CREATE TABLE IF NOT EXISTS locations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -270,6 +326,35 @@ class Database:
                     polarity TEXT NOT NULL DEFAULT 'normal',
                     UNIQUE(device_id, object_type, object_instance)
                 );
+
+                CREATE TABLE IF NOT EXISTS semantic_entities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    local_slug TEXT,
+                    semantic_key TEXT,
+                    brick_class TEXT NOT NULL,
+                    entity_kind TEXT NOT NULL CHECK(entity_kind IN ('equipment', 'point', 'location')),
+                    device_id INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+                    object_id INTEGER REFERENCES objects(id) ON DELETE CASCADE,
+                    location_id INTEGER REFERENCES locations(id)
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_semantic_key
+                    ON semantic_entities(semantic_key) WHERE semantic_key IS NOT NULL;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_object_unique
+                    ON semantic_entities(object_id) WHERE entity_kind = 'point' AND object_id IS NOT NULL;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_location_unique
+                    ON semantic_entities(location_id) WHERE entity_kind = 'location' AND location_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_semantic_entities_device ON semantic_entities(device_id);
+                CREATE INDEX IF NOT EXISTS idx_semantic_entities_brick_class ON semantic_entities(brick_class);
+
+                CREATE TABLE IF NOT EXISTS semantic_relationships (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_entity_id INTEGER NOT NULL REFERENCES semantic_entities(id) ON DELETE CASCADE,
+                    predicate TEXT NOT NULL CHECK(predicate IN ('isPointOf', 'isPartOf', 'feeds', 'hasLocation')),
+                    target_entity_id INTEGER NOT NULL REFERENCES semantic_entities(id) ON DELETE CASCADE,
+                    UNIQUE(source_entity_id, predicate, target_entity_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_semantic_relationships_target ON semantic_relationships(target_entity_id, predicate);
 
                 CREATE TABLE IF NOT EXISTS profiles (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -485,6 +570,63 @@ class Database:
             existing_loc_cols = {row[1] for row in conn.execute("PRAGMA table_info(locations)")}
             if "kind" not in existing_loc_cols:
                 conn.execute("ALTER TABLE locations ADD COLUMN kind TEXT")
+
+            existing_energy_cols = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(energy_model_configs)"
+                )
+            }
+
+            if "instance_key" not in existing_energy_cols:
+                conn.executescript(
+                    """
+                    ALTER TABLE energy_model_configs
+                    RENAME TO energy_model_configs_old;
+
+                    CREATE TABLE energy_model_configs (
+                        id INTEGER PRIMARY KEY,
+                        device_id INTEGER NOT NULL
+                            REFERENCES devices(id)
+                            ON DELETE CASCADE,
+                        model_type TEXT NOT NULL,
+                        instance_key TEXT NOT NULL DEFAULT 'default',
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        parameters TEXT NOT NULL DEFAULT '{}',
+                        UNIQUE(device_id, model_type, instance_key)
+                    );
+
+                    INSERT INTO energy_model_configs (
+                        id,
+                        device_id,
+                        model_type,
+                        instance_key,
+                        enabled,
+                        parameters
+                    )
+                    SELECT
+                        id,
+                        device_id,
+                        model_type,
+                        'default',
+                        enabled,
+                        parameters
+                    FROM energy_model_configs_old;
+
+                    DROP TABLE energy_model_configs_old;
+
+                    CREATE INDEX IF NOT EXISTS
+                        idx_energy_model_configs_device_id
+                    ON energy_model_configs(device_id);
+                    """
+                )
+
+            backfill_semantic_entities(conn)
+            # Must run AFTER backfill_semantic_entities() -- see
+            # migrate_ahu_fan_aliases()'s own docstring for why (it needs
+            # each AHU's own top-level equipment entity, which backfill is
+            # what creates it from devices.equipment_type).
+            migrate_ahu_fan_aliases(conn)
         log.info("Database ready at %s", self.path)
 
     def seed_default(self) -> None:
@@ -619,12 +761,17 @@ class Database:
             ]
 
             # ── AHU-1  floors 1-2 (1003) ──────────────────────────────────────
+            # SF-Run/RF-Run and SF-Speed/RF-Speed are tagged with the
+            # canonical Fan_Status/Fan_Speed_Command point classes -- the
+            # supply/return distinction comes from which Supply_Fan/
+            # Return_Fan semantic equipment entity each isPointOf, set up
+            # below, not from separate alias point-type names.
             ahu1 = did(1003)
             objects += [
-                (ahu1, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
-                (ahu1, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
-                (ahu1, "analog-input",  3, "SF-Speed",           "percent",         "sine",        '{"base":75.0,"amplitude":15.0,"period_hours":12}'),
-                (ahu1, "analog-input",  4, "RF-Speed",           "percent",         "sine",        '{"base":70.0,"amplitude":12.0,"period_hours":12}'),
+                (ahu1, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}', "Fan_Status"),
+                (ahu1, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}', "Fan_Status"),
+                (ahu1, "analog-input",  3, "SF-Speed",           "percent",         "sine",        '{"base":75.0,"amplitude":15.0,"period_hours":12}', "Fan_Speed_Command"),
+                (ahu1, "analog-input",  4, "RF-Speed",           "percent",         "sine",        '{"base":70.0,"amplitude":12.0,"period_hours":12}', "Fan_Speed_Command"),
                 (ahu1, "analog-input",  5, "SAT",                "degrees-celsius", "noise",       '{"base":13.0,"noise":0.4}', "Supply_Air_Temperature_Sensor"),
                 (ahu1, "analog-input",  6, "RAT",                "degrees-celsius", "sine",        '{"base":22.0,"amplitude":2.0,"period_hours":24}', "Return_Air_Temperature_Sensor"),
                 (ahu1, "analog-input",  7, "MAT",                "degrees-celsius", "noise",       '{"base":16.0,"noise":0.8}', "Mixed_Air_Temperature_Sensor"),
@@ -641,10 +788,10 @@ class Database:
             # ── AHU-2  floors 3-4 (1004) ──────────────────────────────────────
             ahu2 = did(1004)
             objects += [
-                (ahu2, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
-                (ahu2, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}', "Run_Status"),
-                (ahu2, "analog-input",  3, "SF-Speed",           "percent",         "sine",        '{"base":70.0,"amplitude":18.0,"period_hours":12}'),
-                (ahu2, "analog-input",  4, "RF-Speed",           "percent",         "sine",        '{"base":65.0,"amplitude":14.0,"period_hours":12}'),
+                (ahu2, "binary-input",  1, "SF-Run",             "no-units",        "manual",      '{"value":true}', "Fan_Status"),
+                (ahu2, "binary-input",  2, "RF-Run",             "no-units",        "manual",      '{"value":true}', "Fan_Status"),
+                (ahu2, "analog-input",  3, "SF-Speed",           "percent",         "sine",        '{"base":70.0,"amplitude":18.0,"period_hours":12}', "Fan_Speed_Command"),
+                (ahu2, "analog-input",  4, "RF-Speed",           "percent",         "sine",        '{"base":65.0,"amplitude":14.0,"period_hours":12}', "Fan_Speed_Command"),
                 (ahu2, "analog-input",  5, "SAT",                "degrees-celsius", "noise",       '{"base":13.5,"noise":0.4}', "Supply_Air_Temperature_Sensor"),
                 (ahu2, "analog-input",  6, "RAT",                "degrees-celsius", "sine",        '{"base":21.5,"amplitude":2.0,"period_hours":24}', "Return_Air_Temperature_Sensor"),
                 (ahu2, "analog-input",  7, "MAT",                "degrees-celsius", "noise",       '{"base":15.5,"noise":0.8}', "Mixed_Air_Temperature_Sensor"),
@@ -725,7 +872,7 @@ class Database:
                         })),
                         (gw, "analog-input", next_inst + 5, f"Zone-{zone}-Power",      "kilowatts","random_walk", json.dumps({
                             "value": 2.4, "step": 0.15, "min": 0.2, "max": 4.5,
-                        })),
+                        }), "Power_Sensor"),
                     ]
                     next_inst += 6
 
@@ -739,8 +886,121 @@ class Database:
                 "VALUES (?,?,?,?,?,?,?,?)",
                 objects,
             )
+
+            # Seed the default energy model for the Chiller-Plant device.
+            #
+            # Use the database ID resolved from device instance 1001 rather
+            # than a hard-coded row ID, because SQLite row IDs can change
+            # when the database is recreated or devices are imported.
+            conn.execute(
+                """
+                INSERT INTO energy_model_configs (
+                    device_id,
+                    model_type,
+                    enabled,
+                    parameters
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(device_id, model_type, instance_key)
+                DO UPDATE SET
+                    enabled = excluded.enabled,
+                    parameters = excluded.parameters
+                """,
+                (
+                    cp,
+                    "chiller",
+                    1,
+                    json.dumps(
+                        {
+                            "rated_capacity_kw": 3000.0,
+                            "full_load_cop": 5.8,
+                            "iplv_cop": 6.6,
+                            "rated_electrical_power_kw": 520.0,
+                        }
+                    ),
+                ),
+            )
+
+            # ── Brick Core semantic entities/relationships ──────────────────────
+            # Demonstrates the canonical representation this migration exists
+            # to enable: Supply_Fan/Return_Fan as their own sub-equipment
+            # (isPartOf the AHU) each isPointOf-ing its own Fan_Status/
+            # Fan_Speed_Command points, and Lighting_Zone as a location entity
+            # directly hosting its own zone points -- instead of the
+            # duplicate-Fan_Status collision the flat point_type tags above
+            # still show (unavoidably, since two fans share one device) for
+            # any caller that hasn't opted into semantic resolution.
+            def oid(device_id: int, name: str) -> int:
+                return conn.execute(
+                    "SELECT id FROM objects WHERE device_id=? AND name=?",
+                    (device_id, name),
+                ).fetchone()[0]
+
+            for ahu_device_id, ahu_name in ((ahu1, "AHU-1"), (ahu2, "AHU-2")):
+                ahu_entity = upsert_semantic_entity(
+                    conn, name=ahu_name, brick_class="Air_Handling_Unit",
+                    entity_kind="equipment", device_id=ahu_device_id,
+                )
+                for brick_class, run_name, speed_name in (
+                    ("Supply_Fan", "SF-Run", "SF-Speed"),
+                    ("Return_Fan", "RF-Run", "RF-Speed"),
+                ):
+                    fan_entity = upsert_semantic_entity(
+                        conn,
+                        name=f"{ahu_name} {brick_class.replace('_', ' ')}",
+                        brick_class=brick_class,
+                        entity_kind="equipment",
+                        device_id=ahu_device_id,
+                        local_slug=brick_class.lower().replace("_", "-"),
+                    )
+                    upsert_semantic_relationship(conn, fan_entity["id"], "isPartOf", ahu_entity["id"])
+
+                    for point_name, point_class in (
+                        (run_name, "Fan_Status"),
+                        (speed_name, "Fan_Speed_Command"),
+                    ):
+                        point_entity = upsert_semantic_entity(
+                            conn, name=point_name, brick_class=point_class,
+                            entity_kind="point", object_id=oid(ahu_device_id, point_name),
+                        )
+                        upsert_semantic_relationship(conn, point_entity["id"], "isPointOf", fan_entity["id"])
+
+            for (dali_instance, _on_time, _off_time) in dali_cfg:
+                gw = did(dali_instance)
+                for zone in ("A", "B"):
+                    zone_entity = upsert_semantic_entity(
+                        conn,
+                        name=f"Lighting Zone {zone} (device {dali_instance})",
+                        brick_class="Lighting_Zone",
+                        entity_kind="location",
+                        device_id=gw,
+                        local_slug=f"zone-{zone.lower()}",
+                    )
+                    for point_name, point_class in (
+                        (f"Zone-{zone}-Power", "Power_Sensor"),
+                        (f"Zone-{zone}-Lights-On", "On_Off_Command"),
+                        (f"Zone-{zone}-Dim-Level", "Lighting_Level_Command"),
+                    ):
+                        point_entity = upsert_semantic_entity(
+                            conn, name=point_name, brick_class=point_class,
+                            entity_kind="point", object_id=oid(gw, point_name),
+                        )
+                        upsert_semantic_relationship(conn, point_entity["id"], "isPointOf", zone_entity["id"])
+
+            # setup() already ran backfill_semantic_entities() once before
+            # seed_default() populated any rows (fresh-install ordering:
+            # setup() -> seed_default()), so that first pass found nothing
+            # to backfill. Run it again now that the seeded equipment_type/
+            # point_type/kind tags actually exist, so first boot doesn't
+            # need a process restart before semantic entities show up.
+            # (Also picks up every device/object/location NOT given explicit
+            # semantic entities above, e.g. Chiller-Plant/HW-Plant/VAVs.)
+            backfill_semantic_entities(conn)
+
+            conn.commit()
         log.info("Seeded 4-storey office tower: Honeywell/Trane/JCI/Siemens/LOYTEC – 18 devices, %d objects", len(objects))
 
+        
     # ── Locations ────────────────────────────────────────────────────────────
     # Pure organizational grouping for the admin UI/sidebar tree — no BACnet
     # protocol representation, unlike devices/objects. Devices reference a
@@ -756,10 +1016,16 @@ class Database:
             return dict(r) if r else None
 
     def create_location(self, name: str, parent_location_id: Optional[int], description: str, kind: Optional[str] = None) -> dict:
+        # `kind` is presented in the UI as the location's Brick class --
+        # Brick is the source of truth, `locations.kind` is a compatibility
+        # mirror kept in lockstep automatically (see src/semantics/mirror.py).
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO locations (name, parent_location_id, description, kind) VALUES (?,?,?,?)",
                 (name, parent_location_id, description, kind),
+            )
+            sync_entity_from_flat_field(
+                conn, entity_kind="location", name=name, brick_class=kind, location_id=cur.lastrowid,
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM locations WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -770,13 +1036,17 @@ class Database:
                 "UPDATE locations SET name=?, parent_location_id=?, description=?, kind=? WHERE id=?",
                 (name, parent_location_id, description, kind, location_id),
             )
+            sync_entity_from_flat_field(
+                conn, entity_kind="location", name=name, brick_class=kind, location_id=location_id,
+            )
             conn.commit()
             r = conn.execute("SELECT * FROM locations WHERE id=?", (location_id,)).fetchone()
             return dict(r) if r else None
 
     def delete_location(self, location_id: int) -> bool:
-        """Refuses to delete a non-empty location (sub-locations or devices
-        still reference it) — returns False rather than silently cascading."""
+        """Refuses to delete a non-empty location (sub-locations, devices,
+        or semantic entities still reference it) — returns False rather
+        than silently cascading."""
         with self._conn() as conn:
             has_sublocations = conn.execute(
                 "SELECT 1 FROM locations WHERE parent_location_id=?", (location_id,)
@@ -784,11 +1054,352 @@ class Database:
             has_devices = conn.execute(
                 "SELECT 1 FROM devices WHERE location_id=?", (location_id,)
             ).fetchone()
-            if has_sublocations or has_devices:
+            has_semantic_entities = conn.execute(
+                "SELECT 1 FROM semantic_entities WHERE location_id=?", (location_id,)
+            ).fetchone()
+            if has_sublocations or has_devices or has_semantic_entities:
                 return False
             cur = conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    # ── Semantic entities/relationships (Brick Core) ────────────────────────
+    # Thin CRUD/traversal methods matching the shape of the locations
+    # methods above — see src/semantics/ for the multi-hop graph-walking
+    # logic (SemanticResolver) built on top of these.
+
+    def get_semantic_entities(
+        self,
+        *,
+        device_id: Optional[int] = None,
+        object_id: Optional[int] = None,
+        location_id: Optional[int] = None,
+        entity_kind: Optional[str] = None,
+        brick_class: Optional[str] = None,
+    ) -> list[dict]:
+        clauses = []
+        params: list[Any] = []
+        for column, value in (
+            ("device_id", device_id),
+            ("object_id", object_id),
+            ("location_id", location_id),
+            ("entity_kind", entity_kind),
+            ("brick_class", brick_class),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            return [
+                dict(r)
+                for r in conn.execute(
+                    f"SELECT * FROM semantic_entities{where} ORDER BY id", params
+                )
+            ]
+
+    def get_semantic_entity(self, entity_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute(
+                "SELECT * FROM semantic_entities WHERE id=?", (entity_id,)
+            ).fetchone()
+            return dict(r) if r else None
+
+    def create_semantic_entity(
+        self,
+        name: str,
+        brick_class: str,
+        entity_kind: str,
+        *,
+        device_id: Optional[int] = None,
+        object_id: Optional[int] = None,
+        location_id: Optional[int] = None,
+        local_slug: Optional[str] = None,
+    ) -> dict:
+        validate_semantic_entity(
+            entity_kind, brick_class,
+            device_id=device_id, object_id=object_id, location_id=location_id,
+        )
+        semantic_key = derive_semantic_key(
+            entity_kind, brick_class,
+            device_id=device_id, object_id=object_id, location_id=location_id,
+            local_slug=local_slug,
+        )
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO semantic_entities "
+                "(name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id),
+            )
+            # Direction 2 (Semantic Model panel -> flat field): point/location
+            # entities are unambiguous (DB-enforced 1:1 with object_id/
+            # location_id), so a point/location entity created here keeps
+            # objects.point_type/locations.kind in lockstep too -- a user
+            # who classifies a point through this panel instead of the
+            # Object drawer still sees it reflected there. Deliberately not
+            # done for entity_kind='equipment' -- see src/semantics/mirror.py.
+            sync_flat_field_from_entity(
+                conn, entity_kind=entity_kind, brick_class=brick_class,
+                object_id=object_id, location_id=location_id,
+            )
+            conn.commit()
+            return dict(
+                conn.execute(
+                    "SELECT * FROM semantic_entities WHERE id=?", (cur.lastrowid,)
+                ).fetchone()
+            )
+
+    def update_semantic_entity(
+        self,
+        entity_id: int,
+        name: str,
+        brick_class: str,
+        entity_kind: str,
+        *,
+        device_id: Optional[int] = None,
+        object_id: Optional[int] = None,
+        location_id: Optional[int] = None,
+        local_slug: Optional[str] = None,
+    ) -> Optional[dict]:
+        validate_semantic_entity(
+            entity_kind, brick_class,
+            device_id=device_id, object_id=object_id, location_id=location_id,
+        )
+        semantic_key = derive_semantic_key(
+            entity_kind, brick_class,
+            device_id=device_id, object_id=object_id, location_id=location_id,
+            local_slug=local_slug,
+        )
+        with self._conn() as conn:
+            old = conn.execute(
+                "SELECT * FROM semantic_entities WHERE id=?", (entity_id,)
+            ).fetchone()
+            old = dict(old) if old else None
+
+            conn.execute(
+                "UPDATE semantic_entities SET name=?, local_slug=?, semantic_key=?, "
+                "brick_class=?, entity_kind=?, device_id=?, object_id=?, location_id=? "
+                "WHERE id=?",
+                (name, local_slug, semantic_key, brick_class, entity_kind,
+                 device_id, object_id, location_id, entity_id),
+            )
+
+            # Direction 2, same as create_semantic_entity() above -- plus,
+            # if this entity was re-linked away from a different object/
+            # location (unusual, but the API allows it), clear THAT row's
+            # flat field first so it doesn't keep pointing at a class this
+            # entity no longer represents.
+            if old is not None:
+                if (old["entity_kind"] == "point" and old.get("object_id") is not None
+                        and old["object_id"] != object_id):
+                    sync_flat_field_from_entity(
+                        conn, entity_kind="point", brick_class=None, object_id=old["object_id"],
+                    )
+                if (old["entity_kind"] == "location" and old.get("location_id") is not None
+                        and old["location_id"] != location_id):
+                    sync_flat_field_from_entity(
+                        conn, entity_kind="location", brick_class=None, location_id=old["location_id"],
+                    )
+            sync_flat_field_from_entity(
+                conn, entity_kind=entity_kind, brick_class=brick_class,
+                object_id=object_id, location_id=location_id,
+            )
+
+            conn.commit()
+            r = conn.execute(
+                "SELECT * FROM semantic_entities WHERE id=?", (entity_id,)
+            ).fetchone()
+            return dict(r) if r else None
+
+    def delete_semantic_entity(self, entity_id: int) -> bool:
+        """Cascades to semantic_relationships referencing this entity (via
+        the ON DELETE CASCADE FK) — a relationship pointing at a deleted
+        entity has no independent meaning to protect, unlike locations'
+        refuse-and-409 pattern. Direction 2 (see src/semantics/mirror.py):
+        if this was a point/location entity, its flat field is cleared too
+        -- deleting the Brick classification un-classifies the row
+        everywhere, rather than leaving objects.point_type/locations.kind
+        pointing at a class with no backing entity."""
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT * FROM semantic_entities WHERE id=?", (entity_id,)
+            ).fetchone()
+            cur = conn.execute("DELETE FROM semantic_entities WHERE id=?", (entity_id,))
+            if existing is not None:
+                existing = dict(existing)
+                sync_flat_field_from_entity(
+                    conn, entity_kind=existing["entity_kind"], brick_class=None,
+                    object_id=existing.get("object_id"), location_id=existing.get("location_id"),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def _get_or_create_semantic_entity(
+        self,
+        name: str,
+        brick_class: str,
+        entity_kind: str,
+        *,
+        device_id: Optional[int] = None,
+        object_id: Optional[int] = None,
+        location_id: Optional[int] = None,
+        local_slug: Optional[str] = None,
+    ) -> dict:
+        """Shared upsert used by the get_or_create_*_entity() wrappers below.
+        Keys off the derived semantic_key via an atomic SQLite UPSERT (see
+        src/semantics/backfill.py's upsert_semantic_entity, which does the
+        actual write) rather than an app-level SELECT-then-INSERT, so
+        concurrent callers (or Database.setup()'s backfill running twice)
+        can't race into a duplicate row."""
+        if derive_semantic_key(
+            entity_kind, brick_class,
+            device_id=device_id, object_id=object_id, location_id=location_id,
+            local_slug=local_slug,
+        ) is None:
+            raise ValueError(
+                "get_or_create requires at least one of device_id/object_id/"
+                "location_id so a semantic_key can be derived"
+            )
+        with self._conn() as conn:
+            entity = upsert_semantic_entity(
+                conn,
+                name=name, brick_class=brick_class, entity_kind=entity_kind,
+                device_id=device_id, object_id=object_id, location_id=location_id,
+                local_slug=local_slug,
+            )
+            conn.commit()
+            return entity
+
+    def get_or_create_equipment_entity(
+        self, *, device_id: int, name: str, brick_class: str, local_slug: Optional[str] = None,
+    ) -> dict:
+        return self._get_or_create_semantic_entity(
+            name, brick_class, "equipment", device_id=device_id, local_slug=local_slug,
+        )
+
+    def get_or_create_point_entity(
+        self, *, object_id: int, name: str, brick_class: str, local_slug: Optional[str] = None,
+    ) -> dict:
+        return self._get_or_create_semantic_entity(
+            name, brick_class, "point", object_id=object_id, local_slug=local_slug,
+        )
+
+    def get_or_create_location_entity(
+        self,
+        *,
+        name: str,
+        brick_class: str,
+        location_id: Optional[int] = None,
+        device_id: Optional[int] = None,
+        local_slug: Optional[str] = None,
+    ) -> dict:
+        """location_id (a real locations row) and device_id (a virtual,
+        device-hosted zone like a Lighting_Zone) are mutually exclusive —
+        see validate_semantic_entity()."""
+        return self._get_or_create_semantic_entity(
+            name, brick_class, "location",
+            device_id=device_id, location_id=location_id, local_slug=local_slug,
+        )
+
+    def get_semantic_relationships(
+        self,
+        *,
+        source_entity_id: Optional[int] = None,
+        target_entity_id: Optional[int] = None,
+        predicate: Optional[str] = None,
+    ) -> list[dict]:
+        clauses = []
+        params: list[Any] = []
+        for column, value in (
+            ("source_entity_id", source_entity_id),
+            ("target_entity_id", target_entity_id),
+            ("predicate", predicate),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            return [
+                dict(r)
+                for r in conn.execute(
+                    f"SELECT * FROM semantic_relationships{where} ORDER BY id", params
+                )
+            ]
+
+    def get_semantic_relationship(self, relationship_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute(
+                "SELECT * FROM semantic_relationships WHERE id=?", (relationship_id,)
+            ).fetchone()
+            return dict(r) if r else None
+
+    def create_semantic_relationship(
+        self, source_entity_id: int, predicate: str, target_entity_id: int,
+    ) -> dict:
+        """Re-creating an identical relationship is a no-op returning the
+        existing row, not an error — matches the UPSERT idempotency used
+        for semantic_entities (see upsert_semantic_relationship)."""
+        with self._conn() as conn:
+            relationship = upsert_semantic_relationship(conn, source_entity_id, predicate, target_entity_id)
+            conn.commit()
+            return relationship
+
+    def delete_semantic_relationship(self, relationship_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM semantic_relationships WHERE id=?", (relationship_id,)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_related_entities(
+        self, entity_id: int, predicate: str, direction: str = "out",
+    ) -> list[dict]:
+        """direction='out': entity_id is source_entity_id (what does X
+        relate to). direction='in': entity_id is target_entity_id (what
+        relates to X) — this is the direction 'get all points isPointOf
+        entity X' actually needs, since points are the source of isPointOf
+        edges."""
+        if direction not in ("out", "in"):
+            raise ValueError("direction must be 'out' or 'in'")
+        with self._conn() as conn:
+            if direction == "out":
+                rows = conn.execute(
+                    "SELECT se.* FROM semantic_relationships sr "
+                    "JOIN semantic_entities se ON se.id = sr.target_entity_id "
+                    "WHERE sr.source_entity_id=? AND sr.predicate=?",
+                    (entity_id, predicate),
+                )
+            else:
+                rows = conn.execute(
+                    "SELECT se.* FROM semantic_relationships sr "
+                    "JOIN semantic_entities se ON se.id = sr.source_entity_id "
+                    "WHERE sr.target_entity_id=? AND sr.predicate=?",
+                    (entity_id, predicate),
+                )
+            return [dict(r) for r in rows]
+
+    def get_entity_points(
+        self, entity_id: int, brick_class: Optional[str] = None,
+    ) -> list[dict]:
+        """Sugar for get_related_entities(entity_id, 'isPointOf',
+        direction='in'), joined to objects for object_type/object_instance/
+        name/units so callers get a ready-to-use point row."""
+        with self._conn() as conn:
+            query = (
+                "SELECT se.*, o.object_type, o.object_instance, o.units, o.name AS object_name "
+                "FROM semantic_relationships sr "
+                "JOIN semantic_entities se ON se.id = sr.source_entity_id "
+                "JOIN objects o ON o.id = se.object_id "
+                "WHERE sr.target_entity_id=? AND sr.predicate='isPointOf'"
+            )
+            params: list[Any] = [entity_id]
+            if brick_class is not None:
+                query += " AND se.brick_class=?"
+                params.append(brick_class)
+            return [dict(r) for r in conn.execute(query, params)]
 
     def get_devices(self) -> list[dict]:
         with self._conn() as conn:
@@ -800,6 +1411,12 @@ class Database:
             return dict(r) if r else None
 
     def create_device(self, data: dict) -> dict:
+        # `equipment_type` is presented in the UI as the device's Brick
+        # class -- Brick is the source of truth, `devices.equipment_type`
+        # is a compatibility mirror kept in lockstep automatically (see
+        # src/semantics/mirror.py). This only ever syncs the device's own
+        # top-level equipment entity, never Supply_Fan/Return_Fan-style
+        # sub-equipment sharing this device_id.
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
@@ -814,6 +1431,10 @@ class Database:
                     "equipment_type": data.get("equipment_type"),
                     "can_receive_event_notifications": data.get("can_receive_event_notifications"),
                 },
+            )
+            sync_entity_from_flat_field(
+                conn, entity_kind="equipment", name=data.get("name") or "",
+                brick_class=data.get("equipment_type"), device_id=cur.lastrowid,
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM devices WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -835,6 +1456,10 @@ class Database:
                     "can_receive_event_notifications": data.get("can_receive_event_notifications"),
                     "id": device_id,
                 },
+            )
+            sync_entity_from_flat_field(
+                conn, entity_kind="equipment", name=data.get("name") or "",
+                brick_class=data.get("equipment_type"), device_id=device_id,
             )
             conn.commit()
             r = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
@@ -859,11 +1484,20 @@ class Database:
             return dict(r) if r else None
 
     def create_object(self, device_id: int, data: dict) -> dict:
+        # `point_type` is presented in the UI as the point's Brick class --
+        # Brick is the source of truth, `objects.point_type` is a
+        # compatibility mirror kept in lockstep automatically (see
+        # src/semantics/mirror.py). Unambiguous: at most one point entity
+        # can ever reference a given object_id (DB-enforced).
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled, number_of_states, reliability, polarity, point_type) "
                 "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled, :number_of_states, :reliability, :polarity, :point_type)",
                 {**data, "device_id": device_id},
+            )
+            sync_entity_from_flat_field(
+                conn, entity_kind="point", name=data.get("name") or "",
+                brick_class=data.get("point_type"), object_id=cur.lastrowid,
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM objects WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -876,6 +1510,10 @@ class Database:
                 "enabled=:enabled, number_of_states=:number_of_states, reliability=:reliability, "
                 "polarity=:polarity, point_type=:point_type WHERE id=:id",
                 {**data, "id": obj_id},
+            )
+            sync_entity_from_flat_field(
+                conn, entity_kind="point", name=data.get("name") or "",
+                brick_class=data.get("point_type"), object_id=obj_id,
             )
             conn.commit()
             r = conn.execute("SELECT * FROM objects WHERE id=?", (obj_id,)).fetchone()
@@ -918,6 +1556,134 @@ class Database:
                 )
             conn.commit()
             return len(objects)
+
+    # ── Energy────────────────────────────────────────────
+
+    def insert_energy_history_batch(
+    self,
+    rows: list[dict],
+        ) -> None:
+            if not rows:
+                return
+
+            with self._conn() as conn:
+                conn.executemany(
+                    """
+                    INSERT INTO energy_history (
+                        timestamp,
+                        device_id,
+                        model_type,
+                        power_kw,
+                        total_energy_kwh,
+                        source,
+                        confidence,
+                        metrics
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            row["timestamp"],
+                            row["device_id"],
+                            row["model_type"],
+                            row.get("power_kw"),
+                            row.get("total_energy_kwh"),
+                            row.get("source"),
+                            row.get("confidence"),
+                            row.get("metrics", "{}"),
+                        )
+                        for row in rows
+                    ],
+                )
+
+                conn.commit()
+
+    def delete_energy_history_before(
+    self,
+    cutoff_timestamp: float,
+        ) -> int:
+            with self._conn() as conn:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM energy_history
+                    WHERE timestamp < ?
+                    """,
+                    (cutoff_timestamp,),
+                )
+
+                conn.commit()
+                return cursor.rowcount
+
+    def get_energy_history(
+    self,
+    *,
+    start_timestamp: float,
+    end_timestamp: float,
+    device_id: int | None = None,
+    model_type: str | None = None,
+    ) -> list[dict]:
+        sql = """
+            SELECT
+                id,
+                timestamp,
+                device_id,
+                model_type,
+                power_kw,
+                total_energy_kwh,
+                source,
+                confidence,
+                metrics
+            FROM energy_history
+            WHERE timestamp >= ?
+            AND timestamp <= ?
+        """
+
+        params: list[object] = [
+            start_timestamp,
+            end_timestamp,
+        ]
+
+        if device_id is not None:
+            sql += " AND device_id = ?"
+            params.append(device_id)
+
+        if model_type is not None:
+            sql += " AND model_type = ?"
+            params.append(model_type)
+
+        sql += " ORDER BY timestamp ASC"
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                sql,
+                params,
+            ).fetchall()
+
+            return [dict(row) for row in rows]
+    
+    def get_energy_model_config(self, device_id: int, model_type: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM energy_model_configs WHERE device_id=? AND model_type=?", (device_id, model_type)).fetchone()
+            return dict(row) if row else None
+
+    def get_enabled_energy_model_configs(self) -> list[dict]:
+        with self._conn() as conn:
+            return [dict(row) for row in conn.execute("SELECT * FROM energy_model_configs WHERE enabled=1 ORDER BY device_id, model_type")]
+
+    def upsert_energy_model_config(self, device_id: int, model_type: str, parameters: str, enabled: bool = True) -> dict:
+        with self._conn() as conn:
+            conn.execute("""INSERT INTO energy_model_configs (device_id, model_type, enabled, parameters) VALUES (?, ?, ?, ?) ON CONFLICT(device_id, model_type, instance_key) DO UPDATE SET enabled=excluded.enabled, parameters=excluded.parameters""", (device_id, model_type, int(enabled), parameters))
+            conn.commit()
+            row = conn.execute("SELECT * FROM energy_model_configs WHERE device_id=? AND model_type=?", (device_id, model_type)).fetchone()
+            if row is None:
+                raise RuntimeError("Energy model configuration was not saved")
+            return dict(row)
+
+    def delete_energy_model_config(self, device_id: int, model_type: str) -> bool:
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM energy_model_configs WHERE device_id=? AND model_type=?", (device_id, model_type))
+            conn.commit()
+            return cursor.rowcount > 0
 
     # ── Alarms: Notification Classes ────────────────────────────────────────────
 
@@ -1656,7 +2422,19 @@ class Database:
                 self._attach_trend_logs(conn, dev)
                 self._attach_schedules(conn, dev)
                 self._attach_calendars(conn, dev)
-            data = json.dumps({"locations": locations, "devices": devices})
+            # Brick Core: stored verbatim, including the (soon-to-be-stale)
+            # id/semantic_key values -- load_project() remaps ids and
+            # recomputes semantic_key from the newly-assigned ones rather
+            # than trusting what's stored here. See load_project()'s
+            # comment for why semantic_key can't just be copied across.
+            semantic_entities = [dict(r) for r in conn.execute("SELECT * FROM semantic_entities")]
+            semantic_relationships = [dict(r) for r in conn.execute("SELECT * FROM semantic_relationships")]
+            data = json.dumps({
+                "locations": locations,
+                "devices": devices,
+                "semantic_entities": semantic_entities,
+                "semantic_relationships": semantic_relationships,
+            })
             cur = conn.execute(
                 "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
                 (name, description, len(devices), data),
@@ -1681,7 +2459,14 @@ class Database:
                 self._attach_trend_logs(conn, dev)
                 self._attach_schedules(conn, dev)
                 self._attach_calendars(conn, dev)
-            data = json.dumps({"locations": locations, "devices": devices})
+            semantic_entities = [dict(r) for r in conn.execute("SELECT * FROM semantic_entities")]
+            semantic_relationships = [dict(r) for r in conn.execute("SELECT * FROM semantic_relationships")]
+            data = json.dumps({
+                "locations": locations,
+                "devices": devices,
+                "semantic_entities": semantic_entities,
+                "semantic_relationships": semantic_relationships,
+            })
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
                 (name, description, len(devices), data, project_id),
@@ -1695,6 +2480,17 @@ class Database:
             if not row:
                 return False
             payload = json.loads(row["data"])
+            # Wipe semantic tables BEFORE devices/locations, not after and
+            # not via cascade: semantic_entities.location_id has no
+            # ON DELETE CASCADE (locations deletion normally goes through
+            # delete_location()'s guard), so an unguarded DELETE FROM
+            # locations below would otherwise hit a foreign-key-constraint
+            # failure if any leftover semantic_entities row still pointed
+            # at one of those locations. This also guarantees no stale rows
+            # survive to collide with the semantic_key values recomputed
+            # below once ids are reassigned.
+            conn.execute("DELETE FROM semantic_relationships")
+            conn.execute("DELETE FROM semantic_entities")
             conn.execute("DELETE FROM devices")
             conn.execute("DELETE FROM locations")
             conn.commit()
@@ -1728,12 +2524,22 @@ class Database:
                 remaining = still_remaining
             conn.commit()
 
+            # Brick Core: semantic_entities.device_id/object_id can reference
+            # ANY device/object in the project, not just "the current one" --
+            # unlike obj_lookup below (kept as-is, per-device, keyed by
+            # (object_type, object_instance) for trend_logs/schedules), these
+            # two maps accumulate across the WHOLE devices loop so entities
+            # can be restored afterward regardless of which device they
+            # belong to.
+            dev_id_map: dict[int, int] = {}
+            global_obj_id_map: dict[int, int] = {}
+
             for dev in payload.get("devices", []):
                 objects = dev.pop("objects", [])
                 trend_logs = dev.pop("trend_logs", [])
                 schedules = dev.pop("schedules", [])
                 calendars = dev.pop("calendars", [])
-                dev.pop("id", None)
+                old_dev_id = dev.pop("id", None)
                 old_location_id = dev.get("location_id")
                 cur = conn.execute(
                     "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
@@ -1753,9 +2559,11 @@ class Database:
                     },
                 )
                 dev_id = cur.lastrowid
+                if old_dev_id is not None:
+                    dev_id_map[old_dev_id] = dev_id
                 obj_lookup: dict[tuple[str, int], int] = {}
                 for obj in objects:
-                    obj.pop("id", None)
+                    old_obj_id = obj.pop("id", None)
                     obj.pop("device_id", None)
                     obj_cur = conn.execute(
                         "INSERT OR IGNORE INTO objects "
@@ -1778,6 +2586,8 @@ class Database:
                         (dev_id, obj["object_type"], obj["object_instance"]),
                     ).fetchone()[0]
                     obj_lookup[(obj["object_type"], obj["object_instance"])] = obj_id
+                    if old_obj_id is not None:
+                        global_obj_id_map[old_obj_id] = obj_id
 
                 for tl in trend_logs:
                     ref = tl.pop("monitored_object_ref", None)
@@ -1852,6 +2662,62 @@ class Database:
                             "enabled": cal.get("enabled", 1),
                         },
                     )
+
+            # Brick Core: restore entities AFTER locations/devices/objects
+            # (their device_id/object_id/location_id FKs need the remaps
+            # above to already exist), relationships LAST (they reference
+            # entities by id, which only exist once this loop has run).
+            #
+            # semantic_key is RECOMPUTED from the newly-assigned ids, never
+            # copied from the stored value -- a stored semantic_key embeds
+            # the OLD surrogate device/object/location ids, which this same
+            # load_project() call just reassigned above. local_slug never
+            # references a surrogate id, so it survives verbatim and is
+            # what makes recomputing the correct key possible.
+            entity_id_map: dict[int, int] = {}
+            for ent in payload.get("semantic_entities", []):
+                old_entity_id = ent["id"]
+                new_device_id = (
+                    dev_id_map.get(ent.get("device_id"))
+                    if ent.get("device_id") is not None else None
+                )
+                new_object_id = (
+                    global_obj_id_map.get(ent.get("object_id"))
+                    if ent.get("object_id") is not None else None
+                )
+                new_location_id = (
+                    location_id_map.get(ent.get("location_id"))
+                    if ent.get("location_id") is not None else None
+                )
+                computed_key = derive_semantic_key(
+                    ent["entity_kind"], ent["brick_class"],
+                    device_id=new_device_id, object_id=new_object_id, location_id=new_location_id,
+                    local_slug=ent.get("local_slug"),
+                )
+                ent_cur = conn.execute(
+                    "INSERT INTO semantic_entities "
+                    "(name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        ent["name"], ent.get("local_slug"), computed_key, ent["brick_class"], ent["entity_kind"],
+                        new_device_id, new_object_id, new_location_id,
+                    ),
+                )
+                entity_id_map[old_entity_id] = ent_cur.lastrowid
+
+            for rel in payload.get("semantic_relationships", []):
+                new_source_id = entity_id_map.get(rel["source_entity_id"])
+                new_target_id = entity_id_map.get(rel["target_entity_id"])
+                if new_source_id is None or new_target_id is None:
+                    # Endpoint entity wasn't restorable -- skip this
+                    # relationship rather than fail the whole import.
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO semantic_relationships (source_entity_id, predicate, target_entity_id) "
+                    "VALUES (?,?,?)",
+                    (new_source_id, rel["predicate"], new_target_id),
+                )
+
             conn.commit()
             return True
 
@@ -2773,6 +3639,32 @@ def _apply_polarity(bacnet_obj: Any, polarity_str: str) -> None:
         bacnet_obj.polarity = Polarity("normal")
 
 
+def normalize_present_value(object_type: str, val: Any) -> Any:
+    """Canonicalizes a Behavior.compute() result before it's stored/served/
+    logged anywhere (the tick loop's SimEngine._objects processing calls
+    this immediately after compute(), before _update_value(), before
+    _prev_values[obj_id] = val, before the /sim/state snapshot, trend logs,
+    or alarm/enrollment evaluation see it).
+
+    Behavior.compute() is typed float|bool and different Behavior
+    subclasses disagree on which they return for the same logical binary
+    point -- ManualBehavior keeps bool only for literal JSON true/false
+    (numeric input is coerced to float), while DailyPatternBehavior and
+    FaultBehavior always return float, even when wrapping a boolean
+    ConstantBehavior. Present_Value for binary-input/output/value is
+    BACnetBinaryPV (an ENUMERATED{inactive,active}, not a float or a
+    general integer -- see ASHRAE 135's object type tables), so the
+    simulator's canonical internal/API representation is a plain bool
+    (True=active). Normalizing once, here, is what lets every downstream
+    consumer (API JSON, the /sim/state snapshot, the Vue UI) treat
+    "is this point binary" as the single source of truth for how to
+    display/interpret a value, instead of branching on whatever Python/JS
+    runtime type a particular Behavior happened to produce."""
+    if object_type in BINARY_TYPES:
+        return bool(val)
+    return val
+
+
 # ─── Sim Engine ───────────────────────────────────────────────────────────────
 
 class SimEngine:
@@ -2865,6 +3757,7 @@ class SimEngine:
         install_bacpypes_packet_capture_hooks(
             local_ip=base_ip,
             local_port=BACNET_PORT,
+            get_clock_state=lambda: self.clock_state,
         )
         
         loop = asyncio.get_running_loop()
@@ -3067,6 +3960,8 @@ class SimEngine:
         )
 
     def _create_object(self, obj_row: dict, slot: int, device_name: str = "") -> tuple[Any, Behavior]:
+
+
         phys = slot * 1000 + obj_row["object_instance"]
         behavior = make_behavior(
             obj_row["behavior"],
@@ -3146,7 +4041,42 @@ class SimEngine:
             if otype == "binary-input":
                 _apply_polarity(bacnet_obj, obj_row.get("polarity") or "normal")
         return bacnet_obj, behavior
+    
+    def get_object_value(self, object_id: int):
+        """Live per-object value, refreshed every tick (self._prev_values,
+        set at the top of the tick loop -- see the `self._prev_values[obj_id]
+        = val` line right before each object's snapshot entry is built).
 
+        NOTE ON HISTORY: this used to read self._current_values instead,
+        which looks plausible (the name suggests "current value") but is
+        WRONG -- _current_values is only ever assigned wholesale as either
+        `{}` or `{"devices": [...], "tick": ...}` (the /sim/state snapshot
+        cache for the API/WebSocket, see get_state()), never as a per-object
+        {object_id: value} dict. `_current_values.get(object_id)` therefore
+        always returned None once the sim had ticked at least once.
+
+        This class used to ALSO define a second get_object_value() later in
+        the class body that correctly read _prev_values -- Python's last-
+        definition-wins for duplicate method names meant that second
+        definition silently shadowed this one, so every caller
+        (get_device_point_values(), the Energy Engine, SemanticResolver,
+        CommissioningPointResolver) was actually getting the CORRECT
+        _prev_values-based behavior by accident of definition order. An
+        earlier fix here mistakenly resolved the naming collision by keeping
+        THIS (broken, _current_values-based) definition as canonical and
+        renaming the working one out of the way -- which fixed the naming
+        collision but broke real value resolution in the process. Both
+        definitions are now consolidated into this one, correct,
+        _prev_values-based implementation."""
+        return self._prev_values.get(object_id)
+
+    def get_device_point_values(self, objects: list[dict]) -> dict[str, object]:
+        values: dict[str, object] = {}
+        for obj in objects:
+            point_type = obj.get("point_type")
+            if point_type:
+                values[str(point_type)] = self.get_object_value(obj["id"])
+        return values
     def resolve_wire_object(
         self,
         object_type: str,
@@ -3185,7 +4115,10 @@ class SimEngine:
             if device is None:
                 return None
 
-            current_value = self._current_values.get(object_db_id)
+            # Same fix as get_object_value() above: _current_values is only
+            # ever the whole /sim/state snapshot, never per-object -- use
+            # _prev_values, which IS refreshed per-object every tick.
+            current_value = self._prev_values.get(object_db_id)
             if isinstance(current_value, dict):
                 current_value = current_value.get('value')
 
@@ -3273,7 +4206,7 @@ class SimEngine:
             if isinstance(new_b, RandomWalkBehavior) and isinstance(behavior, RandomWalkBehavior):
                 new_b._value = behavior._value
             self._objects[obj_id] = (bacnet_obj, new_b)
-            val = new_b.compute(self.state)
+            val = normalize_present_value(obj_row["object_type"], new_b.compute(self.state))
             self._update_value(bacnet_obj, obj_row["object_type"], val)
 
             cfg = alarm_configs.get(obj_id)
@@ -3663,11 +4596,6 @@ class SimEngine:
     def get_state(self) -> dict:
         return self._current_values
 
-    def get_object_value(self, obj_id: int) -> Any:
-        """Best-effort current live value for a manual Trend Log trigger —
-        _prev_values is refreshed every tick while the clock is running."""
-        return self._prev_values.get(obj_id)
-
     def db_id_for_bacnet_object(self, bacnet_obj: Any) -> Optional[int]:
         """Reverse lookup: given a live bacpypes3 object, find the DB row id
         that owns it. Used by both incoming WriteProperty requests and
@@ -3721,6 +4649,7 @@ db: Database = None  # type: ignore
 engine: SimEngine = None  # type: ignore
 ws_clients: list[WebSocket] = []
 fault_detection_engine: FaultDetectionEngine | None = None
+energy_engine : EnergyEngine | None = None
 
 packet_capture = PacketCapture(
     max_packets=10_000,
@@ -3774,12 +4703,29 @@ def install_bacpypes_packet_capture_hooks(
     *,
     local_ip: str,
     local_port: int,
+    get_clock_state: Callable[[], str],
 ) -> None:
     """
     Install one process-wide hook around BACpypes3's IPv4 UDP transport.
 
     indication()   = outbound toward the UDP socket
     confirmation() = inbound from the UDP socket
+
+    While clock_state == "stopped", ALL outbound traffic is suppressed
+    here — this is the single choke point every outbound byte passes
+    through regardless of what generated it (Who-Is/I-Am response,
+    ReadProperty/WriteProperty ACK, COV notification, ...), so it's the
+    simplest, safest place to make "Stop" mean "the simulator stops
+    responding" without tearing down and rebinding the UDP socket itself
+    (which Start would then have to safely reconstruct — this way Start/
+    Stop just toggle a check, the transport is never touched).
+
+    Suppressed packets are neither sent nor recorded by packet capture —
+    they never happened, from the network's point of view. Inbound
+    traffic (confirmation()) is NOT gated here: a real, stopped
+    controller still receives whatever other devices broadcast at it
+    (e.g. Who-Is), it just doesn't answer -- see the "Stop" behavior
+    decided for this simulator.
     """
     global _bacpypes_capture_hooks_installed
 
@@ -3793,6 +4739,9 @@ def install_bacpypes_packet_capture_hooks(
         transport_self: IPv4DatagramServer,
         pdu: Any,
     ) -> None:
+        if get_clock_state() == "stopped":
+            return
+
         try:
             payload = bytes(getattr(pdu, "pduData", b""))
 
@@ -4184,15 +5133,26 @@ async def broadcast_metrics() -> None:
 
 # ─── Background tasks ─────────────────────────────────────────────────────────
 
-async def tick_loop() -> None:
+async def tick_loop(fault_detection_engine: FaultDetectionEngine | None,
+    energy_engine: EnergyEngine | None,) -> None:
     while True:
         await asyncio.sleep(TICK_SECONDS)
         try:
             await engine.tick()
 
-            if fault_detection_engine is not None:
-                await fault_detection_engine.evaluate_all()
+            # engine.tick() already no-ops while paused/stopped (present
+            # values stay frozen) -- fault/energy evaluation must respect
+            # the same gate, otherwise energy totals keep accumulating
+            # kWh for elapsed time that, per the frozen clock, never
+            # actually passed.
+            if engine.clock_state == "running":
+                if fault_detection_engine is not None:
+                    await fault_detection_engine.evaluate_all()
 
+                if energy_engine is not None:
+                    await energy_engine.evaluate_all(
+                        elapsed_seconds=TICK_SECONDS,
+                    )
 
             await broadcast_state()
             state = engine.get_state()
@@ -4275,6 +5235,17 @@ async def lifespan(app: FastAPI):
         event_callback=_log_event,
     )
 
+    energy_engine = EnergyEngine(
+        database=db,
+        simulation_engine=engine,
+        event_callback=_log_event,
+        history_interval_seconds=60.0,
+        history_retention_days=7,
+        audit_log_interval_seconds=60.0,
+    )
+
+    app.state.energy_engine = energy_engine
+
     app.state.fault_detection_engine = fault_detection_engine
 
 
@@ -4282,7 +5253,7 @@ async def lifespan(app: FastAPI):
 
     _apply_settings_live(await asyncio.to_thread(db.get_settings))
     await engine.start()
-    tick_task = asyncio.create_task(tick_loop())
+    tick_task = asyncio.create_task(tick_loop(fault_detection_engine,energy_engine))
     metrics_task = asyncio.create_task(metrics_loop())
     log.info("BACnet Simulator API ready on port %d", SIM_API_PORT)
     yield
@@ -4303,6 +5274,7 @@ api = FastAPI(title="BACnet Simulator", lifespan=lifespan)
 api.include_router(packet_capture_router)
 api.include_router(backups_router)
 api.include_router(locations_router)
+api.include_router(semantic_router)
 api.include_router(calendars_router)
 api.include_router(alarms_router)
 api.include_router(trend_logs_router)
@@ -4317,6 +5289,7 @@ api.include_router(projects_router)
 api.include_router(simulation_router)
 api.include_router(websocket_router)
 api.include_router(fault_router)
+api.include_router(energy_router)
 
 api.add_middleware(
     CORSMiddleware,
@@ -4388,6 +5361,7 @@ async def meta():
         "equipment_types": [{"value": k, "label": v} for k, v in sorted(EQUIPMENT_TYPES.items())],
         "point_types": [{"value": k, "label": v} for k, v in sorted(POINT_TYPES.items())],
         "location_kinds": [{"value": k, "label": v} for k, v in sorted(LOCATION_KINDS.items())],
+        "semantic_predicates": [{"value": k, "label": v} for k, v in sorted(SEMANTIC_PREDICATES.items())],
         "network_address": f"{own_ip}:{BACNET_PORT}" if own_ip and own_ip != "0.0.0.0" else None,
     }
 

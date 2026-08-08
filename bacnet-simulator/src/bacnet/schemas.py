@@ -18,12 +18,14 @@ from ..core.config import (
     EQUIPMENT_TYPES,
     LOCATION_KINDS,
     POINT_TYPES,
+    SEMANTIC_PREDICATES,
     VALID_BEHAVIORS,
     VALID_OBJECT_TYPES,
     VALID_POLARITY,
     VALID_RELIABILITY,
     VALID_SEGMENTATION,
 )
+from ..semantics.validation import validate_semantic_entity
 
 
 class DeviceCreate(BaseModel):
@@ -103,6 +105,47 @@ class ObjectCreate(BaseModel):
 
 class ObjectUpdate(ObjectCreate):
     pass
+
+
+class SemanticEntityCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    local_slug: Optional[str] = Field(None, max_length=100)
+    brick_class: str
+    entity_kind: str
+    device_id: Optional[int] = None
+    object_id: Optional[int] = None
+    location_id: Optional[int] = None
+
+    def validate_semantic(self) -> None:
+        # No semantic_key field on this model at all -- it's always
+        # server-derived (see src/semantics/keys.py), never client-settable,
+        # so nothing external can inject a stale or colliding key.
+        try:
+            validate_semantic_entity(
+                self.entity_kind,
+                self.brick_class,
+                device_id=self.device_id,
+                object_id=self.object_id,
+                location_id=self.location_id,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+
+class SemanticEntityUpdate(SemanticEntityCreate):
+    pass
+
+
+class SemanticRelationshipCreate(BaseModel):
+    source_entity_id: int
+    predicate: str
+    target_entity_id: int
+
+    def validate_semantic(self) -> None:
+        if self.predicate not in SEMANTIC_PREDICATES:
+            raise HTTPException(400, f"predicate must be one of: {sorted(SEMANTIC_PREDICATES)}")
+        if self.source_entity_id == self.target_entity_id:
+            raise HTTPException(400, "source_entity_id and target_entity_id must differ")
 
 
 class SetValueRequest(BaseModel):

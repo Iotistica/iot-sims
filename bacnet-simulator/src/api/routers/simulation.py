@@ -67,9 +67,11 @@ async def health(
 async def start_simulation(
     request: Request,
 ):
-    engine = get_engine(request)
+    engine = request.app.state.engine
+    energy_engine = request.app.state.energy_engine
 
     engine.resume()
+    energy_engine.resume()
 
     return {
         "sim_state": engine.clock_state,
@@ -80,9 +82,11 @@ async def start_simulation(
 async def pause_simulation(
     request: Request,
 ):
-    engine = get_engine(request)
-
+    engine = request.app.state.engine
+    energy_engine = request.app.state.energy_engine
+    
     engine.pause()
+    energy_engine.pause()
 
     return {
         "sim_state": engine.clock_state,
@@ -93,9 +97,11 @@ async def pause_simulation(
 async def stop_simulation(
     request: Request,
 ):
-    engine = get_engine(request)
+    engine = request.app.state.engine
+    energy_engine = request.app.state.energy_engine
 
     engine.reset()
+    energy_engine.reset()
 
     return {
         "sim_state": engine.clock_state,

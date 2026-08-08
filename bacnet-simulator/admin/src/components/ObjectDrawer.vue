@@ -4,6 +4,7 @@ import { message } from 'ant-design-vue'
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type { SimObject, Meta, NotificationClass, PriorityArrayInfo } from '../types'
+import { formatPresentValue } from '../format'
 
 const props = defineProps<{
   open: boolean
@@ -346,12 +347,12 @@ async function save() {
         <a-input v-model:value="form.name" placeholder="Supply Temp" />
       </a-form-item>
 
-      <a-form-item label="Point Type">
+      <a-form-item label="Brick Class" help="Semantic classification (Brick is the source of truth — assigning it here automatically creates/updates this point's semantic entity, no separate step needed in the Semantic Model panel).">
         <a-select
           v-model:value="form.point_type"
           show-search
           allow-clear
-          placeholder="Not tagged"
+          placeholder="Not classified"
           :options="meta.point_types"
         />
       </a-form-item>
@@ -736,7 +737,7 @@ async function save() {
               >
                 <span style="width:70px;color:var(--text-muted)">Priority {{ slot }}</span>
                 <span style="flex:1;font-family:monospace">
-                  {{ priorityArray.priority_array[slot - 1] === null ? '—' : String(priorityArray.priority_array[slot - 1]) }}
+                  {{ formatPresentValue(form.object_type, priorityArray.priority_array[slot - 1]) }}
                 </span>
                 <a-tag v-if="priorityArray.current_command_priority === slot" color="processing" style="margin-right:0">In control</a-tag>
                 <a-button
@@ -750,7 +751,7 @@ async function save() {
               </div>
               <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">
                 <span style="width:70px;color:var(--text-muted)">Default</span>
-                <span style="flex:1;font-family:monospace">{{ priorityArray.relinquish_default }}</span>
+                <span style="flex:1;font-family:monospace">{{ formatPresentValue(form.object_type, priorityArray.relinquish_default) }}</span>
                 <span style="font-size:11px;color:var(--text-placeholder)">used when all 16 slots are relinquished</span>
               </div>
             </div>

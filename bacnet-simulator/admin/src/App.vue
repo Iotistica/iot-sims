@@ -12,9 +12,11 @@ import IotisticaLogo from './components/IotisticaLogo.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import LoginView from './components/LoginView.vue'
 import AnalyticsDashboard from './components/AnalyticsDashboard.vue'
+import UtilitiesDashboard from './components/UtilitiesDashboard.vue'
 import AlarmsPanel from './components/AlarmsPanel.vue'
 import SettingsView from './components/SettingsView.vue'
 import PacketCapturePanel from './components/PacketCapturePanel.vue'
+import SemanticPanel from './components/SemanticPanel.vue'
 import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
 import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
@@ -25,21 +27,24 @@ import type { Device, SimObject, Meta, Health, HistoryPoint, Location } from './
 import { api } from './api'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
-import { ClusterOutlined, EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined } from '@ant-design/icons-vue'
+import { formatPresentValue } from './format'
+import { ClusterOutlined, EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined, PartitionOutlined } from '@ant-design/icons-vue'
 
 const activeView = ref<
   'devices' |
-  'analytics' |
+  'bacnet' |
   'alarms' |
   'packet-capture' |
-  'settings'
+  'settings' |
+  'utility' |
+  'semantic'
 >('devices')
 
 const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
 const simActionLoading = ref(false)
 const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a', paused: '#faad14', stopped: '#ff4d4f' }
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
-const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], point_types: [], location_kinds: [], network_address: null })
+const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], point_types: [], location_kinds: [], semantic_predicates: [], network_address: null })
 const devices = ref<Device[]>([])
 const locations = ref<Location[]>([])
 const deviceSearch = ref('')
@@ -154,7 +159,9 @@ const saveModalLoading = ref(false)
 const setValOpen    = ref(false)
 const setValObj     = ref<SimObject | null>(null)
 const setValInput   = ref(0)
+const setValActive  = ref(true)
 const setValLoading = ref(false)
+const setValIsBinary = computed(() => setValObj.value?.object_type.startsWith('binary') ?? false)
 
 // WebSocket
 let ws: WebSocket | null = null
@@ -185,11 +192,7 @@ function hasLive(id: number): boolean {
 }
 
 function fmtVal(obj: SimObject): string {
-  const v = liveVal(obj.id)
-  if (v === null) return '—'
-  if (typeof v === 'boolean') return v ? 'ON' : 'OFF'
-  const n = Number(v)
-  return isNaN(n) ? String(v) : n.toFixed(2)
+  return formatPresentValue(obj.object_type, liveVal(obj.id))
 }
 
 // Loaders
@@ -543,9 +546,7 @@ function histStats(data: HistoryPoint[]) {
 
 function histFmt(v: number, obj: SimObject | null): string {
   if (!obj) return v.toFixed(2)
-  const isBinary = obj.object_type.startsWith('binary')
-  if (isBinary) return v >= 0.5 ? 'ON' : 'OFF'
-  return v.toFixed(2)
+  return formatPresentValue(obj.object_type, v)
 }
 
 function histYLabels(data: HistoryPoint[], obj: SimObject | null) {
@@ -585,14 +586,20 @@ function histXLabels(data: HistoryPoint[]) {
 // Set value
 function openSetValue(obj: SimObject) {
   setValObj.value = obj
-  setValInput.value = Number(liveVal(obj.id) ?? 0)
+  const current = liveVal(obj.id)
+  if (obj.object_type.startsWith('binary')) {
+    setValActive.value = typeof current === 'boolean' ? current : Number(current ?? 0) >= 0.5
+  } else {
+    setValInput.value = Number(current ?? 0)
+  }
   setValOpen.value = true
 }
 async function doSetValue() {
   if (!setValObj.value || !selectedDevice.value) return
   setValLoading.value = true
   try {
-    await api.objects.setValue(selectedDevice.value.id, setValObj.value.id, setValInput.value)
+    const value = setValIsBinary.value ? setValActive.value : setValInput.value
+    await api.objects.setValue(selectedDevice.value.id, setValObj.value.id, value)
     setValOpen.value = false
     message.success('Value updated')
   } catch (e: unknown) {
@@ -786,7 +793,7 @@ onUnmounted(() => {
         <span style="color:rgba(255,255,255,0.25);font-size:13px;font-weight:400">BACnet Simulator</span>
         
 
-        <div style="display:flex;align-items:center;gap:2px;margin-left:12px;padding-left:12px;border-left:1px solid rgba(255,255,255,0.08)">
+        <div style="display:flex;align-items:center;gap:2px;margin-left:12px;padding-left:12px;padding-right:12px; border-left:1px solid rgba(255,255,255,0.08);border-right:1px solid rgba(255,255,255,0.08)">
           <a-tooltip title="Start simulation clock">
             <a-button
               size="small" type="text" :disabled="health.sim_state === 'running'" :loading="simActionLoading"
@@ -795,7 +802,7 @@ onUnmounted(() => {
               <template #icon><PlayCircleOutlined :style="{ color: health.sim_state === 'running' ? '#555' : '#52c41a' }" /></template>
             </a-button>
           </a-tooltip>
-          <a-tooltip title="Pause simulation clock (freezes values in place)">
+          <a-tooltip title="Pause simulation clock (freezes values in place — still responds on the network)">
             <a-button
               size="small" type="text" :disabled="health.sim_state !== 'running'" :loading="simActionLoading"
               @click="simPause"
@@ -803,7 +810,7 @@ onUnmounted(() => {
               <template #icon><PauseCircleOutlined :style="{ color: health.sim_state !== 'running' ? '#555' : '#faad14' }" /></template>
             </a-button>
           </a-tooltip>
-          <a-tooltip title="Stop simulation clock and rewind to t=0">
+          <a-tooltip title="Stop simulation clock, rewind to t=0, and stop responding on the network">
             <a-button
               size="small" type="text" :disabled="health.sim_state === 'stopped'" :loading="simActionLoading"
               @click="simStop"
@@ -818,10 +825,12 @@ onUnmounted(() => {
 
         <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
           <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
-          <a-radio-button value="analytics"><DashboardOutlined /> Analytics</a-radio-button>
+          <a-radio-button value="bacnet"><ApiOutlined  /> BACnet</a-radio-button>
           <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
           <a-radio-button value="packet-capture"><ClusterOutlined /> Network</a-radio-button>
+          <a-radio-button value="utility"><DashboardOutlined /> Utilities</a-radio-button>
+          <a-radio-button value="semantic"><PartitionOutlined /> Semantic</a-radio-button>
         </a-radio-group>
 
         <div style="flex:1" />
@@ -851,10 +860,12 @@ onUnmounted(() => {
         </div>
       </a-layout-header>
 
-      <AnalyticsDashboard v-if="activeView === 'analytics'" />
+      <AnalyticsDashboard v-if="activeView === 'bacnet'" />
       <AlarmsPanel v-else-if="activeView === 'alarms'" />
       <PacketCapturePanel v-else-if="activeView === 'packet-capture'"/>
       <SettingsView v-else-if="activeView === 'settings'" />
+      <UtilitiesDashboard v-else-if="activeView === 'utility'" />
+      <SemanticPanel v-else-if="activeView === 'semantic'" />
 
 
       <a-layout v-else>
@@ -1080,6 +1091,7 @@ onUnmounted(() => {
       v-model:open="locationDrawerOpen"
       :location="editingLocation"
       :locations="locations"
+      :meta="meta"
       @saved="loadLocations"
     />
 
@@ -1158,7 +1170,12 @@ onUnmounted(() => {
       @ok="doSetValue"
     >
       <div style="padding:8px 0">
+        <a-radio-group v-if="setValIsBinary" v-model:value="setValActive" style="width:100%">
+          <a-radio-button :value="true" style="width:50%;text-align:center">ON</a-radio-button>
+          <a-radio-button :value="false" style="width:50%;text-align:center">OFF</a-radio-button>
+        </a-radio-group>
         <a-input-number
+          v-else
           v-model:value="setValInput"
           style="width:100%"
           :step="0.1"

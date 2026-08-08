@@ -22,6 +22,8 @@ import type {
   PriorityArrayInfo,
   Calendar,
   Location,
+  SemanticEntity,
+  SemanticRelationship,
   PacketCaptureStatus,
   CapturedPacket,
   CapturedPacketPage,
@@ -138,6 +140,26 @@ export const api = {
     create: (b: Omit<Location, 'id'>)             => req<Location>('/locations', { method: 'POST', body: JSON.stringify(b) }),
     update: (id: number, b: Omit<Location, 'id'>) => req<Location>(`/locations/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
     del:    (id: number)                          => req<null>(`/locations/${id}`, { method: 'DELETE' }),
+  },
+
+  semanticEntities: {
+    list:   ()                                            => req<SemanticEntity[]>('/semantic-entities'),
+    create: (b: Omit<SemanticEntity, 'id' | 'semantic_key'>) =>
+      req<SemanticEntity>('/semantic-entities', { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<SemanticEntity, 'id' | 'semantic_key'>) =>
+      req<SemanticEntity>(`/semantic-entities/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)                                  => req<null>(`/semantic-entities/${id}`, { method: 'DELETE' }),
+    points: (entityId: number, brickClass?: string) =>
+      req<Record<string, unknown>[]>(`/semantic-entities/${entityId}/points${brickClass ? `?brick_class=${encodeURIComponent(brickClass)}` : ''}`),
+    related: (entityId: number, predicate: string, direction: 'out' | 'in' = 'out') =>
+      req<SemanticEntity[]>(`/semantic-entities/${entityId}/related?predicate=${encodeURIComponent(predicate)}&direction=${direction}`),
+  },
+
+  semanticRelationships: {
+    list:   ()                                                    => req<SemanticRelationship[]>('/semantic-relationships'),
+    create: (b: Omit<SemanticRelationship, 'id'>)                 =>
+      req<SemanticRelationship>('/semantic-relationships', { method: 'POST', body: JSON.stringify(b) }),
+    del:    (id: number)                                          => req<null>(`/semantic-relationships/${id}`, { method: 'DELETE' }),
   },
 
   objects: {

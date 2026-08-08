@@ -3,12 +3,13 @@ import { ref, reactive, computed, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { api } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
-import type { Location } from '../types'
+import type { Location, Meta } from '../types'
 
 const props = defineProps<{
   open: boolean
   location: Location | null
   locations: Location[]
+  meta: Meta
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
@@ -21,6 +22,7 @@ const form = reactive({
   name: '',
   description: '',
   parent_location_id: null as number | null,
+  kind: null as string | null,
 })
 
 watch(() => props.open, (v) => {
@@ -30,9 +32,10 @@ watch(() => props.open, (v) => {
       name: props.location.name,
       description: props.location.description ?? '',
       parent_location_id: props.location.parent_location_id,
+      kind: props.location.kind ?? null,
     })
   } else {
-    Object.assign(form, { name: '', description: '', parent_location_id: null })
+    Object.assign(form, { name: '', description: '', parent_location_id: null, kind: null })
   }
 })
 
@@ -44,7 +47,7 @@ const treeOptions = computed(() => buildLocationTreeOptions(props.locations, pro
 async function save() {
   if (!form.name.trim()) { message.error('Name is required'); return }
   loading.value = true
-  const body = { name: form.name, description: form.description, parent_location_id: form.parent_location_id }
+  const body = { name: form.name, description: form.description, parent_location_id: form.parent_location_id, kind: form.kind }
   try {
     if (props.location) {
       await api.locations.update(props.location.id, body)
@@ -110,6 +113,16 @@ function doDelete() {
           tree-default-expand-all
           placeholder="Top level"
           style="width: 100%"
+        />
+      </a-form-item>
+
+      <a-form-item label="Brick Class" help="Semantic classification (Brick is the source of truth — assigning it here automatically creates/updates this location's semantic entity, no separate step needed in the Semantic Model panel).">
+        <a-select
+          v-model:value="form.kind"
+          show-search
+          allow-clear
+          placeholder="Not classified"
+          :options="meta.location_kinds"
         />
       </a-form-item>
     </a-form>

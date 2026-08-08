@@ -125,7 +125,15 @@ class FaultDetectionEngine:
             if config is not None and not bool(config.get("enabled", 1)):
                 continue
             parameters = json.loads(config.get("parameters") or "{}") if config else {}
-            rule_context = FaultContext(context.device_id, context.device_name, context.equipment_type, context.timestamp, context.points, parameters)
+            rule_context = FaultContext(
+                device_id=context.device_id,
+                device_name=context.device_name,
+                equipment_type=context.equipment_type,
+                timestamp=context.timestamp,
+                points=context.points,
+                points_by_type=context.points_by_type,
+                parameters=parameters,
+            )
             result = rule.evaluate(rule_context)
             persistence = float(config["persistence_seconds"]) if config and config.get("persistence_seconds") is not None else rule.definition.persistence_seconds
             clear_seconds = float(config["clear_seconds"]) if config and config.get("clear_seconds") is not None else rule.definition.clear_seconds
@@ -190,6 +198,7 @@ class FaultDetectionEngine:
         )
 
         points: dict[str, PointSnapshot] = {}
+        points_by_type: dict[str, list[PointSnapshot]] = {}
 
         for obj in objects:
             point_type = obj.get("point_type")
@@ -203,7 +212,7 @@ class FaultDetectionEngine:
                 )
             )
 
-            points[point_type] = PointSnapshot(
+            snapshot = PointSnapshot(
                 object_id=obj["id"],
                 object_identifier=(
                     f"{obj['object_type']}:"
@@ -219,6 +228,9 @@ class FaultDetectionEngine:
                 ),
             )
 
+            points[point_type] = snapshot
+            points_by_type.setdefault(point_type, []).append(snapshot)
+
         return FaultContext(
             device_id=device["id"],
             device_name=device["name"],
@@ -227,6 +239,7 @@ class FaultDetectionEngine:
             ),
             timestamp=time.time(),
             points=points,
+            points_by_type=points_by_type,
             parameters={},
         )
 

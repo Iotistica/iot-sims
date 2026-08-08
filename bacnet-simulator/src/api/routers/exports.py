@@ -111,10 +111,14 @@ def brick_response(
     name: str,
     *,
     project_id: int | None = None,
+    entities: list[dict] | None = None,
+    relationships: list[dict] | None = None,
 ) -> Response:
     graph, warnings = brick_export.build_brick_graph(
         devices,
         project_id=project_id,
+        entities=entities,
+        relationships=relationships,
     )
 
     content = brick_export.graph_to_ttl(
@@ -234,6 +238,33 @@ async def export_project_ede(
     )
 
 
+# ─── Brick Core semantic data (entities/relationships) ────────────────────────
+
+def _semantic_data_for_devices(
+    database: Any,
+    devices: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Live semantic_entities/semantic_relationships scoped to the given
+    devices and their objects -- entities/relationships tables don't have
+    a "device_id or any of these object_ids" bulk filter, and export isn't
+    a hot path, so this fetches everything for the device(s) + objects,
+    then filters relationships in Python rather than adding a new
+    Database query method for a single caller."""
+    entities: list[dict] = []
+    for dev in devices:
+        entities.extend(database.get_semantic_entities(device_id=dev["id"]))
+        for obj in dev.get("objects", []):
+            entities.extend(database.get_semantic_entities(object_id=obj["id"]))
+
+    entity_ids = {e["id"] for e in entities}
+    relationships = [
+        rel for rel in database.get_semantic_relationships()
+        if rel["source_entity_id"] in entity_ids and rel["target_entity_id"] in entity_ids
+    ]
+
+    return entities, relationships
+
+
 # ─── Brick exports ────────────────────────────────────────────────────────────
 
 @router.get("/devices/{device_id}/export/brick")
@@ -261,9 +292,15 @@ async def export_device_brick(
         device_id,
     )
 
+    entities, relationships = await asyncio.to_thread(
+        _semantic_data_for_devices, database, [device_data],
+    )
+
     return brick_response(
         [device_data],
         device_data["name"],
+        entities=entities,
+        relationships=relationships,
     )
 
 
@@ -303,8 +340,16 @@ async def export_project_brick(
             detail="Stored project devices are invalid",
         )
 
+    # Unlike export_device_brick, this can't pull semantic_entities/
+    # semantic_relationships live from the database -- a stored project
+    # isn't necessarily the one currently loaded into the live tables, so
+    # there'd be nothing (or the WRONG project's data) to query. Instead
+    # this reads them straight out of the stored snapshot, which
+    # save_project()/update_project() now embed alongside devices/locations.
     return brick_response(
         devices,
         project["name"],
         project_id=project_id,
+        entities=project_data.get("semantic_entities", []),
+        relationships=project_data.get("semantic_relationships", []),
     )
