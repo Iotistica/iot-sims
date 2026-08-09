@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-03",
+  "updated": "2026-08-09",
   "source": "BACnet International BTL Database",
   "url": "https://www.bacnetinternational.net/btl/",
   "vendors": [
@@ -4088,6 +4088,41 @@
       ]
     },
     {
+      "name": "Duksan Mecasys Co., Ltd.",
+      "models": [
+        {
+          "name": "3iWebBACnet",
+          "type": "B-AWS",
+          "typeLabel": "Workstation",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/duksan mecasys co., ltd./3iWeb BACnet PICS.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/duksan mecasys co., ltd./BTL_Listing_30863_DuksanMecasys_3iWebBACnet.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/duksan mecasys co., ltd./BTL_Cert_30863_DuksanMecasys_3iWebBACnet.pdf"
+        },
+        {
+          "name": "IDC Series BACnet Controller",
+          "type": "B-ASC",
+          "typeLabel": "Application Specific Controller",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/duksan mecasys co., ltd./LC30008.48751328_PICS - Duksan Mecasys 20160321.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/duksan mecasys co., ltd./BTL_Listing_30008_DuksanMeca_IDCSeriesB.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/duksan mecasys co., ltd./BTL_Cert_30008_DuksanMeca_IDCSeriesB.pdf",
+          "object_types": {
+            "Device": true
+          }
+        },
+        {
+          "name": "LSU BACnet Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/duksan mecasys co., ltd./PICS 135-2020-ANNEX-A_Duksan LSU GT2026-01856.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/duksan mecasys co., ltd./BTL_Listing_31613_DuksanMecasys_LSUBACnetController.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/duksan mecasys co., ltd./BTL_Cert_31613_DuksanMecasys_LSUBACnetController.pdf",
+          "object_types": {
+            "Device": true
+          }
+        }
+      ]
+    },
+    {
       "name": "Dwyer Instruments, Inc.",
       "models": [
         {
@@ -5160,8 +5195,8 @@
           "type": "B-AAC",
           "typeLabel": "Advanced Application Controller",
           "pics_url": "https://www.bacnetinternational.net/catalog/manu/honeywell international/PICS_bacnet_vav_controller-pics.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/honeywell international/BTL_Listing_31228_HoneywellI_VAVController.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/honeywell international/BTL_Cert_31228_HoneywellI_VAVController.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/honeywell international/BTL_Listing_31618_Honeywell_VAVController.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/honeywell international/BTL_Cert_31618_Honeywell_VAVController.pdf",
           "object_types": {
             "Command": 512,
             "Device": true
@@ -5988,9 +6023,9 @@
           "name": "Omni BEMS Controller",
           "type": "B-BC",
           "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/catalog/manu/innotech/Omni Controllers PICS-R1.7.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/innotech/BTL_Listing_30903_Innotech_OmniBEMS.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/innotech/BTL_Cert_30903_Innotech_OmniBEMS.pdf",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/innotech/PICS_omni_controllers_pics-r1.8.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/innotech/BTL_Listing_31617_Innotech_OmniBEMS.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/innotech/BTL_Cert_31617_Innotech_OmniBEMS.pdf",
           "object_types": {
             "AI": 10,
             "AO": 11,
@@ -7285,9 +7320,9 @@
           "name": "DDC4000e",
           "type": "B-BC",
           "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/catalog/manu/kieback&peter gmbh & co. kg/PICS ddc4000e_pics_1.20.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/kieback&peter gmbh & co. kg/BTL_Listing_31417_KiebackPeter_DDC4000e.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/kieback&peter gmbh & co. kg/BTL_Cert_31417_KiebackPeter_DDC4000e.pdf",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/kieback&peter gmbh & co. kg/PICS.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/kieback&peter gmbh & co. kg/BTL_Listing_31619_KiebackPeter_DDC4000e.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/kieback&peter gmbh & co. kg/BTL_Cert_31619_KiebackPeter_DDC4000e.pdf",
           "object_types": {
             "AI": true,
             "AO": true,
