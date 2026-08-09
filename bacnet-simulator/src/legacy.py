@@ -104,14 +104,16 @@ logging.basicConfig(
 )
 log = logging.getLogger("bacnet-sim")
 
-from .bacnet.packet_capture import PacketCapture
+from .bacnet.packet_capture import CapturedPacket, PacketCapture
 
 from .fault_detection import (FaultDetectionEngine,build_default_registry,)
 
 from .energy import EnergyEngine
+from .energy.registry import MODEL_TYPE_LABELS
 
 from .api.routers.packet_capture import (
     router as packet_capture_router,
+    resolve_packet_simulator_context,
 )
 
 from .api.routers.backups import (
@@ -1661,27 +1663,84 @@ class Database:
 
             return [dict(row) for row in rows]
     
-    def get_energy_model_config(self, device_id: int, model_type: str) -> dict | None:
+    def get_energy_model_config(self, device_id: int, model_type: str, instance_key: str = "default") -> dict | None:
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM energy_model_configs WHERE device_id=? AND model_type=?", (device_id, model_type)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM energy_model_configs WHERE device_id=? AND model_type=? AND instance_key=?",
+                (device_id, model_type, instance_key),
+            ).fetchone()
             return dict(row) if row else None
+
+    def get_energy_model_configs(self, device_id: int) -> list[dict]:
+        """Every config row for one device, any model_type/instance_key --
+        used by the admin UI's per-device Energy Model list (unlike
+        get_energy_model_config, which needs the full composite key)."""
+        with self._conn() as conn:
+            return [
+                dict(row) for row in conn.execute(
+                    "SELECT * FROM energy_model_configs WHERE device_id=? ORDER BY model_type, instance_key",
+                    (device_id,),
+                )
+            ]
 
     def get_enabled_energy_model_configs(self) -> list[dict]:
         with self._conn() as conn:
             return [dict(row) for row in conn.execute("SELECT * FROM energy_model_configs WHERE enabled=1 ORDER BY device_id, model_type")]
 
-    def upsert_energy_model_config(self, device_id: int, model_type: str, parameters: str, enabled: bool = True) -> dict:
+    def upsert_energy_model_config(
+        self, device_id: int, model_type: str, parameters: str, enabled: bool = True, instance_key: str = "default",
+    ) -> dict:
         with self._conn() as conn:
-            conn.execute("""INSERT INTO energy_model_configs (device_id, model_type, enabled, parameters) VALUES (?, ?, ?, ?) ON CONFLICT(device_id, model_type, instance_key) DO UPDATE SET enabled=excluded.enabled, parameters=excluded.parameters""", (device_id, model_type, int(enabled), parameters))
+            conn.execute(
+                "INSERT INTO energy_model_configs (device_id, model_type, instance_key, enabled, parameters) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(device_id, model_type, instance_key) DO UPDATE SET "
+                "enabled=excluded.enabled, parameters=excluded.parameters",
+                (device_id, model_type, instance_key, int(enabled), parameters),
+            )
             conn.commit()
-            row = conn.execute("SELECT * FROM energy_model_configs WHERE device_id=? AND model_type=?", (device_id, model_type)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM energy_model_configs WHERE device_id=? AND model_type=? AND instance_key=?",
+                (device_id, model_type, instance_key),
+            ).fetchone()
             if row is None:
                 raise RuntimeError("Energy model configuration was not saved")
             return dict(row)
 
-    def delete_energy_model_config(self, device_id: int, model_type: str) -> bool:
+    def delete_energy_model_config(self, device_id: int, model_type: str, instance_key: str = "default") -> bool:
         with self._conn() as conn:
-            cursor = conn.execute("DELETE FROM energy_model_configs WHERE device_id=? AND model_type=?", (device_id, model_type))
+            cursor = conn.execute(
+                "DELETE FROM energy_model_configs WHERE device_id=? AND model_type=? AND instance_key=?",
+                (device_id, model_type, instance_key),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_energy_model_config_by_id(self, config_id: int) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM energy_model_configs WHERE id=?", (config_id,)).fetchone()
+            return dict(row) if row else None
+
+    def update_energy_model_config_by_id(
+        self, config_id: int, *, model_type: str, instance_key: str, enabled: bool, parameters: str,
+    ) -> dict | None:
+        """Row-id-addressed update (used by PUT /energy/models/{id}) -- unlike
+        upsert_energy_model_config, this can also change model_type/
+        instance_key on an existing row, so a change that collides with a
+        DIFFERENT existing row raises sqlite3.IntegrityError (caught by the
+        router and turned into a 409, same pattern as semantic entities)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE energy_model_configs SET model_type=?, instance_key=?, enabled=?, parameters=? WHERE id=?",
+                (model_type, instance_key, int(enabled), parameters, config_id),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM energy_model_configs WHERE id=?", (config_id,)).fetchone()
+            return dict(row) if row else None
+
+    def delete_energy_model_config_by_id(self, config_id: int) -> bool:
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM energy_model_configs WHERE id=?", (config_id,))
             conn.commit()
             return cursor.rowcount > 0
 
@@ -2429,11 +2488,17 @@ class Database:
             # comment for why semantic_key can't just be copied across.
             semantic_entities = [dict(r) for r in conn.execute("SELECT * FROM semantic_entities")]
             semantic_relationships = [dict(r) for r in conn.execute("SELECT * FROM semantic_relationships")]
+            # Stored verbatim, including the (soon-to-be-stale) id/device_id
+            # values -- load_project() remaps device_id through dev_id_map
+            # the same way it already does for semantic_entities, rather
+            # than trusting the stored id directly.
+            energy_model_configs = [dict(r) for r in conn.execute("SELECT * FROM energy_model_configs")]
             data = json.dumps({
                 "locations": locations,
                 "devices": devices,
                 "semantic_entities": semantic_entities,
                 "semantic_relationships": semantic_relationships,
+                "energy_model_configs": energy_model_configs,
             })
             cur = conn.execute(
                 "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
@@ -2461,11 +2526,13 @@ class Database:
                 self._attach_calendars(conn, dev)
             semantic_entities = [dict(r) for r in conn.execute("SELECT * FROM semantic_entities")]
             semantic_relationships = [dict(r) for r in conn.execute("SELECT * FROM semantic_relationships")]
+            energy_model_configs = [dict(r) for r in conn.execute("SELECT * FROM energy_model_configs")]
             data = json.dumps({
                 "locations": locations,
                 "devices": devices,
                 "semantic_entities": semantic_entities,
                 "semantic_relationships": semantic_relationships,
+                "energy_model_configs": energy_model_configs,
             })
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
@@ -2662,6 +2729,27 @@ class Database:
                             "enabled": cal.get("enabled", 1),
                         },
                     )
+
+            # Energy model configs reference a device only (no objects/
+            # locations involved), so they just need dev_id_map, already
+            # fully populated by the devices loop above. Skip silently if
+            # the owning device wasn't restored, rather than fail the whole
+            # import -- same tolerance as the relationship restore below.
+            for cfg in payload.get("energy_model_configs", []):
+                new_device_id = dev_id_map.get(cfg.get("device_id"))
+                if new_device_id is None:
+                    continue
+                conn.execute(
+                    "INSERT INTO energy_model_configs (device_id, model_type, instance_key, enabled, parameters) "
+                    "VALUES (?,?,?,?,?)",
+                    (
+                        new_device_id,
+                        cfg["model_type"],
+                        cfg.get("instance_key") or "default",
+                        cfg.get("enabled", 1),
+                        cfg.get("parameters") or "{}",
+                    ),
+                )
 
             # Brick Core: restore entities AFTER locations/devices/objects
             # (their device_id/object_id/location_id FKs need the remaps
@@ -3679,6 +3767,10 @@ class SimEngine:
         self._objects: dict[int, tuple[Any, Behavior]] = {}
         # device instance → slot index (for physical instance offset)
         self._device_slots: dict[int, int] = {}
+        # device instance → device row, rebuilt on every start()/reload() from
+        # the same DB fetch as _device_slots -- lets packet-capture streaming
+        # resolve device identity in O(1) without a per-packet DB query.
+        self._devices_by_instance: dict[int, dict] = {}
         self._reload_event = asyncio.Event()
         # Guards reload() against overlapping runs. Every device/object CRUD route
         # fires reload() via asyncio.create_task() (fire-and-forget), and start()
@@ -3746,6 +3838,7 @@ class SimEngine:
 
     async def start(self) -> None:
         devices = await asyncio.to_thread(self.db.get_devices)
+        self._devices_by_instance = {d["device_instance"]: d for d in devices}
         enabled = [d for d in devices if d["enabled"]]
         if not enabled:
             log.info("No enabled devices — BACnet stack idle")
@@ -4077,6 +4170,9 @@ class SimEngine:
             if point_type:
                 values[str(point_type)] = self.get_object_value(obj["id"])
         return values
+    def get_devices_by_instance(self) -> dict[int, dict]:
+        return self._devices_by_instance
+
     def resolve_wire_object(
         self,
         object_type: str,
@@ -4655,6 +4751,7 @@ packet_capture = PacketCapture(
     max_packets=10_000,
     max_payload_bytes=65_535,
 )
+packet_stream_ws_clients: list[WebSocket] = []
 
 # ─── BACpypes3 packet-capture transport hooks ─────────────────────────────────
 
@@ -4711,21 +4808,26 @@ def install_bacpypes_packet_capture_hooks(
     indication()   = outbound toward the UDP socket
     confirmation() = inbound from the UDP socket
 
-    While clock_state == "stopped", ALL outbound traffic is suppressed
-    here — this is the single choke point every outbound byte passes
-    through regardless of what generated it (Who-Is/I-Am response,
-    ReadProperty/WriteProperty ACK, COV notification, ...), so it's the
-    simplest, safest place to make "Stop" mean "the simulator stops
-    responding" without tearing down and rebinding the UDP socket itself
-    (which Start would then have to safely reconstruct — this way Start/
-    Stop just toggle a check, the transport is never touched).
+    While clock_state != "running" (i.e. "paused" or "stopped"), ALL
+    outbound traffic is suppressed here — this is the single choke point
+    every outbound byte passes through regardless of what generated it
+    (Who-Is/I-Am response, ReadProperty/WriteProperty ACK, COV
+    notification, ...), so it's the simplest, safest place to make both
+    "Pause" and "Stop" mean "the simulator stops responding" without
+    tearing down and rebinding the UDP socket itself (which Start would
+    then have to safely reconstruct — this way Start/Pause/Stop just
+    toggle a check, the transport is never touched). Pause and Stop still
+    differ elsewhere (Stop rewinds elapsed_seconds/time_of_day to 0,
+    Pause leaves them exactly where they were so Resume picks up without
+    losing simulated time) — this suppression is the one thing they now
+    share.
 
     Suppressed packets are neither sent nor recorded by packet capture —
     they never happened, from the network's point of view. Inbound
-    traffic (confirmation()) is NOT gated here: a real, stopped
+    traffic (confirmation()) is NOT gated here: a real, paused/stopped
     controller still receives whatever other devices broadcast at it
-    (e.g. Who-Is), it just doesn't answer -- see the "Stop" behavior
-    decided for this simulator.
+    (e.g. Who-Is), it just doesn't answer -- see the "Stop"/"Pause"
+    behavior decided for this simulator.
     """
     global _bacpypes_capture_hooks_installed
 
@@ -4739,7 +4841,7 @@ def install_bacpypes_packet_capture_hooks(
         transport_self: IPv4DatagramServer,
         pdu: Any,
     ) -> None:
-        if get_clock_state() == "stopped":
+        if get_clock_state() != "running":
             return
 
         try:
@@ -4977,6 +5079,56 @@ async def broadcast_state() -> None:
     for websocket in dead_clients:
         if websocket in ws_clients:
             ws_clients.remove(websocket)
+
+
+# ─── Packet capture stream broadcaster ─────────────────────────────────────────
+
+async def broadcast_captured_packet(packet: CapturedPacket) -> None:
+    if not packet_stream_ws_clients:
+        return
+
+    try:
+        payload = packet.to_dict(include_hex=True)
+
+        # Cheap, in-memory device-only association (I-Am / directed Who-Is /
+        # device-object) -- see plan notes. The no-op resolver skips the
+        # expensive per-object DB/O(N) path entirely for live packets;
+        # ordinary point-level traffic stays unassociated until the next
+        # REST fetch.
+        resolve_packet_simulator_context(
+            payload,
+            devices_by_instance=(
+                engine.get_devices_by_instance() if engine else {}
+            ),
+            resolve_object=lambda *_args, **_kwargs: None,
+        )
+
+        data = json.dumps(payload)
+    except Exception as exc:
+        # Never let a malformed/unexpected packet break the capture path --
+        # matches _record()'s own invariant -- but don't fail silently either.
+        log.debug("packet-capture stream: failed to prepare packet: %s", exc)
+        return
+
+    dead_clients: list[WebSocket] = []
+
+    for websocket in list(packet_stream_ws_clients):
+        try:
+            await websocket.send_text(data)
+        except Exception:
+            dead_clients.append(websocket)
+
+    for websocket in dead_clients:
+        if websocket in packet_stream_ws_clients:
+            packet_stream_ws_clients.remove(websocket)
+
+
+def _on_packet_captured(packet: CapturedPacket) -> None:
+    if packet_stream_ws_clients:  # skip task creation with nobody listening
+        asyncio.create_task(broadcast_captured_packet(packet))
+
+
+packet_capture.set_packet_listener(_on_packet_captured)
 
 
 # ─── Analytics aggregation ─────────────────────────────────────────────────────
@@ -5226,6 +5378,7 @@ async def lifespan(app: FastAPI):
 
     app.state.ws_clients = ws_clients
     app.state.metrics_ws_clients = metrics_ws_clients
+    app.state.packet_stream_ws_clients = packet_stream_ws_clients
 
 
     fault_detection_engine = FaultDetectionEngine(
@@ -5362,6 +5515,7 @@ async def meta():
         "point_types": [{"value": k, "label": v} for k, v in sorted(POINT_TYPES.items())],
         "location_kinds": [{"value": k, "label": v} for k, v in sorted(LOCATION_KINDS.items())],
         "semantic_predicates": [{"value": k, "label": v} for k, v in sorted(SEMANTIC_PREDICATES.items())],
+        "energy_model_types": [{"value": k, "label": v} for k, v in MODEL_TYPE_LABELS.items()],
         "network_address": f"{own_ip}:{BACNET_PORT}" if own_ip and own_ip != "0.0.0.0" else None,
     }
 

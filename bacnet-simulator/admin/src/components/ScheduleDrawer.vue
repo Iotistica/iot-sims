@@ -261,7 +261,7 @@ function objectLabel(o: SimObject): string {
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
-              <div style="font-weight:600;font-size:14px">{{ sched.name }}</div>
+              <div style="font-weight:600;font-size:14px;color:var(--text-primary)">{{ sched.name }}</div>
               <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 Controls <b>{{ targetLabel(sched) }}</b> · {{ sched.value_type }} · priority {{ sched.priority_for_writing }}
               </div>

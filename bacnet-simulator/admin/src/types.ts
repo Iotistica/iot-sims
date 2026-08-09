@@ -60,6 +60,7 @@ export interface Meta {
   point_types: MetaOption[]
   location_kinds: MetaOption[]
   semantic_predicates: MetaOption[]
+  energy_model_types: MetaOption[]
   network_address: string | null
 }
 
@@ -135,6 +136,18 @@ export interface NotificationClass {
   priority_to_normal: number
   ack_required_transitions: string[]
   recipients: NotificationRecipient[]
+}
+
+/** parameters is model-type-specific (see src/energy/equipment/*.py's
+ * config dataclasses) -- kept loosely typed here since the shape varies
+ * by model_type; EnergyModelDrawer.vue owns the per-type field lists. */
+export interface EnergyModelConfig {
+  id: number
+  device_id: number
+  model_type: 'chiller' | 'ahu' | 'lighting' | 'boiler'
+  instance_key: string
+  enabled: boolean
+  parameters: Record<string, number | boolean | null | undefined>
 }
 
 export interface AlarmConfig {
@@ -468,6 +481,14 @@ export interface CapturedPacket {
   bvlc_function: string | null
   service_name: string | null
   decode_error: string | null
+
+  simulator_device_id: number | null
+  simulator_device_instance: number | null
+  simulator_device_name: string | null
+  simulator_object_id: number | null
+  simulator_object_type: string | null
+  simulator_object_instance: number | null
+  simulator_object_name: string | null
 }
 
 export interface CapturedPacketPage {
@@ -482,6 +503,8 @@ export interface PacketCaptureFilters {
   sourceIp?: string
   destinationIp?: string
   service?: string
+  deviceId?: number
+  unassociated?: boolean
   offset?: number
   limit?: number
 }

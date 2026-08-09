@@ -1,3 +1,5 @@
+import { ref } from 'vue'
+
 import type {
   Device,
   SimObject,
@@ -12,6 +14,7 @@ import type {
   AuthResponse,
   AnalyticsSnapshot,
   NotificationClass,
+  EnergyModelConfig,
   AlarmConfig,
   AlarmLogEntry,
   EventEnrollment,
@@ -31,6 +34,42 @@ import type {
 } from './types'
 
 import { authToken, logout } from './auth'
+
+// Tracks whether the live simulator config (devices/objects/locations/
+// semantics/notification-classes/trend-logs/schedules/calendars) has
+// changed since the last project save/load, so the UI (e.g. "New Project")
+// can warn about losing real changes instead of unconditionally nagging
+// every time regardless of whether anything actually changed.
+export const projectDirty = ref(false)
+
+// Sub-paths that mutate but represent transient/runtime state, not saved
+// project configuration — writing a live value, triggering/clearing a
+// trend log, or evaluating a schedule doesn't change what a project save
+// would capture.
+const NON_CONFIG_MUTATION = [
+  /\/objects\/\d+\/value$/,
+  /\/priority-array\/\d+$/,
+  /\/trend-logs\/\d+\/(trigger|clear)$/,
+  /\/schedules\/\d+\/evaluate$/,
+]
+
+const CONFIG_PATH_PREFIXES = [
+  /^\/devices(\/|$)/,
+  /^\/locations(\/|$)/,
+  /^\/semantic-entities(\/|$)/,
+  /^\/semantic-relationships(\/|$)/,
+  /^\/notification-classes(\/|$)/,
+  /^\/trend-logs(\/|$)/,
+  /^\/schedules(\/|$)/,
+  /^\/calendars(\/|$)/,
+  /^\/event-enrollments(\/|$)/,
+]
+
+function markDirtyIfConfigMutation(path: string, method: string | undefined): void {
+  if (!method || method === 'GET') return
+  if (NON_CONFIG_MUTATION.some((re) => re.test(path))) return
+  if (CONFIG_PATH_PREFIXES.some((re) => re.test(path))) projectDirty.value = true
+}
 
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {}
@@ -52,7 +91,7 @@ async function downloadFile(path: string, fallbackName: string): Promise<void> {
   URL.revokeObjectURL(url)
 }
 
-async function uploadFile<T>(path: string, file: File, fields: Record<string, string> = {}): Promise<T> {
+async function uploadFile<T>(path: string, file: File, fields: Record<string, string> = {}, markDirty = false): Promise<T> {
   const body = new FormData()
   body.append('file', file)
   for (const [k, v] of Object.entries(fields)) body.append(k, v)
@@ -62,6 +101,7 @@ async function uploadFile<T>(path: string, file: File, fields: Record<string, st
     const detail = (e as { detail?: unknown }).detail
     throw new Error(typeof detail === 'string' ? detail : res.statusText)
   }
+  if (markDirty) projectDirty.value = true
   return res.json() as Promise<T>
 }
 
@@ -85,6 +125,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(message || res.statusText)
   }
+  markDirtyIfConfigMutation(path, init?.method)
   if (res.status === 204) return null as T
   return res.json() as Promise<T>
 }
@@ -131,7 +172,7 @@ export const api = {
     logs:   (id: number, limit = 100)      => req<LogEntry[]>(`/devices/${id}/logs?limit=${limit}`),
     exportEde: (id: number, name: string)  => downloadFile(`/devices/${id}/export/ede`, `${name}.ede`),
     importEde: (id: number, file: File)    =>
-      uploadFile<{ ok: boolean; objects_imported: number }>(`/devices/${id}/import/ede`, file),
+      uploadFile<{ ok: boolean; objects_imported: number }>(`/devices/${id}/import/ede`, file, {}, true),
     exportBrick: (id: number, name: string) => downloadFile(`/devices/${id}/export/brick`, `${name}.ttl`),
   },
 
@@ -204,6 +245,15 @@ export const api = {
     del:     (fileName: string)       => req<null>(`/backups/${encodeURIComponent(fileName)}`, { method: 'DELETE' }),
     download: (fileName: string)      => downloadFile(`/backups/${encodeURIComponent(fileName)}/download`, fileName),
     upload:  (file: File)             => uploadFile<BackupEntry>('/backups/upload', file),
+  },
+
+  energyModels: {
+    list:   (deviceId: number)                           => req<EnergyModelConfig[]>(`/devices/${deviceId}/energy-models`),
+    create: (deviceId: number, b: Omit<EnergyModelConfig, 'id' | 'device_id'>) =>
+      req<EnergyModelConfig>(`/devices/${deviceId}/energy-models`, { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<EnergyModelConfig, 'id' | 'device_id'>) =>
+      req<EnergyModelConfig>(`/energy/models/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)                                 => req<null>(`/energy/models/${id}`, { method: 'DELETE' }),
   },
 
   notificationClasses: {
@@ -316,6 +366,14 @@ export const api = {
 
     if (filters.service) {
       params.set('service', filters.service)
+    }
+
+    if (filters.deviceId !== undefined) {
+      params.set('device_id', String(filters.deviceId))
+    }
+
+    if (filters.unassociated) {
+      params.set('unassociated', 'true')
     }
 
     if (filters.offset !== undefined) {

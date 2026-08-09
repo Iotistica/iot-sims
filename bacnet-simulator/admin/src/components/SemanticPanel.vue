@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
-import { PlusOutlined, DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined, DeleteOutlined, EditOutlined, ReloadOutlined, AimOutlined } from '@ant-design/icons-vue'
+import cytoscape, { type Core, type ElementDefinition } from 'cytoscape'
 import { api } from '../api'
 import type { Device, SimObject, Location, Meta, SemanticEntity, SemanticRelationship } from '../types'
+import GridFilterToolbar from './GridFilterToolbar.vue'
 
 const loading = ref(false)
-const activeTab = ref<'entities' | 'relationships'>('entities')
+const activeTab = ref<'entities' | 'relationships' | 'graph'>('entities')
 
 const meta = ref<Meta | null>(null)
 const devices = ref<Device[]>([])
@@ -259,6 +261,359 @@ function filterByLabel(input: string, option: { label?: string }) {
   return (option.label ?? '').toLowerCase().includes(input.toLowerCase())
 }
 
+// ── Entities table filters ──────────────────────────────────────────────
+const entitySearch = ref('')
+const entityKindFilter = ref<SemanticEntity['entity_kind'] | undefined>(undefined)
+
+const filteredEntities = computed(() => {
+  const q = entitySearch.value.trim().toLowerCase()
+  return entities.value.filter(e => {
+    if (entityKindFilter.value && e.entity_kind !== entityKindFilter.value) return false
+    if (!q) return true
+    return (
+      e.name.toLowerCase().includes(q) ||
+      e.brick_class.toLowerCase().includes(q) ||
+      (e.local_slug ?? '').toLowerCase().includes(q)
+    )
+  })
+})
+
+const entityFiltersActive = computed(() => !!entitySearch.value.trim() || entityKindFilter.value !== undefined)
+
+function clearEntityFilters() {
+  entitySearch.value = ''
+  entityKindFilter.value = undefined
+}
+
+// ── Relationships table filters ─────────────────────────────────────────
+const relationshipSearch = ref('')
+const relationshipPredicateFilter = ref<SemanticRelationship['predicate'] | undefined>(undefined)
+
+const filteredRelationships = computed(() => {
+  const q = relationshipSearch.value.trim().toLowerCase()
+  return relationships.value.filter(r => {
+    if (relationshipPredicateFilter.value && r.predicate !== relationshipPredicateFilter.value) return false
+    if (!q) return true
+    return (
+      entityLabel(r.source_entity_id).toLowerCase().includes(q) ||
+      entityLabel(r.target_entity_id).toLowerCase().includes(q)
+    )
+  })
+})
+
+const relationshipFiltersActive = computed(() => !!relationshipSearch.value.trim() || relationshipPredicateFilter.value !== undefined)
+
+function clearRelationshipFilters() {
+  relationshipSearch.value = ''
+  relationshipPredicateFilter.value = undefined
+}
+
+
+// ── Graph tab (Cytoscape.js) ──────────────────────────────────────────────
+const graphContainer = ref<HTMLDivElement | null>(null)
+const graphFocusEntityId = ref<number | null>(null)
+const graphDepth = ref<1 | 2 | 3>(2)
+const graphShowPoints = ref(true)
+const selectedGraphEntity = ref<SemanticEntity | null>(null)
+let cy: Core | null = null
+
+const graphFocusOptions = computed(() =>
+  entities.value
+    .slice()
+    .sort((a, b) => {
+      const rank = (kind: SemanticEntity['entity_kind']) =>
+        kind === 'equipment' ? 0 : kind === 'location' ? 1 : 2
+      return rank(a.entity_kind) - rank(b.entity_kind) || a.name.localeCompare(b.name)
+    })
+    .map(e => ({
+      value: e.id,
+      label: `${e.name} (${e.brick_class})`,
+    })),
+)
+
+function chooseDefaultGraphFocus() {
+  if (graphFocusEntityId.value != null && entityById.value.has(graphFocusEntityId.value)) return
+
+  const related = new Set<number>()
+  for (const r of relationships.value) {
+    related.add(r.source_entity_id)
+    related.add(r.target_entity_id)
+  }
+
+  const equipment = entities.value.find(e => e.entity_kind === 'equipment' && related.has(e.id))
+  const anyRelated = entities.value.find(e => related.has(e.id))
+  graphFocusEntityId.value = equipment?.id ?? anyRelated?.id ?? entities.value[0]?.id ?? null
+}
+
+function graphEntityIds(): Set<number> {
+  const focusId = graphFocusEntityId.value
+  if (focusId == null) return new Set()
+
+  const included = new Set<number>([focusId])
+  let frontier = new Set<number>([focusId])
+
+  for (let depth = 0; depth < graphDepth.value; depth += 1) {
+    const next = new Set<number>()
+
+    for (const r of relationships.value) {
+      if (frontier.has(r.source_entity_id) && !included.has(r.target_entity_id)) {
+        next.add(r.target_entity_id)
+      }
+      if (frontier.has(r.target_entity_id) && !included.has(r.source_entity_id)) {
+        next.add(r.source_entity_id)
+      }
+    }
+
+    for (const id of next) included.add(id)
+    frontier = next
+    if (frontier.size === 0) break
+  }
+
+  // Keep the focus even when it is a point, but optionally hide other point nodes.
+  if (!graphShowPoints.value) {
+    for (const id of [...included]) {
+      if (id === focusId) continue
+      if (entityById.value.get(id)?.entity_kind === 'point') included.delete(id)
+    }
+  }
+
+  return included
+}
+
+function displayEdge(r: SemanticRelationship) {
+  // Store canonical Brick direction in the DB, but draw common inverse labels
+  // so an equipment-centred graph reads naturally from parent -> child.
+  if (r.predicate === 'isPartOf') {
+    return {
+      source: r.target_entity_id,
+      target: r.source_entity_id,
+      label: 'has part',
+      predicate: r.predicate,
+    }
+  }
+  if (r.predicate === 'isPointOf') {
+    return {
+      source: r.target_entity_id,
+      target: r.source_entity_id,
+      label: 'has point',
+      predicate: r.predicate,
+    }
+  }
+  if (r.predicate === 'hasLocation') {
+    return {
+      source: r.source_entity_id,
+      target: r.target_entity_id,
+      label: 'located in',
+      predicate: r.predicate,
+    }
+  }
+  return {
+    source: r.source_entity_id,
+    target: r.target_entity_id,
+    label: r.predicate,
+    predicate: r.predicate,
+  }
+}
+
+function cssColor(name: string, fallback: string): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
+function renderGraph() {
+  if (activeTab.value !== 'graph' || !graphContainer.value) return
+
+  chooseDefaultGraphFocus()
+
+  const ids = graphEntityIds()
+  const visibleEntities = entities.value.filter(e => ids.has(e.id))
+  const visibleRelationships = relationships.value.filter(
+    r => ids.has(r.source_entity_id) && ids.has(r.target_entity_id),
+  )
+
+  const elements: ElementDefinition[] = [
+    ...visibleEntities.map(e => ({
+      group: 'nodes' as const,
+      data: {
+        id: `entity-${e.id}`,
+        entityId: e.id,
+        label: `${e.name}\n${e.brick_class}`,
+        kind: e.entity_kind,
+      },
+      classes: [
+        `kind-${e.entity_kind}`,
+        e.id === graphFocusEntityId.value ? 'graph-focus' : '',
+      ].filter(Boolean).join(' '),
+    })),
+    ...visibleRelationships.map(r => {
+      const edge = displayEdge(r)
+      return {
+        group: 'edges' as const,
+        data: {
+          id: `relationship-${r.id}`,
+          source: `entity-${edge.source}`,
+          target: `entity-${edge.target}`,
+          label: edge.label,
+          predicate: edge.predicate,
+        },
+      }
+    }),
+  ]
+
+  cy?.destroy()
+
+  cy = cytoscape({
+    container: graphContainer.value,
+    elements,
+    wheelSensitivity: 0.18,
+    minZoom: 0.25,
+    maxZoom: 2.5,
+    style: [
+      {
+        selector: 'node',
+        style: {
+          'label': 'data(label)',
+          'text-wrap': 'wrap',
+          'text-max-width': '150px',
+          'text-valign': 'center',
+          'text-halign': 'center',
+          'font-size': 11,
+          'color': cssColor('--text-color', '#d9d9d9'),
+          'background-color': cssColor('--component-background', '#262626'),
+          'border-color': cssColor('--border-color-base', '#595959'),
+          'border-width': 1.5,
+          'width': 150,
+          'height': 58,
+          'padding': '8px',
+        },
+      },
+     {
+  selector: '.kind-equipment',
+  style: {
+    'shape': 'round-rectangle',
+    'background-color': '#162d4d',
+    'border-color': '#4096ff',
+    'border-width': 2,
+  },
+},
+{
+  selector: '.kind-point',
+  style: {
+    'shape': 'ellipse',
+    'background-color': '#173b2c',
+    'border-color': '#49aa19',
+    'width': 118,
+    'height': 48,
+    'font-size': 10,
+  },
+},
+{
+  selector: '.kind-location',
+  style: {
+    'shape': 'round-rectangle',
+    'background-color': '#30204d',
+    'border-color': '#9254de',
+    'border-style': 'dashed',
+    'border-width': 2,
+  },
+},
+      {
+        selector: '.graph-focus',
+        style: {
+          'border-color': cssColor('--primary-color', '#1677ff'),
+          'border-width': 4,
+        },
+      },
+      {
+        selector: 'edge',
+        style: {
+          'curve-style': 'bezier',
+          'width': 1.6,
+          'line-color': cssColor('--border-color-base', '#595959'),
+          'target-arrow-color': cssColor('--border-color-base', '#595959'),
+          'target-arrow-shape': 'triangle',
+          'arrow-scale': 0.8,
+          'label': 'data(label)',
+          'font-size': 9,
+          'color': cssColor('--text-muted', '#8c8c8c'),
+          'text-background-color': cssColor('--component-background', '#141414'),
+          'text-background-opacity': 0.9,
+          'text-background-padding': '3px',
+          'text-rotation': 'autorotate',
+        },
+      },
+      {
+        selector: 'node:selected',
+        style: {
+          'border-color': cssColor('--primary-color', '#1677ff'),
+          'border-width': 4,
+        },
+      },
+    ],
+    layout: {
+      name: 'breadthfirst',
+      directed: false,
+      direction: 'downward',
+      roots: graphFocusEntityId.value != null
+      ? [`entity-${graphFocusEntityId.value}`]
+      : undefined,
+      fit: true,
+      padding: 48,
+      spacingFactor: 1.35,
+      avoidOverlap: true,
+      nodeDimensionsIncludeLabels: true,
+      animate: false,
+    },
+  })
+
+  cy.on('tap', 'node', evt => {
+    const entityId = Number(evt.target.data('entityId'))
+    selectedGraphEntity.value = entityById.value.get(entityId) ?? null
+  })
+
+  cy.on('dbltap', 'node', evt => {
+    graphFocusEntityId.value = Number(evt.target.data('entityId'))
+  })
+}
+
+function fitGraph() {
+  cy?.fit(undefined, 48)
+}
+
+function relayoutGraph() {
+  if (!cy) return
+  cy.layout({
+    name: 'breadthfirst',
+    directed: false,
+    direction: 'downward',
+    roots: graphFocusEntityId.value != null
+    ? [`entity-${graphFocusEntityId.value}`]
+    : undefined,
+    fit: true,
+    padding: 48,
+    spacingFactor: 1.35,
+    avoidOverlap: true,
+    nodeDimensionsIncludeLabels: true,
+    animate: true,
+    animationDuration: 250,
+  }).run()
+}
+
+watch(
+  [activeTab, graphFocusEntityId, graphDepth, graphShowPoints, entities, relationships],
+  async () => {
+    if (activeTab.value !== 'graph') return
+    await nextTick()
+    renderGraph()
+  },
+  { deep: true },
+)
+
+onBeforeUnmount(() => {
+  cy?.destroy()
+  cy = null
+})
+
 const entityColumns: TableColumnsType<SemanticEntity> = [
   { title: 'Name', dataIndex: 'name', key: 'name' },
   { title: 'Local Slug', dataIndex: 'local_slug', key: 'local_slug', width: 140 },
@@ -293,15 +648,35 @@ const relationshipColumns: TableColumnsType<SemanticRelationship> = [
 
     <a-tabs v-model:activeKey="activeTab">
       <a-tab-pane key="entities" :tab="`Entities (${entities.length})`">
-        <div style="margin-bottom:12px">
-          <a-button type="primary" size="small" @click="openCreateEntity">
-            <template #icon><PlusOutlined /></template>
-            New Entity
-          </a-button>
-        </div>
+        <GridFilterToolbar
+          v-model:search="entitySearch"
+          search-placeholder="Search name, class, slug…"
+          :can-clear="entityFiltersActive"
+          @clear="clearEntityFilters"
+        >
+          <a-select
+            v-model:value="entityKindFilter"
+            allow-clear
+            size="small"
+            placeholder="Kind"
+            style="width:130px"
+            :options="[
+              { value: 'equipment', label: 'Equipment' },
+              { value: 'point', label: 'Point' },
+              { value: 'location', label: 'Location' },
+            ]"
+          />
+
+          <template #actions>
+            <a-button type="primary" @click="openCreateEntity">
+              <template #icon><PlusOutlined /></template>
+              New Entity
+            </a-button>
+          </template>
+        </GridFilterToolbar>
         <a-table
           :columns="entityColumns"
-          :data-source="entities"
+          :data-source="filteredEntities"
           :loading="loading"
           row-key="id"
           size="small"
@@ -321,21 +696,41 @@ const relationshipColumns: TableColumnsType<SemanticRelationship> = [
             </template>
           </template>
           <template #emptyText>
-            <div style="padding:24px;color:var(--text-placeholder)">No semantic entities yet</div>
+            <div v-if="entities.length" style="padding:24px;color:var(--text-placeholder)">
+              No entities match your filters —
+              <a @click="clearEntityFilters">clear filters</a>
+            </div>
+            <div v-else style="padding:24px;color:var(--text-placeholder)">No semantic entities yet</div>
           </template>
         </a-table>
       </a-tab-pane>
 
       <a-tab-pane key="relationships" :tab="`Relationships (${relationships.length})`">
-        <div style="margin-bottom:12px">
-          <a-button type="primary" size="small" :disabled="entities.length < 2" @click="openCreateRelationship">
-            <template #icon><PlusOutlined /></template>
-            New Relationship
-          </a-button>
-        </div>
+        <GridFilterToolbar
+          v-model:search="relationshipSearch"
+          search-placeholder="Search source or target…"
+          :can-clear="relationshipFiltersActive"
+          @clear="clearRelationshipFilters"
+        >
+          <a-select
+            v-model:value="relationshipPredicateFilter"
+            allow-clear
+            size="small"
+            placeholder="Predicate"
+            style="width:140px"
+            :options="meta?.semantic_predicates ?? []"
+          />
+
+          <template #actions>
+            <a-button type="primary" :disabled="entities.length < 2" @click="openCreateRelationship">
+              <template #icon><PlusOutlined /></template>
+              New Relationship
+            </a-button>
+          </template>
+        </GridFilterToolbar>
         <a-table
           :columns="relationshipColumns"
-          :data-source="relationships"
+          :data-source="filteredRelationships"
           :loading="loading"
           row-key="id"
           size="small"
@@ -355,9 +750,97 @@ const relationshipColumns: TableColumnsType<SemanticRelationship> = [
             </template>
           </template>
           <template #emptyText>
-            <div style="padding:24px;color:var(--text-placeholder)">No relationships yet</div>
+            <div v-if="relationships.length" style="padding:24px;color:var(--text-placeholder)">
+              No relationships match your filters —
+              <a @click="clearRelationshipFilters">clear filters</a>
+            </div>
+            <div v-else style="padding:24px;color:var(--text-placeholder)">No relationships yet</div>
           </template>
         </a-table>
+      </a-tab-pane>
+
+      <a-tab-pane key="graph" tab="Graph">
+        <div class="semantic-graph-toolbar">
+          <div class="semantic-graph-control semantic-graph-focus">
+            <span class="semantic-graph-label">Focus</span>
+            <a-select
+              v-model:value="graphFocusEntityId"
+              show-search
+              placeholder="Choose an entity"
+              :options="graphFocusOptions"
+              :filter-option="filterByLabel"
+            />
+          </div>
+
+          <div class="semantic-graph-control">
+            <span class="semantic-graph-label">Depth</span>
+            <a-select
+              v-model:value="graphDepth"
+              style="width:90px"
+              :options="[
+                { value: 1, label: '1 hop' },
+                { value: 2, label: '2 hops' },
+                { value: 3, label: '3 hops' },
+              ]"
+            />
+          </div>
+
+          <label class="semantic-graph-switch">
+            <span class="semantic-graph-label">Points</span>
+            <a-switch v-model:checked="graphShowPoints" size="small" />
+          </label>
+
+          <div style="flex:1" />
+
+          <a-button size="small" @click="relayoutGraph">
+            <template #icon><ReloadOutlined /></template>
+            Layout
+          </a-button>
+          <a-button size="small" @click="fitGraph">
+            <template #icon><AimOutlined /></template>
+            Fit
+          </a-button>
+        </div>
+
+        <div class="semantic-graph-shell">
+          <div
+            ref="graphContainer"
+            class="semantic-graph-canvas"
+            aria-label="Brick semantic relationship graph"
+          />
+
+          <div v-if="selectedGraphEntity" class="semantic-graph-inspector">
+            <div class="semantic-graph-inspector-title">{{ selectedGraphEntity.name }}</div>
+            <div class="semantic-graph-inspector-row">
+              <span>Kind</span>
+              <strong>{{ selectedGraphEntity.entity_kind }}</strong>
+            </div>
+            <div class="semantic-graph-inspector-row">
+              <span>Brick Class</span>
+              <strong>{{ selectedGraphEntity.brick_class }}</strong>
+            </div>
+            <div class="semantic-graph-inspector-row">
+              <span>Linked To</span>
+              <strong>{{ linkedLabel(selectedGraphEntity) }}</strong>
+            </div>
+            <div v-if="selectedGraphEntity.local_slug" class="semantic-graph-inspector-row">
+              <span>Local Slug</span>
+              <strong>{{ selectedGraphEntity.local_slug }}</strong>
+            </div>
+            <div style="margin-top:12px">
+              <a-button size="small" @click="graphFocusEntityId = selectedGraphEntity.id">
+                Focus here
+              </a-button>
+            </div>
+          </div>
+        </div>
+
+        <div class="semantic-graph-help">
+          Double-click a node to focus it. The graph shows the selected entity and relationships
+          up to the chosen depth. Canonical <code>isPartOf</code> / <code>isPointOf</code>
+          relationships are displayed as “has part” / “has point” so equipment-centred graphs
+          read naturally.
+        </div>
       </a-tab-pane>
     </a-tabs>
 
@@ -504,3 +987,116 @@ const relationshipColumns: TableColumnsType<SemanticRelationship> = [
     </a-modal>
   </div>
 </template>
+
+<style scoped>
+.semantic-graph-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.semantic-graph-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.semantic-graph-focus {
+  min-width: 320px;
+  flex: 1;
+  max-width: 520px;
+}
+
+.semantic-graph-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.semantic-graph-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-bottom: 4px;
+}
+
+.semantic-graph-shell {
+  position: relative;
+  height: 620px;
+  min-height: 420px;
+  border: 1px solid var(--border-color-base, #434343);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--component-background, #141414);
+}
+
+.semantic-graph-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.semantic-graph-inspector {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 260px;
+  padding: 12px;
+  border: 1px solid var(--border-color-base, #434343);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--component-background, #141414) 94%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.semantic-graph-inspector-title {
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.semantic-graph-inspector-row {
+  display: grid;
+  grid-template-columns: 82px 1fr;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.semantic-graph-inspector-row > span {
+  color: var(--text-muted);
+}
+
+.semantic-graph-inspector-row > strong {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.semantic-graph-help {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 760px) {
+  .semantic-graph-shell {
+    height: 520px;
+  }
+
+  .semantic-graph-focus {
+    min-width: 100%;
+  }
+
+  .semantic-graph-inspector {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    top: auto;
+    bottom: 10px;
+    width: auto;
+  }
+
+  
+}
+
+
+</style>

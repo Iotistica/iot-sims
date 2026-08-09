@@ -5,6 +5,7 @@ import type { TableColumnsType } from 'ant-design-vue'
 import { CheckOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type { AlarmLogEntry } from '../types'
+import GridFilterToolbar from './GridFilterToolbar.vue'
 
 const alarms = ref<AlarmLogEntry[]>([])
 const deviceNames = ref<Record<number, string>>({})
@@ -12,6 +13,41 @@ const loading = ref(false)
 const unackedOnly = ref(false)
 const acking = ref<number | null>(null)
 let poll: ReturnType<typeof setInterval> | null = null
+
+const search = ref('')
+const stateFilter = ref<string | undefined>(undefined)
+const priorityFilter = ref<number | undefined>(undefined)
+
+const priorityOptions = computed(() =>
+  [...new Set(alarms.value.map(a => a.priority))].sort((a, b) => a - b),
+)
+
+const stateOptions = computed(() =>
+  [...new Set(alarms.value.map(a => a.to_state))].sort().map(s => ({ value: s, label: s })),
+)
+
+const filteredAlarms = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  return alarms.value.filter(a => {
+    if (stateFilter.value && a.to_state !== stateFilter.value) return false
+    if (priorityFilter.value !== undefined && a.priority !== priorityFilter.value) return false
+    if (!q) return true
+    return (
+      a.object_name.toLowerCase().includes(q) ||
+      deviceLabel(a.device_id).toLowerCase().includes(q)
+    )
+  })
+})
+
+const hasActiveFilters = computed(() =>
+  !!search.value.trim() || stateFilter.value !== undefined || priorityFilter.value !== undefined,
+)
+
+function clearFilters() {
+  search.value = ''
+  stateFilter.value = undefined
+  priorityFilter.value = undefined
+}
 
 async function load() {
   loading.value = true
@@ -173,9 +209,33 @@ onUnmounted(() => {
       </a-button>
     </div>
 
+    <GridFilterToolbar
+      v-model:search="search"
+      search-placeholder="Search object or device…"
+      :can-clear="hasActiveFilters"
+      @clear="clearFilters"
+    >
+      <a-select
+        v-model:value="stateFilter"
+        allow-clear
+        size="small"
+        placeholder="State"
+        style="width:120px"
+        :options="stateOptions"
+      />
+      <a-select
+        v-model:value="priorityFilter"
+        allow-clear
+        size="small"
+        placeholder="Priority"
+        style="width:110px"
+        :options="priorityOptions.map(p => ({ value: p, label: String(p) }))"
+      />
+    </GridFilterToolbar>
+
     <a-table
       :columns="columns"
-      :data-source="alarms"
+      :data-source="filteredAlarms"
       :loading="loading"
       row-key="id"
       size="small"
@@ -205,7 +265,11 @@ onUnmounted(() => {
         </template>
       </template>
       <template #emptyText>
-        <div style="padding:24px;color:var(--text-placeholder)">No alarms {{ unackedOnly ? '(unacknowledged)' : 'yet' }}</div>
+        <div v-if="alarms.length" style="padding:24px;color:var(--text-placeholder)">
+          No alarms match your filters —
+          <a @click="clearFilters">clear filters</a>
+        </div>
+        <div v-else style="padding:24px;color:var(--text-placeholder)">No alarms {{ unackedOnly ? '(unacknowledged)' : 'yet' }}</div>
       </template>
     </a-table>
   </div>

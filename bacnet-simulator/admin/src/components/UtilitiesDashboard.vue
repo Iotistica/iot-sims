@@ -531,6 +531,15 @@ const horizontalBarOptions = computed(() => ({
       class="utility-alert"
     />
 
+    <a-alert
+      v-else-if="!loading && !equipment.length"
+      type="info"
+      show-icon
+      message="No energy models configured."
+      description="Configure an energy model on a Chiller, Boiler, AHU, or Lighting device (device menu → Energy Model) to begin energy evaluation."
+      class="utility-alert"
+    />
+
     <!-- Electricity -->
     <section>
       <div class="section-title">

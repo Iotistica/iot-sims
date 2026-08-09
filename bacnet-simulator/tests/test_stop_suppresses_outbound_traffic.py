@@ -1,10 +1,13 @@
-"""When the simulation is Stopped (clock_state == "stopped"), the
-simulator must stop RESPONDING on the network -- no outbound BACnet
-traffic at all -- while still being allowed to receive (a real stopped
-controller can't stop other devices broadcasting Who-Is at it, it just
-doesn't answer). See install_bacpypes_packet_capture_hooks() in
+"""When the simulation is Paused or Stopped (clock_state != "running"),
+the simulator must stop RESPONDING on the network -- no outbound BACnet
+traffic at all -- while still being allowed to receive (a real paused/
+stopped controller can't stop other devices broadcasting Who-Is at it,
+it just doesn't answer). See install_bacpypes_packet_capture_hooks() in
 src/legacy.py, which is the single choke point every outbound byte
-passes through regardless of what generated it.
+passes through regardless of what generated it. Pause and Stop still
+differ elsewhere (Stop rewinds elapsed_seconds/time_of_day to 0, Pause
+leaves them in place so Resume picks up without losing simulated time)
+-- outbound suppression is the one thing they now share.
 
 NOTE: install_bacpypes_packet_capture_hooks() monkey-patches the real
 bacpypes3 IPv4DatagramServer CLASS, guarded by a module-level
@@ -28,7 +31,7 @@ class _FakePDU:
 
 
 @pytest.mark.asyncio
-async def test_outbound_suppressed_only_while_stopped():
+async def test_outbound_suppressed_while_paused_or_stopped():
     assert not legacy._bacpypes_capture_hooks_installed, (
         "hook already installed by another test -- this test must be the "
         "sole installer to control get_clock_state; see module docstring"
@@ -55,21 +58,21 @@ async def test_outbound_suppressed_only_while_stopped():
         await patched_indication(None, _FakePDU(b"running-packet"))
         assert sent == [b"running-packet"]
 
-        # Paused -- outbound still goes through (only "stopped" suppresses).
+        # Paused -- outbound is suppressed entirely, never reaches the
+        # real transport.
         state["clock_state"] = "paused"
         await patched_indication(None, _FakePDU(b"paused-packet"))
-        assert sent == [b"running-packet", b"paused-packet"]
+        assert sent == [b"running-packet"]  # unchanged
 
-        # Stopped -- outbound is suppressed entirely, never reaches the
-        # real transport.
+        # Stopped -- also suppressed entirely.
         state["clock_state"] = "stopped"
         await patched_indication(None, _FakePDU(b"stopped-packet"))
-        assert sent == [b"running-packet", b"paused-packet"]  # unchanged
+        assert sent == [b"running-packet"]  # unchanged
 
         # Resuming makes outbound flow again -- no socket rebuild needed.
         state["clock_state"] = "running"
         await patched_indication(None, _FakePDU(b"resumed-packet"))
-        assert sent == [b"running-packet", b"paused-packet", b"resumed-packet"]
+        assert sent == [b"running-packet", b"resumed-packet"]
     finally:
         # Restore so this monkey-patch doesn't leak into whatever bacpypes3
         # machinery a later test/process might rely on.

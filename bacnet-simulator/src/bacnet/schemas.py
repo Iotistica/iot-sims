@@ -152,6 +152,23 @@ class SetValueRequest(BaseModel):
     value: Any
 
 
+class EnergyModelConfigCreate(BaseModel):
+    model_type: str = Field(..., min_length=1)
+    instance_key: str = Field("default", min_length=1, max_length=100)
+    enabled: bool = True
+    # Model-specific range validation (capacity >= 0, COP > 0, etc.) is not
+    # duplicated here -- it's already implemented on each equipment config
+    # dataclass's own .validate() method (src/energy/equipment/*.py) and is
+    # applied by the router via src/energy/registry.py's MODEL_CONFIG_CLASSES.
+    # This layer only checks structural shape (is model_type recognized,
+    # is parameters a plain object).
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnergyModelConfigUpdate(EnergyModelConfigCreate):
+    pass
+
+
 class NotificationClassCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     priority_to_offnormal: int = Field(100, ge=0, le=255)

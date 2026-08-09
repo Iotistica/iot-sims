@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -105,6 +106,16 @@ async def create_semantic_entity(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "An entity of this class already exists for the selected "
+                "device/object/location -- edit the existing entity instead "
+                "of creating a duplicate, or give this one a distinct local "
+                "slug to disambiguate it."
+            ),
+        ) from e
 
 
 @router.get("/semantic-entities/{entity_id}")
@@ -163,6 +174,15 @@ async def update_semantic_entity(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Another entity already has this class/device/object/"
+                "location/slug combination -- choose a different class, "
+                "target, or local slug."
+            ),
+        ) from e
 
     return updated
 

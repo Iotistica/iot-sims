@@ -42,8 +42,9 @@ def _routers():
     # Imported lazily (inside the fixture) so a router module that fails
     # to import doesn't break every other test file's collection.
     from src.api.routers.locations import router as locations_router
+    from src.api.routers.devices import router as devices_router
 
-    routers = [locations_router]
+    routers = [locations_router, devices_router]
 
     try:
         from src.api.routers.semantic import router as semantic_router
@@ -54,12 +55,35 @@ def _routers():
     return routers
 
 
+class _FakeEngine:
+    """Stands in for app.state.engine -- devices.py's schedule_engine_reload()
+    fires-and-forgets engine.reload(); tests don't need the real BACnet
+    engine, just something with that coroutine so the call doesn't 503."""
+    async def reload(self) -> None:
+        pass
+
+
 @pytest.fixture
 def test_app(database: Database):
     from fastapi import FastAPI
 
     app = FastAPI()
     app.state.db = database
+    app.state.engine = _FakeEngine()
+    app.state.device_names = {}
+
+    # devices.py's log_event() reads app.state.log_event as an optional
+    # callback (None = silently no-op) -- capture calls here so tests can
+    # assert on exactly what got logged, e.g. tests/test_device_delete_logs.py.
+    app.state.logged_events = []
+
+    def _log_event(device_id, level, message):
+        app.state.logged_events.append(
+            {"device_id": device_id, "level": level, "message": message}
+        )
+
+    app.state.log_event = _log_event
+
     for router in _routers():
         app.include_router(router)
     return app

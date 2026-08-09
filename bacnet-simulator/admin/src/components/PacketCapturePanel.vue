@@ -5,6 +5,7 @@ import {
   onUnmounted,
   reactive,
   ref,
+  watch,
 } from 'vue'
 import {
   message,
@@ -19,12 +20,18 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons-vue'
 import { api } from '../api'
+import { authToken } from '../auth'
 import type {
   CapturedPacket,
+  Device,
   PacketCaptureFilters,
   PacketCaptureStatus,
   PacketDirection,
 } from '../types'
+
+const props = defineProps<{
+  initialDeviceId?: number | null
+}>()
 
 interface ProtocolSection {
   [key: string]: unknown
@@ -59,6 +66,7 @@ interface ProtocolTreeNode {
 const status = ref<PacketCaptureStatus | null>(null)
 const packets = ref<ProtocolPacket[]>([])
 const selectedPacket = ref<ProtocolPacket | null>(null)
+const devices = ref<Device[]>([])
 
 const loading = ref(false)
 const actionLoading = ref<
@@ -73,11 +81,58 @@ const filters = reactive<PacketCaptureFilters>({
   service: undefined,
   sourceIp: undefined,
   destinationIp: undefined,
+  deviceId: props.initialDeviceId ?? undefined,
+  unassociated: undefined,
   offset: 0,
   limit: 200,
 })
 
+// Single "Device" dropdown maps to two independent backend filters
+// (deviceId / unassociated) — see PacketCaptureFilters.
+const deviceFilterValue = computed<number | 'unassociated' | undefined>({
+  get() {
+    if (filters.unassociated) return 'unassociated'
+    return filters.deviceId
+  },
+  set(value) {
+    if (value === 'unassociated') {
+      filters.unassociated = true
+      filters.deviceId = undefined
+    } else {
+      filters.unassociated = undefined
+      filters.deviceId = value
+    }
+  },
+})
+
+const deviceFilterOptions = computed(() => [
+  { label: 'Unassociated', value: 'unassociated' },
+  ...devices.value.map(d => ({ label: d.name, value: d.id })),
+])
+
+function deviceFilterOptionMatch(input: string, option: { label: string }): boolean {
+  return option.label.toLowerCase().includes(input.toLowerCase())
+}
+
+// Panel is remounted fresh (v-else-if) whenever App.vue switches back to
+// this view, so the initial value is already seeded above; this watcher
+// only covers the case where the panel is already mounted and a new
+// device filter arrives (e.g. clicking "View Traffic" for a different
+// device while already on the Network view) — not `immediate`, since that
+// would double-fire alongside onMounted's own load().
+watch(() => props.initialDeviceId, (id) => {
+  if (id != null) {
+    filters.unassociated = undefined
+    filters.deviceId = id
+    applyFilters()
+  }
+})
+
 let poll: ReturnType<typeof setInterval> | null = null
+
+let ws: WebSocket | null = null
+let wsTimer: ReturnType<typeof setTimeout> | null = null
+const LIVE_BUFFER_LIMIT = 1500 // UI-only cap; backend's 10,000-packet buffer is untouched
 
 const isRunning = computed(
   () => status.value?.state === 'running',
@@ -130,6 +185,14 @@ function serviceColor(
       return 'geekblue'
     default:
       return 'default'
+  }
+}
+
+async function loadDevices(): Promise<void> {
+  try {
+    devices.value = await api.devices.list()
+  } catch {
+    // Device filter options just stay empty — not fatal to packet capture.
   }
 }
 
@@ -188,7 +251,6 @@ async function stopCapture(): Promise<void> {
 
   try {
     status.value = await api.packetCapture.stop()
-    await loadPackets()
     message.success('Packet capture stopped')
   } catch (e: unknown) {
     message.error(
@@ -197,6 +259,46 @@ async function stopCapture(): Promise<void> {
   } finally {
     actionLoading.value = null
   }
+}
+
+function wsConnect(): void {
+  if (ws) return
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  ws = new WebSocket(
+    `${proto}//${location.host}/packet-capture/stream?token=${encodeURIComponent(authToken.value ?? '')}`,
+  )
+  ws.onmessage = (e) => handleLivePacket(JSON.parse(e.data) as ProtocolPacket)
+  ws.onclose = () => {
+    ws = null
+    if (authToken.value && isRunning.value) wsTimer = setTimeout(wsConnect, 3000)
+  }
+  ws.onerror = () => ws?.close()
+}
+
+function wsDisconnect(): void {
+  if (wsTimer) {
+    clearTimeout(wsTimer)
+    wsTimer = null
+  }
+  ws?.close()
+  ws = null
+}
+
+function handleLivePacket(packet: ProtocolPacket): void {
+  // Live packets can't be reliably matched against a device filter -- only
+  // I-Am/directed-Who-Is/device-object packets get simulator_device_*
+  // resolved at all. Skip appending while one is active rather than
+  // showing wrong rows; Refresh still works normally.
+  if (filters.deviceId !== undefined || filters.unassociated) return
+
+  if (filters.direction && packet.direction !== filters.direction) return
+  if (filters.sourceIp && packet.source_ip !== filters.sourceIp) return
+  if (filters.destinationIp && packet.destination_ip !== filters.destinationIp) return
+  if (filters.service && packet.service_name !== filters.service) return
+
+  packets.value.unshift(packet)
+  if (packets.value.length > LIVE_BUFFER_LIMIT) packets.value.length = LIVE_BUFFER_LIMIT
+  // total.value is intentionally left untouched -- stays REST-authoritative.
 }
 
 function confirmClear(): void {
@@ -273,6 +375,8 @@ function clearFilters(): void {
   filters.service = undefined
   filters.sourceIp = undefined
   filters.destinationIp = undefined
+  filters.deviceId = undefined
+  filters.unassociated = undefined
   filters.offset = 0
 
   void loadPackets()
@@ -835,6 +939,14 @@ const columns: TableColumnsType<ProtocolPacket> = [
     sortDirections: ['ascend', 'descend'],
   },
   {
+    title: 'Device',
+    key: 'device',
+    width: 170,
+    sorter: (a, b) =>
+      compareText(a.simulator_device_name, b.simulator_device_name),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
     title: 'BVLC',
     dataIndex: 'bvlc_function',
     key: 'bvlc',
@@ -862,19 +974,27 @@ const columns: TableColumnsType<ProtocolPacket> = [
   }
 ]
 
+watch(isRunning, (running, wasRunning) => {
+  if (running) {
+    wsConnect()
+  } else {
+    wsDisconnect()
+    if (wasRunning) void loadPackets() // one authoritative resync when capture stops (any tab)
+  }
+}, { immediate: true })
+
 onMounted(async () => {
+  void loadDevices()
   await load()
 
   poll = setInterval(async () => {
     await loadStatus()
-
-    if (isRunning.value) {
-      await loadPackets()
-    }
   }, 2500)
 })
 
 onUnmounted(() => {
+  wsDisconnect()
+
   if (poll) {
     clearInterval(poll)
     poll = null
@@ -893,74 +1013,10 @@ onUnmounted(() => {
         >
           {{ isRunning ? 'Capturing' : 'Stopped' }}
         </a-tag>
-
-    
-      </div>
-
-      <div class="toolbar">
-        <a-button
-          size="small"
-          type="primary"
-          :disabled="isRunning"
-          :loading="actionLoading === 'start'"
-          @click="startCapture"
-        >
-          <template #icon>
-            <CaretRightOutlined />
-          </template>
-          Start
-        </a-button>
-
-        <a-button
-          size="small"
-          :disabled="!isRunning"
-          :loading="actionLoading === 'stop'"
-          @click="stopCapture"
-        >
-          <template #icon>
-            <PauseOutlined />
-          </template>
-          Stop
-        </a-button>
-
-        <a-button
-          size="small"
-          danger
-          :disabled="!status?.packets_stored"
-          :loading="actionLoading === 'clear'"
-          @click="confirmClear"
-        >
-          <template #icon>
-            <ClearOutlined />
-          </template>
-          Clear
-        </a-button>
-
-        <a-button
-          size="small"
-          :disabled="!status?.packets_stored"
-          :loading="actionLoading === 'export'"
-          @click="exportPcap"
-        >
-          <template #icon>
-            <DownloadOutlined />
-          </template>
-          Export PCAP
-        </a-button>
-
-        <a-button
-          size="small"
-          :loading="loading"
-          @click="load"
-        >
-          <template #icon>
-            <ReloadOutlined />
-          </template>
-        </a-button>
       </div>
     </div>
 
-    
+
     <div class="filters">
       <a-select
         v-model:value="filters.direction"
@@ -1003,6 +1059,17 @@ onUnmounted(() => {
         @press-enter="applyFilters"
       />
 
+      <a-select
+        v-model:value="deviceFilterValue"
+        allow-clear
+        show-search
+        placeholder="All Devices"
+        style="width:180px"
+        :options="deviceFilterOptions"
+        :filter-option="deviceFilterOptionMatch"
+        @change="applyFilters"
+      />
+
       <a-button
         size="small"
         type="primary"
@@ -1019,11 +1086,70 @@ onUnmounted(() => {
         Reset
       </a-button>
 
+      <a-typography-text
+        v-if="isRunning && (filters.deviceId !== undefined || filters.unassociated)"
+        type="secondary"
+        style="font-size:12px"
+      >
+        Live updates paused while a device filter is active — use Refresh
+      </a-typography-text>
+
       <div style="flex:1" />
 
-      <span class="result-count">
-        {{ total.toLocaleString() }} matching
-      </span>
+      <a-button
+        type="primary"
+        :disabled="isRunning"
+        :loading="actionLoading === 'start'"
+        @click="startCapture"
+      >
+        <template #icon>
+          <CaretRightOutlined />
+        </template>
+        Start
+      </a-button>
+
+      <a-button
+        :disabled="!isRunning"
+        :loading="actionLoading === 'stop'"
+        @click="stopCapture"
+      >
+        <template #icon>
+          <PauseOutlined />
+        </template>
+        Stop
+      </a-button>
+
+      <a-button
+        danger
+        :disabled="!status?.packets_stored"
+        :loading="actionLoading === 'clear'"
+        @click="confirmClear"
+      >
+        <template #icon>
+          <ClearOutlined />
+        </template>
+        Clear
+      </a-button>
+
+      <a-button
+        :disabled="!status?.packets_stored"
+        :loading="actionLoading === 'export'"
+        @click="exportPcap"
+      >
+        <template #icon>
+          <DownloadOutlined />
+        </template>
+        Export PCAP
+      </a-button>
+
+      <a-button
+        :loading="loading"
+        @click="load"
+      >
+        <template #icon>
+          <ReloadOutlined />
+        </template>
+      </a-button>
     </div>
 
     <a-table
@@ -1085,6 +1211,16 @@ onUnmounted(() => {
           </span>
         </template>
 
+        <template v-else-if="column.key === 'device'">
+          <span v-if="(record as CapturedPacket).simulator_device_name">
+            {{ (record as CapturedPacket).simulator_device_name }}
+            <template v-if="(record as CapturedPacket).simulator_object_name">
+              / {{ (record as CapturedPacket).simulator_object_name }}
+            </template>
+          </span>
+          <span v-else class="placeholder">—</span>
+        </template>
+
         <template v-else-if="column.key === 'bvlc'">
           {{
             (record as CapturedPacket).bvlc_function ?? '—'
@@ -1112,10 +1248,7 @@ onUnmounted(() => {
       <template #emptyText>
         <div class="empty-state">
           <div>No packets captured yet</div>
-          <div class="empty-hint">
-            Start capture, then use YABE or Niagara to send a
-            Who-Is request.
-          </div>
+          
         </div>
       </template>
     </a-table>
@@ -1298,7 +1431,24 @@ onUnmounted(() => {
       </a-descriptions-item>
           </a-descriptions>
 
-      
+          <template v-if="selectedPacket.simulator_device_id != null">
+            <div class="protocol-tree-header">
+              Simulator
+            </div>
+
+            <a-descriptions bordered size="small" :column="1">
+              <a-descriptions-item label="Device">
+                {{ selectedPacket.simulator_device_name }}
+              </a-descriptions-item>
+
+              <a-descriptions-item
+                v-if="selectedPacket.simulator_object_name"
+                label="Object"
+              >
+                {{ selectedPacket.simulator_object_name }}
+              </a-descriptions-item>
+            </a-descriptions>
+          </template>
 
           <div class="hex-header">
             Raw BACnet/IP payload
@@ -1365,13 +1515,6 @@ onUnmounted(() => {
   font-size: 16px;
 }
 
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
 .status-strip {
   display: flex;
   flex-wrap: wrap;
@@ -1405,11 +1548,6 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
-}
-
-.result-count {
-  color: var(--text-placeholder);
-  font-size: 12px;
 }
 
 .monospace {

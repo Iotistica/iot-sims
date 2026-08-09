@@ -92,6 +92,50 @@ def upsert_semantic_entity(
         location_id=location_id,
         local_slug=local_slug,
     )
+
+    # semantic_entities also carries partial unique indexes on object_id
+    # (one point entity per object) and location_id (one entity per real
+    # location) -- independent of semantic_key, which embeds brick_class
+    # and therefore changes whenever the class does. Resolve those FKs to
+    # an existing row FIRST, same as mirror.py's direct-sync path, so
+    # re-classifying an already-migrated point/location updates that row
+    # in place instead of colliding with it: an INSERT whose semantic_key
+    # doesn't match the existing row's key (e.g. migrate_ahu_fan_aliases
+    # rewriting a point from an old alias brick_class to the canonical
+    # one) would otherwise hit the object_id/location_id unique index
+    # directly, bypassing the ON CONFLICT(semantic_key) clause below and
+    # raising IntegrityError instead of updating.
+    existing_id: int | None = None
+    if entity_kind == "point" and object_id is not None:
+        row = conn.execute(
+            "SELECT id FROM semantic_entities WHERE entity_kind='point' AND object_id=?",
+            (object_id,),
+        ).fetchone()
+        existing_id = row["id"] if row else None
+    elif entity_kind == "location" and location_id is not None:
+        row = conn.execute(
+            "SELECT id FROM semantic_entities WHERE entity_kind='location' AND location_id=?",
+            (location_id,),
+        ).fetchone()
+        existing_id = row["id"] if row else None
+
+    if existing_id is not None:
+        conn.execute(
+            """
+            UPDATE semantic_entities SET
+                name=?, local_slug=?, semantic_key=?, brick_class=?,
+                entity_kind=?, device_id=?, object_id=?, location_id=?
+            WHERE id=?
+            """,
+            (name, local_slug, semantic_key, brick_class, entity_kind,
+             device_id, object_id, location_id, existing_id),
+        )
+        return dict(
+            conn.execute(
+                "SELECT * FROM semantic_entities WHERE id=?", (existing_id,)
+            ).fetchone()
+        )
+
     conn.execute(
         """
         INSERT INTO semantic_entities

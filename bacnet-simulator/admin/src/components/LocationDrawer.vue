@@ -116,7 +116,7 @@ function doDelete() {
         />
       </a-form-item>
 
-      <a-form-item label="Brick Class" help="Semantic classification (Brick is the source of truth — assigning it here automatically creates/updates this location's semantic entity, no separate step needed in the Semantic Model panel).">
+      <a-form-item label="Semantic Type" help="Describes what this location represents in the building.">
         <a-select
           v-model:value="form.kind"
           show-search

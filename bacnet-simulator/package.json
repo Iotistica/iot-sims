@@ -1,4 +1,7 @@
 {
   "name": "bacnet-simulator",
-  "version": "1.0.103"
+  "version": "1.0.103",
+  "dependencies": {
+    "cytoscape": "^3.34.0"
+  }
 }

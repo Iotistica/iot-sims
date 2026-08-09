@@ -20,7 +20,7 @@ import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 
 Direction = Literal["inbound", "outbound"]
@@ -216,9 +216,17 @@ class PacketCapture:
         self._outbound_count = 0
         self._bytes_captured = 0
 
+        self._on_packet: Optional[Callable[[CapturedPacket], None]] = None
+
     @property
     def running(self) -> bool:
         return self._running
+
+    def set_packet_listener(
+        self,
+        listener: Optional[Callable[[CapturedPacket], None]],
+    ) -> None:
+        self._on_packet = listener
 
     def start(self, *, clear_existing: bool = True) -> dict:
         with self._lock:
@@ -291,6 +299,7 @@ class PacketCapture:
         offset: int = 0,
         limit: int = 100,
         newest_first: bool = True,
+        packet_hook: Optional[Callable[[dict], bool]] = None,
     ) -> dict:
         limit = max(1, min(limit, 250))
         offset = max(0, offset)
@@ -329,6 +338,18 @@ class PacketCapture:
         decoded_packets = enrich_packet_context(
                 decoded_packets
             )
+
+        if packet_hook is not None:
+            # Applied AFTER context enrichment (so a hook can see forward-
+            # filled object/property fields) and BEFORE pagination (so a
+            # hook that also filters -- e.g. simulator device association --
+            # narrows the set before offset/limit slicing, keeping `total`
+            # and page contents correct). May mutate each packet dict in
+            # place (e.g. to attach extra fields); returning False excludes
+            # that packet from the result entirely.
+            decoded_packets = [
+                packet for packet in decoded_packets if packet_hook(packet)
+            ]
 
         page = decoded_packets[offset : offset + limit]
 
@@ -459,6 +480,10 @@ class PacketCapture:
                     self._inbound_count += 1
                 else:
                     self._outbound_count += 1
+
+            listener = self._on_packet
+            if listener is not None:
+                listener(packet)
 
         except Exception:
             # Packet capture must never interrupt BACnet traffic.
@@ -598,6 +623,161 @@ def _context_tag_kind(
         kind = "primitive"
 
     return tag_number, kind
+
+
+def _read_application_tag_header(
+    payload: bytes,
+    offset: int,
+) -> tuple[int, int, int]:
+    """
+    Decode the tag byte of a BACnet application-tagged (not context-tagged)
+    primitive value.
+
+    Returns (tag_number, length, value_offset) -- value_offset points at the
+    start of the value bytes, the caller reads `length` bytes from there.
+    Who-Is/I-Am parameters are application-tagged (unlike ReadProperty/
+    WriteProperty's context-tagged parameters, which _read_context_unsigned
+    above already handles), so this is a separate primitive reader.
+    """
+    if offset >= len(payload):
+        raise ValueError("Missing application tag")
+
+    first = payload[offset]
+    tag_number = first >> 4
+    context_specific = bool(first & 0x08)
+
+    if context_specific:
+        raise ValueError(
+            f"Expected application tag, found context tag 0x{first:02x}"
+        )
+
+    length_value_type = first & 0x07
+    offset += 1
+
+    if length_value_type == 5:
+        if offset >= len(payload):
+            raise ValueError("Truncated extended application-tag length")
+
+        length = payload[offset]
+        offset += 1
+
+        if length == 254:
+            if offset + 2 > len(payload):
+                raise ValueError("Truncated 16-bit application-tag length")
+            length = int.from_bytes(payload[offset:offset + 2], "big")
+            offset += 2
+        elif length == 255:
+            if offset + 4 > len(payload):
+                raise ValueError("Truncated 32-bit application-tag length")
+            length = int.from_bytes(payload[offset:offset + 4], "big")
+            offset += 4
+    else:
+        length = length_value_type
+
+    if offset + length > len(payload):
+        raise ValueError(
+            f"Truncated application-tagged value (tag {tag_number})"
+        )
+
+    return tag_number, length, offset
+
+
+def _read_application_unsigned(
+    payload: bytes,
+    offset: int,
+    expected_tag: int,
+) -> tuple[int, int]:
+    tag_number, length, value_offset = _read_application_tag_header(
+        payload, offset
+    )
+
+    if tag_number != expected_tag:
+        raise ValueError(
+            f"Expected application tag {expected_tag}, found {tag_number}"
+        )
+
+    value = int.from_bytes(
+        payload[value_offset:value_offset + length], "big"
+    )
+
+    return value, value_offset + length
+
+
+def _decode_i_am(payload: bytes, offset: int) -> dict:
+    """
+    Decode I-Am-Request parameters: device object identifier,
+    max-apdu-length-accepted, segmentation-supported, vendor-id -- all
+    application-tagged primitives, in this fixed order per the standard.
+
+    I-Am is always sent BY one specific device, so its device identifier is
+    direct, reliable evidence for simulator device association (unlike
+    Who-Is, whose range parameters are optional and often a broadcast).
+    """
+    tag_number, length, value_offset = _read_application_tag_header(
+        payload, offset
+    )
+
+    if tag_number != 12 or length != 4:
+        raise ValueError(
+            "I-Am device identifier is not a 4-byte object identifier"
+        )
+
+    device_info = decode_object_identifier(
+        payload[value_offset:value_offset + 4]
+    )
+    offset = value_offset + 4
+
+    max_apdu, offset = _read_application_unsigned(payload, offset, 2)
+    segmentation, offset = _read_application_unsigned(payload, offset, 9)
+    vendor_id, offset = _read_application_unsigned(payload, offset, 2)
+
+    return {
+        "service": {
+            "operation": "I-Am",
+            "device_instance": device_info["object_instance"],
+            "device_identifier": device_info["object_identifier"],
+            "max_apdu_length_accepted": max_apdu,
+            "segmentation_supported": segmentation,
+            "vendor_id": vendor_id,
+        },
+        "summary": {
+            "operation": "I-Am",
+            "device_instance": device_info["object_instance"],
+        },
+    }
+
+
+def _decode_who_is(payload: bytes, offset: int) -> dict:
+    """
+    Decode Who-Is-Request's OPTIONAL device-instance-range parameters.
+
+    Absent (offset already at the end of the payload) means a broadcast
+    "who is anybody" query -- not evidence of any single device, left
+    unassociated by the caller. When present, low and high limits are
+    always sent together; low == high means a single targeted device
+    instance, which IS usable evidence.
+    """
+    if offset >= len(payload):
+        return {
+            "service": {"operation": "Who-Is"},
+            "summary": {"operation": "Who-Is"},
+        }
+
+    low, offset = _read_application_unsigned(payload, offset, 2)
+    high, offset = _read_application_unsigned(payload, offset, 2)
+
+    return {
+        "service": {
+            "operation": "Who-Is",
+            "device_instance_range_low": low,
+            "device_instance_range_high": high,
+        },
+        "summary": {
+            "operation": "Who-Is",
+            "device_instance_range_low": low,
+            "device_instance_range_high": high,
+        },
+    }
 
 
 def _property_name(property_code: int) -> str:
@@ -1124,7 +1304,7 @@ def _decode_unconfirmed_request(
         f"Unconfirmed-Service-{service_choice}",
     )
 
-    return {
+    result = {
         "service_name": operation,
         "apdu": {
             "type_code": 1,
@@ -1139,6 +1319,20 @@ def _decode_unconfirmed_request(
             "operation": operation,
         },
     }
+
+    cursor = offset + 2
+
+    if service_choice == 0:
+        decoded = _decode_i_am(payload, cursor)
+        result["service"].update(decoded["service"])
+        result["summary"].update(decoded["summary"])
+
+    elif service_choice == 8:
+        decoded = _decode_who_is(payload, cursor)
+        result["service"].update(decoded["service"])
+        result["summary"].update(decoded["summary"])
+
+    return result
 
 
 def _decode_apdu(

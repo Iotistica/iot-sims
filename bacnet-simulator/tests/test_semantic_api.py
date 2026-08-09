@@ -79,6 +79,51 @@ def test_invalid_entity_kind_brick_class_combo_rejected(client, database):
     assert resp.status_code == 400
 
 
+def test_duplicate_entity_returns_409_not_500(client, database):
+    """Reproduces a real production crash: Database.create_semantic_entity()
+    did a plain INSERT with no conflict handling, and the router only
+    caught ValueError (from validate_semantic_entity) -- a semantic_key
+    collision (same device/object/location + brick_class + local_slug as
+    an existing entity) raised an unhandled sqlite3.IntegrityError all the
+    way out to a 500, instead of the 409 every other create endpoint in
+    this codebase returns for a duplicate (see devices.py's create_device)."""
+    device_id = _make_device(database)
+
+    resp = client.post(
+        "/semantic-entities",
+        json={"name": "AHU-1", "brick_class": "Air_Handling_Unit", "entity_kind": "equipment", "device_id": device_id},
+    )
+    assert resp.status_code == 201
+
+    # Same device_id + brick_class + no local_slug -> identical semantic_key.
+    resp2 = client.post(
+        "/semantic-entities",
+        json={"name": "AHU-1 (duplicate)", "brick_class": "Air_Handling_Unit", "entity_kind": "equipment", "device_id": device_id},
+    )
+    assert resp2.status_code == 409
+    assert "already exists" in resp2.json()["detail"]
+
+
+def test_update_causing_key_collision_returns_409_not_500(client, database):
+    device_id = _make_device(database)
+
+    client.post(
+        "/semantic-entities",
+        json={"name": "AHU-1", "brick_class": "Air_Handling_Unit", "entity_kind": "equipment", "device_id": device_id},
+    )
+    b = client.post(
+        "/semantic-entities",
+        json={"name": "AHU-1 alt", "brick_class": "Pump", "entity_kind": "equipment", "device_id": device_id, "local_slug": "alt"},
+    ).json()
+
+    # Update b so its derived key would collide with the existing entity's.
+    resp = client.put(
+        f"/semantic-entities/{b['id']}",
+        json={"name": "AHU-1 renamed", "brick_class": "Air_Handling_Unit", "entity_kind": "equipment", "device_id": device_id},
+    )
+    assert resp.status_code == 409
+
+
 def test_relationship_create_traverse_delete_cascade(client, database):
     device_id = _make_device(database)
 

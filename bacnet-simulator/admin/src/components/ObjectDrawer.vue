@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type { SimObject, Meta, NotificationClass, PriorityArrayInfo } from '../types'
@@ -33,6 +33,7 @@ const DEFAULT_PARAMS: Record<string, any> = {
 }
 
 const loading = ref(false)
+const deleting = ref(false)
 const form = reactive({
   object_type: 'analog-input',
   object_instance: 1,
@@ -318,6 +319,30 @@ async function save() {
     loading.value = false
   }
 }
+
+function doDelete() {
+  if (!props.object || !props.deviceId) return
+  const obj = props.object
+  const deviceId = props.deviceId
+  Modal.confirm({
+    title: `Delete "${obj.name}"?`,
+    okType: 'danger',
+    okText: 'Delete',
+    onOk: async () => {
+      deleting.value = true
+      try {
+        await api.objects.del(deviceId, obj.id)
+        message.success('Object deleted')
+        emit('update:open', false)
+        emit('saved')
+      } catch (e: unknown) {
+        message.error((e as Error).message ?? 'Failed to delete object')
+      } finally {
+        deleting.value = false
+      }
+    },
+  })
+}
 </script>
 
 <template>
@@ -347,7 +372,7 @@ async function save() {
         <a-input v-model:value="form.name" placeholder="Supply Temp" />
       </a-form-item>
 
-      <a-form-item label="Brick Class" help="Semantic classification (Brick is the source of truth — assigning it here automatically creates/updates this point's semantic entity, no separate step needed in the Semantic Model panel).">
+      <a-form-item label="Semantic Type" help="Describes what this point represents in the building.">
         <a-select
           v-model:value="form.point_type"
           show-search
@@ -777,12 +802,16 @@ async function save() {
     </a-form>
 
     <template #footer>
-      <a-space>
-        <a-button @click="emit('update:open', false)">Cancel</a-button>
-        <a-button type="primary" :loading="loading" @click="save">
-          {{ object ? 'Save' : 'Create' }}
-        </a-button>
-      </a-space>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <a-button v-if="object && !draftMode" danger :loading="deleting" @click="doDelete">Delete</a-button>
+        <div v-else />
+        <a-space>
+          <a-button @click="emit('update:open', false)">Cancel</a-button>
+          <a-button type="primary" :loading="loading" @click="save">
+            {{ object ? 'Save' : 'Create' }}
+          </a-button>
+        </a-space>
+      </div>
     </template>
   </a-drawer>
 </template>

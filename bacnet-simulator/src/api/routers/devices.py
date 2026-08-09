@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from typing import Any, Callable, MutableMapping
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from ...bacnet.schemas import DeviceCreate, DeviceUpdate
+from ...bacnet.schemas import DeviceCreate, DeviceUpdate, EnergyModelConfigCreate
+from ...energy.registry import energy_model_config_to_api, validate_energy_model_parameters
 
 
 router = APIRouter(
@@ -347,6 +349,27 @@ async def delete_device(
 ) -> Response:
     database = get_database(request)
 
+    device = await asyncio.to_thread(
+        database.get_device,
+        device_id,
+    )
+
+    if device is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Device not found",
+        )
+
+    log_event(
+        request,
+        device_id,
+        "warn",
+        (
+            f"Device removed: {device['name']} "
+            f"(instance {device['device_instance']})"
+        ),
+    )
+
     deleted = await asyncio.to_thread(
         database.delete_device,
         device_id,
@@ -362,3 +385,86 @@ async def delete_device(
     schedule_engine_reload(request)
 
     return Response(status_code=204)
+
+
+# ─── Energy model configs ───────────────────────────────────────────────────
+
+@router.get("/{device_id}/energy-models")
+async def list_device_energy_models(
+    device_id: int,
+    request: Request,
+):
+    database = get_database(request)
+
+    device = await asyncio.to_thread(
+        database.get_device,
+        device_id,
+    )
+
+    if device is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Device not found",
+        )
+
+    rows = await asyncio.to_thread(
+        database.get_energy_model_configs,
+        device_id,
+    )
+
+    return [energy_model_config_to_api(row) for row in rows]
+
+
+@router.post(
+    "/{device_id}/energy-models",
+    status_code=201,
+)
+async def create_device_energy_model(
+    device_id: int,
+    body: EnergyModelConfigCreate,
+    request: Request,
+):
+    database = get_database(request)
+
+    device = await asyncio.to_thread(
+        database.get_device,
+        device_id,
+    )
+
+    if device is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Device not found",
+        )
+
+    try:
+        validate_energy_model_parameters(body.model_type, body.parameters)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # device_id + model_type + instance_key is the composite identity
+    # (UNIQUE constraint) -- upsert so POSTing the same tuple again updates
+    # it in place rather than raising a duplicate-key error. Multiple
+    # instances of the same model_type on one device are allowed by
+    # design (e.g. scenario-comparison chiller configs), disambiguated by
+    # instance_key ("Model Name" in the UI) -- no cardinality restriction.
+    row = await asyncio.to_thread(
+        database.upsert_energy_model_config,
+        device_id,
+        body.model_type,
+        json.dumps(body.parameters),
+        body.enabled,
+        body.instance_key,
+    )
+
+    log_event(
+        request,
+        device_id,
+        "info",
+        (
+            f"Energy model configured: {body.model_type} "
+            f"({body.instance_key})"
+        ),
+    )
+
+    return energy_model_config_to_api(row)

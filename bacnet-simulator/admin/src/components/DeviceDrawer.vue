@@ -262,7 +262,7 @@ function doDelete() {
 
 <template>
   <a-drawer
-    :title="device ? 'Edit Device' : 'Add Device'"
+    :title="device ? 'Edit Equipment' : 'Add Equipment'"
     :open="open"
     width="440"
     @close="emit('update:open', false)"
@@ -296,7 +296,7 @@ function doDelete() {
         />
       </a-form-item>
 
-      <a-form-item label="Brick Class" help="Semantic classification (Brick is the source of truth — assigning it here automatically creates/updates this device's semantic entity, no separate step needed in the Semantic Model panel).">
+      <a-form-item label="Semantic Type" help="Describes what this device represents in the building.">
         <a-select
           v-model:value="form.equipment_type"
           show-search
@@ -323,7 +323,7 @@ function doDelete() {
 
       <a-row :gutter="12">
         <a-col :span="12">
-          <a-form-item label="Vendor Name">
+          <a-form-item label="Manufacturer">
             <a-auto-complete
               v-model:value="form.vendor_name"
               :options="vendorOptions"
@@ -335,7 +335,7 @@ function doDelete() {
           </a-form-item>
         </a-col>
         <a-col :span="12">
-          <a-form-item label="Model Name">
+          <a-form-item label="Controller Model">
             <!-- a-select when vendor is in BTL list (click-to-open dropdown) -->
             <a-select
               v-if="modelOptions.length"
@@ -379,7 +379,7 @@ function doDelete() {
       </div>
 
       <a-collapse ghost style="margin-top:16px">
-        <a-collapse-panel key="device-info" header="Device Info (advanced)">
+        <a-collapse-panel key="device-info" header="BACnet Device Info (advanced)">
           <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
             Informational/cosmetic Device object properties some BACnet clients check — not enforced by the simulator itself.
           </div>

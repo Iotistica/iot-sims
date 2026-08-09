@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import { PlusOutlined, EditOutlined, DeleteOutlined, ThunderboltOutlined, ClearOutlined, UnorderedListOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
-import type { Device, SimObject, TrendLog, TrendLogRecord } from '../types'
+import type { Device, SimObject, TrendLog, TrendLogRecord, HistoryPoint } from '../types'
+import { formatPresentValue } from '../format'
+import HistoryChart from './HistoryChart.vue'
 
 const props = defineProps<{ open: boolean; device: Device | null }>()
 const emit = defineEmits<{ 'update:open': [v: boolean] }>()
@@ -202,6 +204,44 @@ async function loadRecords() {
     recordsLoading.value = false
   }
 }
+
+// ── Chart tab ────────────────────────────────────────────────────────────────
+// Feeds the SAME stored trend log records the Table tab shows into the
+// reusable HistoryChart component -- a different data source than a
+// point's normal recent-history buffer (which App.vue's point History
+// modal uses), sharing only the chart rendering itself.
+
+const recordsMonitoredObject = computed<SimObject | null>(() => {
+  if (!recordsFor.value) return null
+  return allObjects.value.find(o => o.id === recordsFor.value!.monitored_object_id) ?? null
+})
+
+function recordValueToNumber(raw: string): number {
+  if (raw === 'True') return 1
+  if (raw === 'False') return 0
+  return Number(raw)
+}
+
+function recordTimestampToUnixSeconds(ts: string): number {
+  // SQLite's datetime('now') produces "YYYY-MM-DD HH:MM:SS" (UTC, no
+  // timezone suffix) -- not reliably parsed as-is by Date(), so normalize
+  // to an ISO 8601 UTC string first.
+  const iso = ts.includes('T') ? ts : `${ts.replace(' ', 'T')}Z`
+  return new Date(iso).getTime() / 1000
+}
+
+const chartData = computed<HistoryPoint[]>(() =>
+  [...records.value]
+    .reverse() // records are loaded newest-first for the table; the chart needs oldest-first
+    .map(r => ({ ts: recordTimestampToUnixSeconds(r.ts), value: recordValueToNumber(r.value) }))
+    .filter(p => Number.isFinite(p.ts) && Number.isFinite(p.value)),
+)
+
+function chartFormatValue(v: number): string {
+  return recordsMonitoredObject.value
+    ? formatPresentValue(recordsMonitoredObject.value.object_type, v)
+    : v.toFixed(2)
+}
 </script>
 
 <template>
@@ -234,7 +274,7 @@ async function loadRecords() {
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
-              <div style="font-weight:600;font-size:14px">{{ tl.name }}</div>
+              <div style="font-weight:600;font-size:14px;color:var(--text-primary)">{{ tl.name }}</div>
               <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 Monitors <b>{{ monitoredLabel(tl) }}</b> ·
                 {{ tl.logging_type === 'polled' ? `every ${tl.log_interval}s`
@@ -342,7 +382,7 @@ async function loadRecords() {
   <a-modal
     :open="recordsOpen"
     :title="recordsFor ? `Records — ${recordsFor.name}` : 'Records'"
-    :width="640"
+    :width="700"
     :footer="null"
     @cancel="recordsOpen = false"
   >
@@ -352,17 +392,29 @@ async function loadRecords() {
         Refresh
       </a-button>
     </div>
-    <a-table
-      :columns="recordColumns"
-      :data-source="records"
-      :loading="recordsLoading"
-      row-key="id"
-      size="small"
-      :pagination="{ pageSize: 20 }"
-    >
-      <template #emptyText>
-        <div style="padding:24px;color:var(--text-placeholder)">No records yet</div>
-      </template>
-    </a-table>
+    <a-tabs default-active-key="chart">
+      <a-tab-pane key="chart" tab="Chart">
+        <HistoryChart
+          :data="chartData"
+          :loading="recordsLoading"
+          :format-value="chartFormatValue"
+          empty-label="Not enough records yet to chart"
+        />
+      </a-tab-pane>
+      <a-tab-pane key="table" tab="Table">
+        <a-table
+          :columns="recordColumns"
+          :data-source="records"
+          :loading="recordsLoading"
+          row-key="id"
+          size="small"
+          :pagination="{ pageSize: 20 }"
+        >
+          <template #emptyText>
+            <div style="padding:24px;color:var(--text-placeholder)">No records yet</div>
+          </template>
+        </a-table>
+      </a-tab-pane>
+    </a-tabs>
   </a-modal>
 </template>

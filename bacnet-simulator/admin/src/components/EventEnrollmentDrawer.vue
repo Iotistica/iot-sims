@@ -219,7 +219,7 @@ function confirmDelete(ee: EventEnrollment) {
         >
           <div style="display:flex;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
-              <div style="font-weight:600;font-size:14px">{{ ee.name }}</div>
+              <div style="font-weight:600;font-size:14px;color:var(--text-primary)">{{ ee.name }}</div>
               <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
                 Monitors <b>{{ monitoredLabel(ee) }}</b> · {{ ee.algorithm }}
               </div>

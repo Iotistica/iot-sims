@@ -70,6 +70,77 @@ def test_semantic_lookup_works_after_import(seeded_database):
     assert resolver.get_lighting_zone_entity(gw1_id, "zone-a") is None
 
 
+def test_energy_model_configs_survive_project_reload(seeded_database):
+    """energy_model_configs was never part of save_project()/load_project()'s
+    exported JSON, and device_id ON DELETE CASCADEs -- so every project
+    reload silently deleted the seeded Chiller-Plant's energy model and
+    never recreated it, leaving Utilities/energy history permanently empty
+    for that project. See save_project()/load_project()."""
+    devices = seeded_database.get_devices()
+    old_chiller_id = next(d["id"] for d in devices if d["device_instance"] == 1001)
+
+    configs_before = seeded_database.get_enabled_energy_model_configs()
+    assert any(
+        c["device_id"] == old_chiller_id and c["model_type"] == "chiller"
+        for c in configs_before
+    )
+
+    project = seeded_database.save_project("Round-trip Test", "")
+    seeded_database.load_project(project["id"])
+
+    devices = seeded_database.get_devices()
+    new_chiller_id = next(d["id"] for d in devices if d["device_instance"] == 1001)
+    assert new_chiller_id != old_chiller_id  # ids were actually reassigned
+
+    chiller_configs = [
+        c for c in seeded_database.get_enabled_energy_model_configs()
+        if c["model_type"] == "chiller"
+    ]
+    assert len(chiller_configs) == 1
+    assert chiller_configs[0]["device_id"] == new_chiller_id
+
+
+def test_energy_model_configs_no_duplicates_on_repeated_reload(seeded_database):
+    project = seeded_database.save_project("Round-trip Test", "")
+
+    seeded_database.load_project(project["id"])
+    seeded_database.load_project(project["id"])
+    seeded_database.load_project(project["id"])
+
+    chiller_configs = [
+        c for c in seeded_database.get_enabled_energy_model_configs()
+        if c["model_type"] == "chiller"
+    ]
+    assert len(chiller_configs) == 1
+
+
+def test_energy_model_configs_preserve_instance_key_on_reload(seeded_database):
+    """Multi-instance-key configs (e.g. lighting zone-a/zone-b on one DALI
+    gateway) must survive a project reload with their instance_key intact,
+    device_id remapped correctly, and without colliding with each other."""
+    devices = seeded_database.get_devices()
+    old_gateway_id = next(d["id"] for d in devices if d["device_instance"] == 1501)
+
+    seeded_database.upsert_energy_model_config(
+        old_gateway_id, "lighting", '{"rated_power_kw": 3.0}', True, instance_key="zone-a",
+    )
+    seeded_database.upsert_energy_model_config(
+        old_gateway_id, "lighting", '{"rated_power_kw": 2.5}', True, instance_key="zone-b",
+    )
+
+    project = seeded_database.save_project("Round-trip Test", "")
+    seeded_database.load_project(project["id"])
+
+    devices = seeded_database.get_devices()
+    new_gateway_id = next(d["id"] for d in devices if d["device_instance"] == 1501)
+    assert new_gateway_id != old_gateway_id
+
+    lighting_configs = seeded_database.get_energy_model_configs(new_gateway_id)
+    lighting_configs = [c for c in lighting_configs if c["model_type"] == "lighting"]
+    assert {c["instance_key"] for c in lighting_configs} == {"zone-a", "zone-b"}
+    assert all(c["device_id"] == new_gateway_id for c in lighting_configs)
+
+
 def test_no_semantic_key_collisions_on_repeated_reload(seeded_database):
     project = seeded_database.save_project("Round-trip Test", "")
 

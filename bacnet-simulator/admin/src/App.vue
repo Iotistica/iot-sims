@@ -22,13 +22,16 @@ import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
+import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
+import HistoryChart from './components/HistoryChart.vue'
+import GridFilterToolbar from './components/GridFilterToolbar.vue'
 
 import type { Device, SimObject, Meta, Health, HistoryPoint, Location } from './types'
-import { api } from './api'
+import { api, projectDirty } from './api'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
 import { formatPresentValue } from './format'
-import { ClusterOutlined, EditOutlined, DeleteOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined, PartitionOutlined } from '@ant-design/icons-vue'
+import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
 
 const activeView = ref<
   'devices' |
@@ -44,7 +47,7 @@ const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices:
 const simActionLoading = ref(false)
 const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a', paused: '#faad14', stopped: '#ff4d4f' }
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
-const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], point_types: [], location_kinds: [], semantic_predicates: [], network_address: null })
+const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], point_types: [], location_kinds: [], semantic_predicates: [], energy_model_types: [], network_address: null })
 const devices = ref<Device[]>([])
 const locations = ref<Location[]>([])
 const deviceSearch = ref('')
@@ -345,6 +348,19 @@ function openCalendars(d: Device) {
   calendarDrawerOpen.value = true
 }
 
+const energyModelDrawerOpen = ref(false)
+const energyModelDevice = ref<Device | null>(null)
+function openEnergyModel(d: Device) {
+  energyModelDevice.value = d
+  energyModelDrawerOpen.value = true
+}
+
+const packetCaptureDeviceFilter = ref<number | null>(null)
+function viewTraffic(d: Device) {
+  packetCaptureDeviceFilter.value = d.id
+  activeView.value = 'packet-capture'
+}
+
 function importDeviceEde(d: Device) {
   Modal.confirm({
     title: `Import EDE into "${d.name}"?`,
@@ -372,23 +388,31 @@ async function onEdeImportFileChange(e: Event) {
 }
 
 // Project actions
+async function resetToNewProject() {
+  await Promise.allSettled(devices.value.map(d => api.devices.del(d.id)))
+  selectedDevice.value = null
+  objects.value = []
+  activeProjectId.value = null
+  activeProjectName.value = null
+  activeProjectDesc.value = ''
+  projectDirty.value = false
+  await loadDevices()
+  await loadHealth()
+  message.success('Ready — add your first device')
+}
+
 function newProject() {
+  if (!projectDirty.value) {
+    // Nothing unsaved to lose — proceed straight to a fresh project.
+    resetToNewProject()
+    return
+  }
   Modal.confirm({
     title: 'Start a new project?',
     content: 'Save the current setup as a project first if you want to keep it.',
     okText: 'Start Fresh',
     okType: 'danger',
-    async onOk() {
-      await Promise.allSettled(devices.value.map(d => api.devices.del(d.id)))
-      selectedDevice.value = null
-      objects.value = []
-      activeProjectId.value = null
-      activeProjectName.value = null
-      activeProjectDesc.value = ''
-      await loadDevices()
-      await loadHealth()
-      message.success('Ready — add your first device')
-    },
+    onOk: resetToNewProject,
   })
 }
 
@@ -403,6 +427,7 @@ async function openSave() {
     // Overwrite existing project directly — no dialog
     try {
       await api.projects.update(activeProjectId.value, activeProjectName.value!, activeProjectDesc.value)
+      projectDirty.value = false
       message.success(`"${activeProjectName.value}" saved`)
     } catch (e: unknown) {
       message.error((e as Error).message ?? 'Failed to save')
@@ -423,6 +448,7 @@ async function doSave() {
     activeProjectName.value = project.name
     activeProjectDesc.value = project.description
     saveModalOpen.value = false
+    projectDirty.value = false
     message.success(`"${project.name}" saved`)
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Failed to save')
@@ -435,6 +461,7 @@ async function onProjectLoaded(id: number, name: string, desc: string) {
   activeProjectId.value = id
   activeProjectName.value = name
   activeProjectDesc.value = desc
+  projectDirty.value = false
   await loadDevices()
   await loadLocations()
   selectedDevice.value = null
@@ -466,18 +493,6 @@ async function duplicateObject(obj: SimObject) {
   } catch (e: unknown) {
     message.error((e as Error).message)
   }
-}
-function deleteObject(obj: SimObject) {
-  Modal.confirm({
-    title: `Delete "${obj.name}"?`,
-    okType: 'danger',
-    okText: 'Delete',
-    onOk: async () => {
-      await api.objects.del(selectedDevice.value!.id, obj.id)
-      await loadObjects()
-      message.success('Object deleted')
-    },
-  })
 }
 async function toggleObjectEnabled(obj: SimObject) {
   const nextEnabled = obj.enabled ? 0 : 1
@@ -516,71 +531,9 @@ async function openHistory(obj: SimObject) {
   }
 }
 
-const CHART_W = 600
-const CHART_H = 192
-const CHART_PAD = { top: 16, right: 12, bottom: 30, left: 52 }
-
-function histSvgPoints(data: HistoryPoint[]): string {
-  if (data.length < 2) return ''
-  const vals = data.map(p => p.value)
-  const tss  = data.map(p => p.ts)
-  let minV = Math.min(...vals), maxV = Math.max(...vals)
-  if (minV === maxV) { minV -= 1; maxV += 1 }
-  const minT = tss[0], maxT = tss[tss.length - 1]
-  const w = CHART_W - CHART_PAD.left - CHART_PAD.right
-  const h = CHART_H - CHART_PAD.top  - CHART_PAD.bottom
-  return data.map(p => {
-    const x = CHART_PAD.left + ((p.ts - minT) / (maxT - minT)) * w
-    const y = CHART_PAD.top  + (1 - (p.value - minV) / (maxV - minV)) * h
-    return `${x.toFixed(1)},${y.toFixed(1)}`
-  }).join(' ')
-}
-
-function histStats(data: HistoryPoint[]) {
-  if (!data.length) return { min: 0, max: 0, avg: 0, current: 0 }
-  const vals = data.map(p => p.value)
-  const min = Math.min(...vals), max = Math.max(...vals)
-  const avg = vals.reduce((a, b) => a + b, 0) / vals.length
-  return { min, max, avg, current: vals[vals.length - 1] }
-}
-
 function histFmt(v: number, obj: SimObject | null): string {
   if (!obj) return v.toFixed(2)
   return formatPresentValue(obj.object_type, v)
-}
-
-function histYLabels(data: HistoryPoint[], obj: SimObject | null) {
-  if (data.length < 2) return []
-  const vals = data.map(p => p.value)
-  let minV = Math.min(...vals), maxV = Math.max(...vals)
-  if (minV === maxV) { minV -= 1; maxV += 1 }
-  const h = CHART_H - CHART_PAD.top - CHART_PAD.bottom
-  return [
-    { y: CHART_PAD.top,           v: maxV },
-    { y: CHART_PAD.top + h / 2,   v: (minV + maxV) / 2 },
-    { y: CHART_PAD.top + h,       v: minV },
-  ].map(t => ({ y: t.y, label: histFmt(t.v, obj) }))
-}
-
-function histXLabels(data: HistoryPoint[]) {
-  if (data.length < 2) return []
-  const tss = data.map(p => p.ts)
-  const minT = tss[0], maxT = tss[tss.length - 1]
-  const w = CHART_W - CHART_PAD.left - CHART_PAD.right
-  const now = Date.now() / 1000
-  const N = 5
-  return Array.from({ length: N }, (_, i) => {
-    const frac = i / (N - 1)
-    const ts   = minT + frac * (maxT - minT)
-    const x    = CHART_PAD.left + frac * w
-    const age  = now - ts
-    let label: string
-    if (age < 10)        label = 'now'
-    else if (age < 120)  label = `-${Math.round(age)}s`
-    else if (age < 3600) label = `-${Math.round(age / 60)}m`
-    else                 label = `-${Math.round(age / 3600)}h`
-    return { x, label }
-  })
 }
 
 // Set value
@@ -653,6 +606,25 @@ function sortableLiveValue(obj: SimObject): number {
     : numericValue
 }
 
+const objectSearch = ref('')
+const objectTypeFilter = ref<string | undefined>(undefined)
+
+const filteredObjects = computed(() => {
+  const q = objectSearch.value.trim().toLowerCase()
+  return objects.value.filter(o => {
+    if (objectTypeFilter.value && o.object_type !== objectTypeFilter.value) return false
+    if (!q) return true
+    return o.name.toLowerCase().includes(q)
+  })
+})
+
+const objectFiltersActive = computed(() => !!objectSearch.value.trim() || objectTypeFilter.value !== undefined)
+
+function clearObjectFilters() {
+  objectSearch.value = ''
+  objectTypeFilter.value = undefined
+}
+
 const columns: TableColumnsType<SimObject> = [
   {
     title: 'Name',
@@ -686,7 +658,7 @@ const columns: TableColumnsType<SimObject> = [
     sortDirections: ['ascend', 'descend'],
   },
   {
-    title: 'Point Type',
+    title: 'Semantic Type',
     key: 'point_type',
     width: 190,
     sorter: (a, b) => {
@@ -802,7 +774,7 @@ onUnmounted(() => {
               <template #icon><PlayCircleOutlined :style="{ color: health.sim_state === 'running' ? '#555' : '#52c41a' }" /></template>
             </a-button>
           </a-tooltip>
-          <a-tooltip title="Pause simulation clock (freezes values in place — still responds on the network)">
+          <a-tooltip title="Pause simulation clock (freezes values in place and stops responding on the network)">
             <a-button
               size="small" type="text" :disabled="health.sim_state !== 'running'" :loading="simActionLoading"
               @click="simPause"
@@ -824,7 +796,7 @@ onUnmounted(() => {
         </div>
 
         <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
-          <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
+          <a-radio-button value="devices"><ApartmentOutlined /> Networks</a-radio-button>
           <a-radio-button value="bacnet"><ApiOutlined  /> BACnet</a-radio-button>
           <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
@@ -862,7 +834,7 @@ onUnmounted(() => {
 
       <AnalyticsDashboard v-if="activeView === 'bacnet'" />
       <AlarmsPanel v-else-if="activeView === 'alarms'" />
-      <PacketCapturePanel v-else-if="activeView === 'packet-capture'"/>
+      <PacketCapturePanel v-else-if="activeView === 'packet-capture'" :initial-device-id="packetCaptureDeviceFilter"/>
       <SettingsView v-else-if="activeView === 'settings'" />
       <UtilitiesDashboard v-else-if="activeView === 'utility'" />
       <SemanticPanel v-else-if="activeView === 'semantic'" />
@@ -873,12 +845,12 @@ onUnmounted(() => {
         <!-- Sidebar: devices -->
         <a-layout-sider :width="320" style="background:var(--surface);border-right:1px solid var(--border);overflow:auto">
           <div style="padding:10px 12px 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-            <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Devices ({{ health.devices }})</span>
+            <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Items ({{ health.devices }})</span>
             <a-space :size="4">
               <a-button size="small" title="Add Location" @click="openAddLocation">
                 <template #icon><FolderAddOutlined /></template>
               </a-button>
-              <a-button size="small" type="primary" @click="openAddDevice">+ Add Device</a-button>
+              <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
             </a-space>
           </div>
 
@@ -972,6 +944,13 @@ onUnmounted(() => {
                         <a-menu-item key="calendars" @click="openCalendars(node.device)">
                           <ScheduleOutlined /> Calendars
                         </a-menu-item>
+                        <a-menu-divider />
+                        <a-menu-item key="energy-model" @click="openEnergyModel(node.device)">
+                          <ThunderboltOutlined /> Energy Model
+                        </a-menu-item>
+                        <a-menu-item key="view-traffic" @click="viewTraffic(node.device)">
+                          <ClusterOutlined /> View Traffic
+                        </a-menu-item>
                       </a-menu>
                     </template>
                   </a-dropdown>
@@ -992,30 +971,51 @@ onUnmounted(() => {
           </div>
 
           <template v-else>
-            <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">
-              <div>
-                <div style="font-size:18px;font-weight:600">{{ selectedDevice.name }}</div>
-                <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
-                  Device {{ selectedDevice.device_instance }}
-                  <template v-if="selectedDevice.description"> — {{ selectedDevice.description }}</template>
-                  <template v-else> — {{ selectedDevice.model_name }}</template>
-                </div>
+            <div style="margin-bottom:16px">
+              <div style="font-size:18px;font-weight:600">{{ selectedDevice.name }}</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
+                Device {{ selectedDevice.device_instance }}
+                <template v-if="selectedDevice.description"> — {{ selectedDevice.description }}</template>
+                <template v-else> — {{ selectedDevice.model_name }}</template>
               </div>
-              <a-space>
+            </div>
+
+            <GridFilterToolbar
+              v-model:search="objectSearch"
+              search-placeholder="Search objects…"
+              :can-clear="objectFiltersActive"
+              @clear="clearObjectFilters"
+            >
+              <a-select
+                v-model:value="objectTypeFilter"
+                allow-clear
+                size="small"
+                placeholder="Object Type"
+                style="width:170px"
+                :options="meta.object_types.map(t => ({ value: t, label: t }))"
+              />
+
+              <template #actions>
                 <a-button :disabled="!objects.length" @click="saveTemplateOpen = true">Save as Template</a-button>
                 <a-button @click="templateModalOpen = true">From Template</a-button>
                 <a-button type="primary" @click="openAddObject">+ Add Object</a-button>
-              </a-space>
-            </div>
+              </template>
+            </GridFilterToolbar>
 
             <a-table
-              :data-source="objects"
+              :data-source="filteredObjects"
               :columns="columns"
               :pagination="false"
               size="small"
               row-key="id"
-              :locale="{ emptyText: 'No objects yet — click Add Object' }"
             >
+              <template #emptyText>
+                <div v-if="objects.length" style="padding:24px;color:var(--text-placeholder)">
+                  No objects match your filters —
+                  <a @click="clearObjectFilters">clear filters</a>
+                </div>
+                <div v-else style="padding:24px;color:var(--text-placeholder)">No objects yet — click Add Object</div>
+              </template>
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'type'">
                   <a-tag style="font-family:monospace;font-size:11px">{{ (record as SimObject).object_type }}</a-tag>
@@ -1060,10 +1060,6 @@ onUnmounted(() => {
                     <a-button type="link" size="small" style="color:#722ed1" @click="openHistory(record as SimObject)">
                       <template #icon><LineChartOutlined /></template>
                     </a-button>
-                     <a-button type="text" size="small" danger title="Delete" @click.stop="deleteObject(record as SimObject)">
-                      <template #icon><DeleteOutlined /></template>
-                    </a-button>
-                    
                   </a-space>
                 </template>
               </template>
@@ -1125,6 +1121,9 @@ onUnmounted(() => {
 
     <!-- Calendars drawer -->
     <CalendarDrawer v-model:open="calendarDrawerOpen" :device="calendarDevice" />
+
+    <!-- Energy model drawer -->
+    <EnergyModelDrawer v-model:open="energyModelDrawerOpen" :device="energyModelDevice" :meta="meta" />
 
     <!-- Save as template -->
     <SaveTemplateModal
@@ -1192,91 +1191,19 @@ onUnmounted(() => {
       width="680px"
       destroy-on-close
     >
-      <div v-if="histLoading" style="text-align:center;padding:40px 0">
-        <a-spin />
-      </div>
-      <template v-else-if="histObj">
+      <template v-if="!histLoading && histObj">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
           <a-tag :color="BEHAVIOR_COLOR[histObj.behavior]">{{ histObj.behavior }}</a-tag>
           <span style="font-size:12px;color:var(--text-secondary)">{{ histObj.units === 'no-units' ? '' : histObj.units }}</span>
           <span style="font-size:12px;color:var(--text-placeholder);margin-left:auto">{{ histData.length }} samples</span>
         </div>
-
-        <div v-if="histData.length < 2" style="text-align:center;padding:40px 0;color:var(--text-placeholder);font-size:13px">
-          Not enough data yet — check back after a few ticks (5 s each)
-        </div>
-        <template v-else>
-          <!-- Chart -->
-          <div style="border:1px solid var(--border-subtle);border-radius:4px;background:var(--panel-bg);overflow:hidden">
-            <svg :viewBox="`0 0 ${CHART_W} ${CHART_H}`" style="width:100%;display:block">
-
-              <!-- Y-axis grid lines + labels -->
-              <template v-for="tick in histYLabels(histData, histObj)" :key="tick.y">
-                <line
-                  :x1="CHART_PAD.left" :y1="tick.y"
-                  :x2="CHART_W - CHART_PAD.right" :y2="tick.y"
-                  stroke="var(--border-subtle)" stroke-width="1"
-                />
-                <text
-                  :x="CHART_PAD.left - 6" :y="tick.y"
-                  text-anchor="end" dominant-baseline="middle"
-                  font-size="11" fill="var(--text-placeholder)" font-family="monospace"
-                >{{ tick.label }}</text>
-              </template>
-
-              <!-- X-axis baseline -->
-              <line
-                :x1="CHART_PAD.left" :y1="CHART_H - CHART_PAD.bottom"
-                :x2="CHART_W - CHART_PAD.right" :y2="CHART_H - CHART_PAD.bottom"
-                stroke="var(--border)" stroke-width="1"
-              />
-
-              <!-- X-axis ticks + labels -->
-              <template v-for="tick in histXLabels(histData)" :key="tick.x">
-                <line
-                  :x1="tick.x" :y1="CHART_H - CHART_PAD.bottom"
-                  :x2="tick.x" :y2="CHART_H - CHART_PAD.bottom + 5"
-                  stroke="var(--text-disabled)" stroke-width="1"
-                />
-                <text
-                  :x="tick.x" :y="CHART_H - CHART_PAD.bottom + 17"
-                  text-anchor="middle"
-                  font-size="11" fill="var(--text-placeholder)" font-family="sans-serif"
-                >{{ tick.label }}</text>
-              </template>
-
-              <!-- Fill area under line -->
-              <polyline
-                :points="`${CHART_PAD.left},${CHART_H - CHART_PAD.bottom} ${histSvgPoints(histData)} ${CHART_W - CHART_PAD.right},${CHART_H - CHART_PAD.bottom}`"
-                fill="rgba(24,144,255,0.08)"
-                stroke="none"
-              />
-              <!-- Data line -->
-              <polyline
-                :points="histSvgPoints(histData)"
-                fill="none"
-                stroke="#1890ff"
-                stroke-width="1.5"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </div>
-
-          <!-- Stats row -->
-          <div style="display:flex;gap:0;margin-top:14px;border:1px solid var(--border-subtle);border-radius:4px;overflow:hidden">
-            <div v-for="(stat, label) in { Min: histStats(histData).min, Max: histStats(histData).max, Avg: histStats(histData).avg, Current: histStats(histData).current }"
-              :key="label"
-              style="flex:1;text-align:center;padding:10px 0;border-right:1px solid var(--border-subtle)"
-              :style="label === 'Current' ? 'border-right:none' : ''"
-            >
-              <div style="font-size:11px;color:var(--text-secondary);margin-bottom:2px">{{ label }}</div>
-              <div style="font-size:14px;font-weight:600;font-family:monospace;color:#1890ff">
-                {{ histFmt(stat, histObj) }}
-              </div>
-            </div>
-          </div>
-        </template>
       </template>
+      <HistoryChart
+        :data="histData"
+        :loading="histLoading"
+        :format-value="(v: number) => histFmt(v, histObj)"
+        empty-label="Not enough data yet — check back after a few ticks (5 s each)"
+      />
     </a-modal>
 
   </a-config-provider>

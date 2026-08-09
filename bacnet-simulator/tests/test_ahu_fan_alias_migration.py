@@ -97,6 +97,43 @@ def test_device_without_equipment_entity_left_untouched(database):
     assert database.get_semantic_entities(device_id=device_id) == []
 
 
+def test_migration_updates_preexisting_stale_point_entity_in_place(database):
+    """Reproduces a real production crash: an object already has a point
+    semantic_entities row keyed off the OLD alias brick_class (e.g. created
+    by mirror.py's drawer-sync path back when the alias was still valid,
+    before this deployment's config.py removed it from POINT_TYPES). Its
+    semantic_key embeds that alias, so it differs from the canonical key
+    migrate_ahu_fan_aliases computes -- an INSERT keyed only on
+    semantic_key doesn't recognize the two as the same row and collides
+    with the object_id partial unique index instead
+    (sqlite3.IntegrityError: UNIQUE constraint failed:
+    semantic_entities.object_id). upsert_semantic_entity must resolve the
+    existing row by object_id first and UPDATE it in place."""
+    device_id = _make_legacy_tagged_ahu(database)
+    sf_run_id = database.get_objects(device_id)
+    object_id = next(o["id"] for o in sf_run_id if o["name"] == "SF-Run")
+
+    with database._conn() as conn:
+        conn.execute(
+            "INSERT INTO semantic_entities (name, semantic_key, brick_class, entity_kind, object_id) "
+            "VALUES (?,?,?,?,?)",
+            ("SF-Run", "stale-key", "Supply_Fan_Status", "point", object_id),
+        )
+        conn.commit()
+
+    database.setup()  # must not raise sqlite3.IntegrityError
+
+    objects = {o["name"]: o for o in database.get_objects(device_id)}
+    assert objects["SF-Run"]["point_type"] == "Fan_Status"
+
+    with database._conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM semantic_entities WHERE object_id=?", (object_id,)
+        ).fetchall()
+    assert len(rows) == 1  # updated in place, not duplicated
+    assert rows[0]["brick_class"] == "Fan_Status"
+
+
 def test_resolver_resolves_migrated_ahu_via_brick_graph_not_fallback(database):
     device_id = _make_legacy_tagged_ahu(database)
     database.setup()
