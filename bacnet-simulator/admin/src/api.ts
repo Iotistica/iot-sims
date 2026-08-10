@@ -57,6 +57,18 @@ const NON_CONFIG_MUTATION = [
   /\/priority-array\/\d+$/,
   /\/trend-logs\/\d+\/(trigger|clear)$/,
   /\/schedules\/\d+\/evaluate$/,
+  // Present-value-only refresh (ObjectsPanel's 3s external-device poll) --
+  // never persisted, see sync_external_objects()'s own docstring. Without
+  // this, Save would look "stuck" enabled again within a few seconds of
+  // saving any project with an external device selected, since the poll
+  // keeps firing on its own timer regardless of Save.
+  /\/external-objects\/refresh$/,
+  // Suggest Semantics generation + the per-point "Use AI" fallback are
+  // both explicitly side-effect-free (suggestion only, point_type/
+  // equipment_type are never written here) -- only the separate Apply
+  // Selected step, which goes through the ordinary device/object PUT
+  // routes above, actually changes anything.
+  /\/semantic-suggestions(\/points\/\d+\/ai)?$/,
 ]
 
 const CONFIG_PATH_PREFIXES = [
