@@ -8,6 +8,11 @@ from __future__ import annotations
 
 
 def test_clear_live_state_wipes_devices_and_locations(seeded_database):
+    # seed_default() only seeds devices/objects, never locations -- create
+    # one directly so this test still exercises the "and locations" half of
+    # its own name/regression target.
+    seeded_database.create_location("Building A", None, "")
+
     assert seeded_database.get_devices()
     assert seeded_database.get_locations()
 
