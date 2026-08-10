@@ -35,6 +35,8 @@ import type {
   BACnetConnectionConfig,
   DiscoveredDevice,
   ExternalObjectRow,
+  SemanticSuggestionsResponse,
+  SemanticSuggestionEntry,
 } from './types'
 
 import { authToken, logout } from './auth'
@@ -280,6 +282,13 @@ export const api = {
       req<{ objects: ExternalObjectRow[] }>(`/devices/${deviceId}/external-objects/discover`, { method: 'POST' }),
     refresh: (deviceId: number) =>
       req<{ objects: ExternalObjectRow[] }>(`/devices/${deviceId}/external-objects/refresh`, { method: 'POST' }),
+  },
+
+  semanticSuggestions: {
+    forDevice: (deviceId: number) =>
+      req<SemanticSuggestionsResponse>(`/devices/${deviceId}/semantic-suggestions`, { method: 'POST' }),
+    aiForPoint: (deviceId: number, objectId: number) =>
+      req<SemanticSuggestionEntry>(`/devices/${deviceId}/semantic-suggestions/points/${objectId}/ai`, { method: 'POST' }),
   },
 
   // Whole-database snapshot/restore — distinct from `projects` above (which

@@ -14,7 +14,7 @@ from ...bacnet.schemas import (
     SetValueRequest,
 )
 from ...core.config import COMMANDABLE_TYPES
-from ..guards import reject_external_device
+from ..guards import reject_external_device, reject_external_object_source_mutation
 
 
 router = APIRouter(
@@ -257,7 +257,6 @@ async def update_object(
         database,
         device_id,
     )
-    reject_external_device(device)
 
     existing = await require_object(
         database,
@@ -265,11 +264,14 @@ async def update_object(
         object_id,
     )
 
+    body_dict = body.model_dump()
+    reject_external_object_source_mutation(device, existing, body_dict)
+
     try:
         updated = await asyncio.to_thread(
             database.update_object,
             object_id,
-            body.model_dump(),
+            body_dict,
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(

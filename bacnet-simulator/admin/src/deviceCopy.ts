@@ -17,6 +17,11 @@ import { coerceValueForObjectType } from './objectValue'
  * thing that ever set its value). Object identity (name/type/instance/
  * units) is always copied byte-for-byte, regardless of source -- never
  * renamed.
+ *
+ * equipment_type/point_type (project-local Brick semantic classification,
+ * e.g. from Suggest Semantics) are carried over too -- without this, an
+ * approved classification would be silently lost the moment a device gets
+ * copied, forcing a from-scratch re-classification of the copy.
  */
 export async function copyDeviceAndObjects(
   source: Device,
@@ -35,6 +40,7 @@ export async function copyDeviceAndObjects(
     max_apdu_length_accepted: source.max_apdu_length_accepted,
     segmentation_supported:   source.segmentation_supported,
     location_id:              source.location_id,
+    equipment_type:           source.equipment_type ?? null,
   })
 
   for (const obj of srcObjects) {
@@ -55,6 +61,7 @@ export async function copyDeviceAndObjects(
       number_of_states: obj.number_of_states,
       reliability:      obj.reliability,
       polarity:         obj.polarity,
+      point_type:       obj.point_type ?? null,
     })
   }
 

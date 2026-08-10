@@ -153,6 +153,127 @@ def _write_direct_entity(
         )
 
 
+def _sync_point_membership(
+    conn: sqlite3.Connection,
+    *,
+    entity_kind: str,
+    device_id: Optional[int] = None,
+    object_id: Optional[int] = None,
+) -> None:
+    """Keeps the single deterministic isPointOf relationship between a
+    point's own entity and its owning device's top-level equipment entity
+    in lockstep with the two flat fields that already own this decision --
+    NOT relationship inference: object.device_id already says which device
+    a point belongs to, so once both sides are classified, exactly one
+    relationship must exist, order-independent (equipment classified
+    first, point classified first, or either edited later all converge to
+    the same state).
+
+    Only ever ADDS a row here -- removal is handled for free by
+    semantic_relationships' own ON DELETE CASCADE on both source_entity_id
+    and target_entity_id: clearing a point's point_type (or a device's
+    equipment_type) deletes ITS OWN entity row via _write_direct_entity's
+    brick_class=None branch above, which cascades away any relationship
+    row that referenced it. Same for deleting the device/object outright
+    (devices/objects both cascade to semantic_entities, which cascades to
+    semantic_relationships) -- nothing new needed for either case.
+
+    upsert_semantic_relationship lives in backfill.py, which already
+    imports this module's finders -- imported lazily here to avoid a
+    circular top-level import between the two.
+    """
+    from .backfill import upsert_semantic_relationship
+
+    if entity_kind == "point" and object_id is not None:
+        point_entity = find_point_entity(conn, object_id)
+        if point_entity is None:
+            return  # point_type was just cleared -- nothing to link
+        owner = conn.execute("SELECT device_id FROM objects WHERE id=?", (object_id,)).fetchone()
+        if owner is None:
+            return
+        equipment_entity = find_direct_equipment_entity(conn, owner["device_id"])
+        if equipment_entity is not None:
+            upsert_semantic_relationship(conn, point_entity["id"], "isPointOf", equipment_entity["id"])
+
+    elif entity_kind == "equipment" and device_id is not None:
+        equipment_entity = find_direct_equipment_entity(conn, device_id)
+        if equipment_entity is None:
+            return  # equipment_type was just cleared -- cascade already removed incoming links
+        for obj_row in conn.execute(
+            "SELECT id FROM objects WHERE device_id=? AND point_type IS NOT NULL", (device_id,),
+        ):
+            point_entity = find_point_entity(conn, obj_row["id"])
+            if point_entity is not None:
+                upsert_semantic_relationship(conn, point_entity["id"], "isPointOf", equipment_entity["id"])
+
+
+def sync_device_location_relationship(
+    conn: sqlite3.Connection,
+    *,
+    device_id: int,
+    location_id: Optional[int],
+) -> None:
+    """Keeps the deterministic hasLocation relationship between a device's
+    top-level equipment entity and its assigned location's entity in
+    lockstep with devices.location_id -- the same "both sides already
+    classified" membership pattern as _sync_point_membership below, just
+    for device<->location instead of point<->equipment.
+
+    Unlike point membership, changing/clearing devices.location_id does
+    NOT delete or recreate the device's own equipment entity (the device
+    is still e.g. a Boiler, just relocated or unassigned) -- so this can't
+    rely on cascade delete alone and explicitly removes a stale edge
+    before adding the correct one. A no-op (no DB write at all) when the
+    desired state already matches, so calling this on every device save
+    doesn't churn the relationship row on unrelated edits (name changes,
+    etc.).
+
+    Called from three places, all ultimately reachable from Database.
+    create_device/update_device (the only paths that ever set
+    devices.location_id): directly after those two calls, from this
+    module's own sync_entity_from_flat_field() (location branch, so a
+    location becoming classified after a device was already pointed at it
+    catches up every such device), and from backfill.py's one-time startup
+    pass for pre-existing data.
+    """
+    from .backfill import upsert_semantic_relationship
+
+    equipment_entity = find_direct_equipment_entity(conn, device_id)
+    if equipment_entity is None:
+        return  # device isn't classified as equipment yet -- nothing to attach a location to
+
+    location_entity = find_real_location_entity(conn, location_id) if location_id is not None else None
+    desired_target_id = location_entity["id"] if location_entity is not None else None
+
+    existing = conn.execute(
+        "SELECT target_entity_id FROM semantic_relationships WHERE source_entity_id=? AND predicate='hasLocation'",
+        (equipment_entity["id"],),
+    ).fetchone()
+    current_target_id = existing["target_entity_id"] if existing else None
+
+    if current_target_id == desired_target_id:
+        return
+
+    conn.execute(
+        "DELETE FROM semantic_relationships WHERE source_entity_id=? AND predicate='hasLocation'",
+        (equipment_entity["id"],),
+    )
+    if desired_target_id is not None:
+        upsert_semantic_relationship(conn, equipment_entity["id"], "hasLocation", desired_target_id)
+
+
+def _sync_devices_for_location(conn: sqlite3.Connection, *, location_id: int) -> None:
+    """The location-side half of the same sync: when a location's own
+    entity is just created/updated (its `kind` became classified), catch
+    up every device already pointed at it via devices.location_id --
+    covers the "device located before its location was classified" order.
+    Clearing a location's kind deletes its own entity, which cascades away
+    any hasLocation edges pointing at it automatically -- nothing to do
+    here for that direction."""
+    for device_row in conn.execute("SELECT id FROM devices WHERE location_id=?", (location_id,)):
+        sync_device_location_relationship(conn, device_id=device_row["id"], location_id=location_id)
+
+
 def sync_entity_from_flat_field(
     conn: sqlite3.Connection,
     *,
@@ -181,6 +302,11 @@ def sync_entity_from_flat_field(
         conn, existing=existing, name=name, brick_class=brick_class,
         entity_kind=entity_kind, device_id=device_id, object_id=object_id, location_id=location_id,
     )
+
+    if entity_kind in ("equipment", "point"):
+        _sync_point_membership(conn, entity_kind=entity_kind, device_id=device_id, object_id=object_id)
+    elif entity_kind == "location":
+        _sync_devices_for_location(conn, location_id=location_id)
 
 
 def sync_flat_field_from_entity(

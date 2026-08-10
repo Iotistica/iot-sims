@@ -1,8 +1,22 @@
+"""Deterministic, rule-based Brick classification suggestions for a device
+and its objects -- works identically regardless of source_type (simulated
+or external-bacnet); nothing here reads or cares about that field. Callers
+build a DeviceSnapshot/PointSnapshot from whatever persisted Device/
+SimObject rows they already have (see src/api/routers/semantic_suggestions.py
+for the adapter) and get back ranked, explainable candidates. Suggestion
+only -- nothing in this module writes to the database; every brick_class it
+can ever return is asserted against the app's real EQUIPMENT_TYPES/
+POINT_TYPES vocabulary at import time (see the bottom of this file), so a
+rule referencing a retired/renamed/invented class fails loudly at startup
+instead of silently producing an unusable suggestion.
+"""
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from typing import Iterable
+
+from ..core.config import EQUIPMENT_TYPES, POINT_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -10,7 +24,7 @@ from typing import Iterable
 # ---------------------------------------------------------------------------
 
 @dataclass(slots=True)
-class ExternalPoint:
+class PointSnapshot:
     object_type: str
     object_instance: int
     object_name: str
@@ -19,13 +33,13 @@ class ExternalPoint:
 
 
 @dataclass(slots=True)
-class ExternalDevice:
+class DeviceSnapshot:
     device_instance: int
     name: str
     vendor_name: str | None = None
     model_name: str | None = None
     description: str | None = None
-    points: list[ExternalPoint] = field(default_factory=list)
+    points: list[PointSnapshot] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -87,6 +101,10 @@ TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
     "fb": ("feedback",),
 
     "dp": ("differential", "pressure"),
+
+    # Electrical / meter shorthand. These reinforce obvious meter-point names
+    # when descriptions or engineering units are incomplete.
+    "kwh": ("energy",),
 }
 
 
@@ -202,7 +220,7 @@ POINT_RULES: tuple[SemanticRule, ...] = (
     ),
 
     SemanticRule(
-        brick_class="Water_Differential_Pressure_Sensor",
+        brick_class="Differential_Pressure_Sensor",
         required_any=frozenset({"pressure"}),
         preferred=frozenset({"differential", "water"}),
         object_types=frozenset({"analog-input"}),
@@ -242,6 +260,38 @@ POINT_RULES: tuple[SemanticRule, ...] = (
         units=frozenset({"percent"}),
         object_types=frozenset({"analog-output", "analog-value"}),
         base_score=0.25,
+    ),
+
+    # Electrical / utility meter points. Units are especially strong evidence
+    # here: kilowatts are power, while kilowatt-hours are accumulated energy.
+    SemanticRule(
+        brick_class="Energy_Sensor",
+        required_any=frozenset({"energy", "kwh"}),
+        preferred=frozenset({"total", "energy", "kwh"}),
+        units=frozenset({"kilowatt-hours"}),
+        object_types=frozenset({"analog-input", "analog-value"}),
+        equipment_classes=frozenset({"Meter"}),
+        base_score=0.30,
+    ),
+
+    SemanticRule(
+        brick_class="Power_Sensor",
+        required_any=frozenset({"power"}),
+        preferred=frozenset({"total", "power"}),
+        units=frozenset({"kilowatts"}),
+        object_types=frozenset({"analog-input", "analog-value"}),
+        equipment_classes=frozenset({"Meter"}),
+        base_score=0.30,
+    ),
+
+    SemanticRule(
+        brick_class="Demand_Sensor",
+        required_any=frozenset({"demand"}),
+        preferred=frozenset({"peak", "demand", "kw"}),
+        units=frozenset({"kilowatts"}),
+        object_types=frozenset({"analog-input", "analog-value"}),
+        equipment_classes=frozenset({"Meter"}),
+        base_score=0.35,
     ),
 
     SemanticRule(
@@ -295,9 +345,9 @@ EQUIPMENT_RULES: tuple[SemanticRule, ...] = (
 
     SemanticRule(
         brick_class="Meter",
-        required_any=frozenset({"meter", "energy", "power"}),
-        preferred=frozenset({"meter"}),
-        base_score=0.25,
+        required_any=frozenset({"meter"}),
+        preferred=frozenset({"meter", "energy", "power", "demand"}),
+        base_score=0.40,
     ),
 )
 
@@ -305,6 +355,27 @@ EQUIPMENT_RULES: tuple[SemanticRule, ...] = (
 # ---------------------------------------------------------------------------
 # Scoring
 # ---------------------------------------------------------------------------
+
+_POWER_UNITS = frozenset({"kilowatts"})
+_ENERGY_UNITS = frozenset({"kilowatt-hours"})
+
+
+def _has_dimensional_unit_conflict(rule: SemanticRule, units: str | None) -> bool:
+    """Reject obvious electrical dimension mismatches instead of merely
+    lowering their score. A kWh point is energy, not power/demand; a kW point
+    is power/demand, not accumulated energy.
+    """
+    if not units:
+        return False
+
+    if rule.brick_class == "Energy_Sensor" and units in _POWER_UNITS:
+        return True
+
+    if rule.brick_class in {"Power_Sensor", "Demand_Sensor"} and units in _ENERGY_UNITS:
+        return True
+
+    return False
+
 
 def _score_rule(
     rule: SemanticRule,
@@ -314,6 +385,9 @@ def _score_rule(
     object_type: str | None = None,
     equipment_class: str | None = None,
 ) -> SemanticCandidate | None:
+    if _has_dimensional_unit_conflict(rule, units):
+        return None
+
     reasons: list[str] = []
     score = rule.base_score
 
@@ -378,7 +452,7 @@ def confidence_for(score: float) -> str:
 # Equipment suggestions
 # ---------------------------------------------------------------------------
 
-def suggest_equipment(device: ExternalDevice) -> SemanticSuggestion:
+def suggest_equipment(device: DeviceSnapshot) -> SemanticSuggestion:
     combined_text = " ".join(
         filter(
             None,
@@ -429,8 +503,8 @@ def suggest_equipment(device: ExternalDevice) -> SemanticSuggestion:
 # ---------------------------------------------------------------------------
 
 def suggest_point(
-    device: ExternalDevice,
-    point: ExternalPoint,
+    device: DeviceSnapshot,
+    point: PointSnapshot,
     *,
     equipment_class: str | None = None,
 ) -> SemanticSuggestion:
@@ -489,7 +563,7 @@ def suggest_point(
 # ---------------------------------------------------------------------------
 
 def suggest_device_semantics(
-    device: ExternalDevice,
+    device: DeviceSnapshot,
 ) -> list[SemanticSuggestion]:
     suggestions: list[SemanticSuggestion] = []
 
@@ -508,3 +582,34 @@ def suggest_device_semantics(
         )
 
     return suggestions
+
+
+# ---------------------------------------------------------------------------
+# Vocabulary safety net -- every rule's brick_class must be a real,
+# canonical class the app already recognizes (EQUIPMENT_TYPES/POINT_TYPES,
+# src/core/config.py), or every downstream consumer (the Brick class
+# picker, validate_semantic_entity(), the TTL exporter) would reject a
+# suggestion built from it. Runs once at import time so a future rule typo
+# or a retired class fails the moment the app starts, not silently at
+# suggestion time.
+# ---------------------------------------------------------------------------
+
+def _assert_rules_use_canonical_vocabulary() -> None:
+    for rule in EQUIPMENT_RULES:
+        assert rule.brick_class in EQUIPMENT_TYPES, (
+            f"suggestions.py EQUIPMENT_RULES references {rule.brick_class!r}, "
+            f"which is not in EQUIPMENT_TYPES (src/core/config.py)"
+        )
+    for rule in POINT_RULES:
+        assert rule.brick_class in POINT_TYPES, (
+            f"suggestions.py POINT_RULES references {rule.brick_class!r}, "
+            f"which is not in POINT_TYPES (src/core/config.py)"
+        )
+        for eq_class in rule.equipment_classes:
+            assert eq_class in EQUIPMENT_TYPES, (
+                f"suggestions.py POINT_RULES entry {rule.brick_class!r} references "
+                f"equipment_classes={eq_class!r}, which is not in EQUIPMENT_TYPES"
+            )
+
+
+_assert_rules_use_canonical_vocabulary()

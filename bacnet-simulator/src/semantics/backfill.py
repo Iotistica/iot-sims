@@ -59,7 +59,12 @@ from __future__ import annotations
 import sqlite3
 
 from .keys import derive_semantic_key
-from .mirror import find_direct_equipment_entity, find_point_entity, find_real_location_entity
+from .mirror import (
+    find_direct_equipment_entity,
+    find_point_entity,
+    find_real_location_entity,
+    sync_device_location_relationship,
+)
 from .validation import validate_semantic_entity
 
 
@@ -230,6 +235,41 @@ def backfill_semantic_entities(conn: sqlite3.Connection) -> None:
             )
         except ValueError:
             continue
+
+
+def backfill_point_membership_relationships(conn: sqlite3.Connection) -> None:
+    """One-time-per-startup pass for data classified BEFORE the ongoing
+    mirror.py sync (_sync_point_membership) existed: ensures every point
+    entity whose owning device already has its own top-level equipment
+    entity has the matching isPointOf relationship, without requiring the
+    user to re-edit every already-classified point.
+
+    Always safe to re-run -- upsert_semantic_relationship's own
+    ON CONFLICT(...) DO NOTHING makes this idempotent exactly like
+    backfill_semantic_entities() above, so calling this on every process
+    start (after backfill_semantic_entities(), so newly-backfilled entities
+    are visible here too) never creates duplicates.
+    """
+    for point_row in conn.execute(
+        "SELECT se.id AS point_entity_id, o.device_id AS device_id "
+        "FROM semantic_entities se "
+        "JOIN objects o ON o.id = se.object_id "
+        "WHERE se.entity_kind = 'point'"
+    ):
+        equipment_entity = find_direct_equipment_entity(conn, point_row["device_id"])
+        if equipment_entity is not None:
+            upsert_semantic_relationship(conn, point_row["point_entity_id"], "isPointOf", equipment_entity["id"])
+
+
+def backfill_device_location_relationships(conn: sqlite3.Connection) -> None:
+    """One-time-per-startup pass for data classified BEFORE the ongoing
+    mirror.py sync (sync_device_location_relationship) existed: ensures
+    every already-equipment-classified, already-located device has its
+    hasLocation relationship, without requiring the user to re-save it.
+    Always safe to re-run -- sync_device_location_relationship is itself a
+    no-op once the desired state already matches."""
+    for device_row in conn.execute("SELECT id, location_id FROM devices WHERE location_id IS NOT NULL"):
+        sync_device_location_relationship(conn, device_id=device_row["id"], location_id=device_row["location_id"])
 
 
 # Old, non-canonical AHU fan point-type alias -> (canonical point class,

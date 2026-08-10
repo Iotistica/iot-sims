@@ -631,7 +631,7 @@ onUnmounted(() => {
           <template #icon><FileAddOutlined /></template>
           New Project
         </a-button>
-        <a-button size="small" type="primary" ghost @click="openSave">Save</a-button>
+        <a-button size="small" type="primary" ghost :disabled="!projectDirty" @click="openSave">Save</a-button>
         <a-button v-if="activeProjectId !== null" size="small" @click="openSaveAs">Save As</a-button>
         <a-button size="small" @click="projectsDrawerOpen = true">Open Project</a-button>
 
@@ -836,6 +836,7 @@ onUnmounted(() => {
             :device="selectedDevice"
             :meta="meta"
             :live-values="liveValues"
+            @device-updated="loadDevices"
           />
 
         </div>

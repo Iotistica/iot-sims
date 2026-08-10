@@ -2,7 +2,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
-import { EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined, BulbOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import { formatPresentValue } from '../format'
 import { coerceValueForObjectType } from '../objectValue'
@@ -12,6 +12,7 @@ import ObjectDrawer from './ObjectDrawer.vue'
 import SaveTemplateModal from './SaveTemplateModal.vue'
 import TemplatePickerModal from './TemplatePickerModal.vue'
 import HistoryChart from './HistoryChart.vue'
+import SemanticSuggestionsModal from './SemanticSuggestionsModal.vue'
 
 const props = defineProps<{
   device: Device
@@ -21,6 +22,11 @@ const props = defineProps<{
    * their own locally-polled externalLiveValues instead (see below). */
   liveValues: Record<number, number | boolean>
 }>()
+
+// Fired after Suggest Semantics applies a device-level (equipment_type)
+// change, so App.vue can refresh its devices list — the tree row's
+// equipment-type label lives there, outside this component.
+const emit = defineEmits<{ 'device-updated': [] }>()
 
 const isExternal = computed(() => props.device.source_type === 'external-bacnet')
 const canConfigureSimulation = computed(() => !isExternal.value)
@@ -302,13 +308,21 @@ async function doSetValue() {
 
 const templateModalOpen = ref(false)
 const saveTemplateOpen = ref(false)
+
+// ─── Suggest Semantics — available regardless of source_type ──────────────
+
+const suggestModalOpen = ref(false)
+function onSuggestionsApplied() {
+  loadObjects()
+  emit('device-updated')
+}
 </script>
 
 <template>
   <div style="margin-bottom:16px">
     <div style="font-size:18px;font-weight:600">
       {{ device.name }}
-      <a-tag v-if="isExternal" color="default" style="margin-left:8px;font-weight:normal">External BACnet · Read Only</a-tag>
+      <a-tag v-if="isExternal" color="default" style="margin-left:8px;font-weight:normal">Read Only</a-tag>
     </div>
     <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
       <template v-if="isExternal">
@@ -352,6 +366,10 @@ const saveTemplateOpen = ref(false)
         <template v-if="canConfigureSimulation">
           <a-button :disabled="!objects.length" @click="saveTemplateOpen = true">Save as Template</a-button>
           <a-button @click="templateModalOpen = true">From Template</a-button>
+          <a-button :disabled="!objects.length" @click="suggestModalOpen = true">
+            <template #icon><BulbOutlined /></template>
+            Suggest Semantics
+          </a-button>
           <a-button type="primary" @click="openAddObject">+ Add Object</a-button>
         </template>
         <template v-else>
@@ -359,6 +377,10 @@ const saveTemplateOpen = ref(false)
             Live · updated {{ secondsSinceUpdate }}s ago
           </span>
           <a-button :loading="refreshing" @click="manualRefresh">Refresh</a-button>
+          <a-button :disabled="!objects.length" @click="suggestModalOpen = true">
+            <template #icon><BulbOutlined /></template>
+            Suggest Semantics
+          </a-button>
           <a-button :loading="loading" @click="discoverObjects">
             <template #icon><ApiOutlined /></template>
             Rediscover Objects
@@ -459,6 +481,15 @@ const saveTemplateOpen = ref(false)
     :vendor-name="device.vendor_name"
     :model-name="device.model_name"
     @applied="loadObjects"
+  />
+
+  <!-- Suggest Semantics -->
+  <SemanticSuggestionsModal
+    v-model:open="suggestModalOpen"
+    :device="device"
+    :objects="objects"
+    :meta="meta"
+    @applied="onSuggestionsApplied"
   />
 
   <!-- Set value modal -->

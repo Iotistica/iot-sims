@@ -295,6 +295,37 @@ export interface Calendar {
   enabled: boolean
 }
 
+export interface SemanticSuggestionCandidate {
+  brick_class: string
+  score: number
+  reasons: string[]
+}
+
+/** One suggestion row (the device itself, or a single point) from
+ * POST /devices/{id}/semantic-suggestions. suggested_class/confidence are
+ * always suppressed (null / 'none') when existing_class is already set --
+ * existing user-entered semantics are authoritative and are never shown as
+ * a competing suggestion, see that route's docstring. */
+export interface SemanticSuggestionEntry {
+  source_kind: 'device' | 'point'
+  source_id: number
+  source_name: string
+  suggested_class: string | null
+  existing_class: string | null
+  confidence: 'high' | 'medium' | 'low' | 'none'
+  score: number
+  reasons: string[]
+  alternatives: SemanticSuggestionCandidate[]
+  /** 'rule' = deterministic engine (default), 'ai' = this one row was
+   * refreshed via an explicit "Use AI" click. */
+  source: 'rule' | 'ai'
+}
+
+export interface SemanticSuggestionsResponse {
+  device: SemanticSuggestionEntry
+  points: SemanticSuggestionEntry[]
+}
+
 export type ProjectSourceType = 'simulated' | 'external-bacnet'
 
 export interface BACnetConnectionConfig {

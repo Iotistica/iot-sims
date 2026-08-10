@@ -57,13 +57,15 @@ from .bacnet.schemas import (
     TrendLogUpdate,
 )
 from .semantics.backfill import (
+    backfill_device_location_relationships,
+    backfill_point_membership_relationships,
     backfill_semantic_entities,
     migrate_ahu_fan_aliases,
     upsert_semantic_entity,
     upsert_semantic_relationship,
 )
 from .semantics.keys import derive_semantic_key
-from .semantics.mirror import sync_entity_from_flat_field, sync_flat_field_from_entity
+from .semantics.mirror import sync_entity_from_flat_field, sync_flat_field_from_entity, sync_device_location_relationship
 from .semantics.validation import validate_semantic_entity
 
 from bacpypes3.local.device import DeviceObject
@@ -193,6 +195,10 @@ from .api.routers.discovery import (
 
 from .api.routers.external_objects import (
     router as external_objects_router,
+)
+
+from .api.routers.semantic_suggestions import (
+    router as semantic_suggestions_router,
 )
 
 from .api.guards import reject_external_device
@@ -721,6 +727,10 @@ class Database:
             # each AHU's own top-level equipment entity, which backfill is
             # what creates it from devices.equipment_type).
             migrate_ahu_fan_aliases(conn)
+            # Also after backfill_semantic_entities() -- needs the point/
+            # equipment entities that call just minted to link them.
+            backfill_point_membership_relationships(conn)
+            backfill_device_location_relationships(conn)
         log.info("Database ready at %s", self.path)
 
     def seed_default(self) -> None:
@@ -1090,6 +1100,8 @@ class Database:
             # (Also picks up every device/object/location NOT given explicit
             # semantic entities above, e.g. Chiller-Plant/HW-Plant/VAVs.)
             backfill_semantic_entities(conn)
+            backfill_point_membership_relationships(conn)
+            backfill_device_location_relationships(conn)
 
             conn.commit()
         log.info("Seeded 4-storey office tower: Honeywell/Trane/JCI/Siemens/LOYTEC – 18 devices, %d objects", len(objects))
@@ -1575,6 +1587,9 @@ class Database:
                 conn, entity_kind="equipment", name=data.get("name") or "",
                 brick_class=data.get("equipment_type"), device_id=cur.lastrowid,
             )
+            sync_device_location_relationship(
+                conn, device_id=cur.lastrowid, location_id=data.get("location_id"),
+            )
             conn.commit()
             return dict(conn.execute("SELECT * FROM devices WHERE id=?", (cur.lastrowid,)).fetchone())
 
@@ -1599,6 +1614,9 @@ class Database:
             sync_entity_from_flat_field(
                 conn, entity_kind="equipment", name=data.get("name") or "",
                 brick_class=data.get("equipment_type"), device_id=device_id,
+            )
+            sync_device_location_relationship(
+                conn, device_id=device_id, location_id=data.get("location_id"),
             )
             conn.commit()
             r = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
@@ -5773,6 +5791,7 @@ api.include_router(fault_router)
 api.include_router(energy_router)
 api.include_router(discovery_router)
 api.include_router(external_objects_router)
+api.include_router(semantic_suggestions_router)
 
 api.add_middleware(
     CORSMiddleware,

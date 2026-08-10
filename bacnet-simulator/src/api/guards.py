@@ -38,6 +38,46 @@ _EXTERNAL_PROTECTED_FIELDS = (
 )
 
 
+_EXTERNAL_OBJECT_PROTECTED_FIELDS = (
+    "object_type",
+    "object_instance",
+    "name",
+    "units",
+    "behavior",
+    "behavior_params",
+    "enabled",
+    "number_of_states",
+    "reliability",
+    "polarity",
+)
+
+
+def reject_external_object_source_mutation(device: dict, existing_object: dict, body_dict: dict) -> None:
+    """
+    Same distinction as reject_external_source_mutation() above, but for an
+    object row belonging to an external-BACnet device: source/BACnet-
+    identity fields -- including `name`, unlike the device-level guard's
+    looser treatment -- stay locked (an object must never be renamed, its
+    name is the real discovered BACnet objectName); point_type (project-
+    local semantic classification, e.g. from Suggest Semantics) may change
+    freely, since it never touches the physical device or the BACnet
+    network. `device` supplies source_type (objects have no such column of
+    their own); `existing_object` supplies the values body_dict is diffed
+    against.
+    """
+    if device.get("source_type") != "external-bacnet":
+        return
+    for field in _EXTERNAL_OBJECT_PROTECTED_FIELDS:
+        if field in body_dict and body_dict[field] != existing_object.get(field):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Cannot modify '{field}' on an external BACnet device's "
+                    "object -- it reflects the real physical point."
+                ),
+            )
+
+
 def reject_external_source_mutation(existing: dict, body_dict: dict) -> None:
     """
     Distinguishes source mutations (prohibited) from project-model

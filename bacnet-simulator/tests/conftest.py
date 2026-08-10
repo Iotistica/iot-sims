@@ -60,6 +60,12 @@ def _routers():
     except ImportError:
         pass
 
+    try:
+        from src.api.routers.semantic_suggestions import router as semantic_suggestions_router
+        routers.append(semantic_suggestions_router)
+    except ImportError:
+        pass
+
     return routers
 
 
@@ -68,6 +74,12 @@ class _FakeEngine:
     fires-and-forgets engine.reload(); tests don't need the real BACnet
     engine, just something with that coroutine so the call doesn't 503."""
     async def reload(self) -> None:
+        pass
+
+    async def add_object_hot(self, device_instance: int, obj: dict) -> None:
+        # objects.py's create_object() fires-and-forgets this for the
+        # hot-add path (an enabled object on an already-enabled device) --
+        # same reasoning as reload() above.
         pass
 
 

@@ -642,10 +642,6 @@ function doDelete() {
         </template>
       </div>
 
-      <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
-        <a-switch v-model:checked="form.enabled" />
-      </a-form-item>
-
       <a-form-item
         label="Reliability"
         style="margin-top:16px;margin-bottom:0"

@@ -13,3 +13,8 @@ rdflib>=7.0
 requests>=2.31
 beautifulsoup4>=4.12
 pdfplumber>=0.11    # optional — only needed for --parse-pics / --update-pics
+
+# Suggest Semantics "Use AI" fallback (src/integrations/azure_openai.py) --
+# optional at runtime (only needed if AZURE_OPENAI_* env vars are set), but
+# always installed so the import itself never fails.
+openai>=1.0
