@@ -1,0 +1,157 @@
+"""API-level tests for run creation/cancellation
+(src/api/routers/functional_tests.py's /resolve+/runs, and
+src/api/routers/functional_test_runs.py) against a real FastAPI TestClient
++ real SimEngine(database) -- no tick loop started, so a simulated WAIT
+never completes on its own, making cancellation/concurrency deterministic
+without needing real multi-second sleeps (poll interval is monkeypatched
+down for speed)."""
+from __future__ import annotations
+
+import time
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from src.api.routers.functional_test_runs import router as functional_test_runs_router
+from src.api.routers.functional_tests import router as functional_tests_router
+from src.functional_tests import runtime as runtime_module
+from src.legacy import SimEngine
+
+
+@pytest.fixture(autouse=True)
+def _fast_poll(monkeypatch):
+    monkeypatch.setattr(runtime_module, "_WAIT_POLL_SECONDS", 0.02)
+
+
+@pytest.fixture
+def sim_app(database):
+    app = FastAPI()
+    app.state.db = database
+    app.state.engine = SimEngine(database)
+    app.include_router(functional_tests_router)
+    app.include_router(functional_test_runs_router)
+    return app
+
+
+@pytest.fixture
+def sim_client(sim_app):
+    with TestClient(sim_app) as c:
+        yield c
+
+
+_SLOW_DEFINITION = {
+    "version": 1,
+    "nodes": [
+        {"id": "start", "type": "start", "params": {}},
+        {"id": "wait", "type": "wait", "params": {"seconds": 999999}},
+        {"id": "end", "type": "end", "params": {"result": "pass"}},
+    ],
+    "edges": [
+        {"source": "start", "target": "wait", "source_handle": None},
+        {"source": "wait", "target": "end", "source_handle": None},
+    ],
+    "layout": {},
+}
+
+
+def _make_device(database, instance, equipment_type="Boiler"):
+    with database._conn() as conn:
+        conn.execute(
+            "INSERT INTO devices (device_instance, name, equipment_type) VALUES (?,?,?)",
+            (instance, f"Dev-{instance}", equipment_type),
+        )
+        conn.commit()
+        return conn.execute(
+            "SELECT id FROM devices WHERE device_instance=?", (instance,)
+        ).fetchone()[0]
+
+
+def _make_slow_test(database, equipment_type="Boiler"):
+    return database.create_functional_test({
+        "name": "Slow Test", "description": "", "equipment_type": equipment_type,
+        "definition": _SLOW_DEFINITION,
+    })
+
+
+def _wait_for_state(sim_client, run_id, states, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        run = sim_client.get(f"/functional-test-runs/{run_id}").json()
+        if run["state"] in states:
+            return run
+        time.sleep(0.02)
+    raise AssertionError(f"run {run_id} never reached {states}, last seen state={run['state']!r}")
+
+
+def test_run_creation_rejects_a_browser_supplied_graph(database, sim_client):
+    device_id = _make_device(database, 9101)
+    test_row = _make_slow_test(database)
+
+    resp = sim_client.post(
+        f"/functional-tests/{test_row['id']}/runs",
+        json={"target_device_id": device_id, "definition": {"nodes": [], "edges": []}},
+    )
+    assert resp.status_code == 201, resp.text
+    run_id = resp.json()["id"]
+
+    # Cleanup.
+    sim_client.post(f"/functional-test-runs/{run_id}/cancel")
+    _wait_for_state(sim_client, run_id, {"cancelled"})
+
+    # The stored definition must be completely untouched by the injected
+    # "definition" key in the run-creation request body.
+    reloaded = sim_client.get(f"/functional-tests/{test_row['id']}").json()
+    assert reloaded["definition"] == _SLOW_DEFINITION
+
+
+def test_duplicate_concurrent_run_rejected_409(database, sim_client):
+    device_id = _make_device(database, 9102)
+    test_row = _make_slow_test(database)
+
+    resp1 = sim_client.post(f"/functional-tests/{test_row['id']}/runs", json={"target_device_id": device_id})
+    assert resp1.status_code == 201, resp1.text
+    run_id = resp1.json()["id"]
+
+    resp2 = sim_client.post(f"/functional-tests/{test_row['id']}/runs", json={"target_device_id": device_id})
+    assert resp2.status_code == 409
+
+    sim_client.post(f"/functional-test-runs/{run_id}/cancel")
+    _wait_for_state(sim_client, run_id, {"cancelled"})
+
+
+def test_unrelated_test_target_pairs_run_concurrently(database, sim_client):
+    device_a = _make_device(database, 9103)
+    device_b = _make_device(database, 9104)
+    test_a = _make_slow_test(database)
+    test_b = _make_slow_test(database)
+
+    resp_a = sim_client.post(f"/functional-tests/{test_a['id']}/runs", json={"target_device_id": device_a})
+    resp_b = sim_client.post(f"/functional-tests/{test_b['id']}/runs", json={"target_device_id": device_b})
+
+    assert resp_a.status_code == 201, resp_a.text
+    assert resp_b.status_code == 201, resp_b.text
+
+    for run_id in (resp_a.json()["id"], resp_b.json()["id"]):
+        sim_client.post(f"/functional-test-runs/{run_id}/cancel")
+        _wait_for_state(sim_client, run_id, {"cancelled"})
+
+
+def test_cancel_transitions_running_test_to_cancelled(database, sim_client, sim_app):
+    device_id = _make_device(database, 9105)
+    test_row = _make_slow_test(database)
+
+    resp = sim_client.post(f"/functional-tests/{test_row['id']}/runs", json={"target_device_id": device_id})
+    run_id = resp.json()["id"]
+
+    _wait_for_state(sim_client, run_id, {"running"})
+
+    cancel_resp = sim_client.post(f"/functional-test-runs/{run_id}/cancel")
+    assert cancel_resp.status_code == 200
+
+    final = _wait_for_state(sim_client, run_id, {"cancelled"})
+    assert final["state"] == "cancelled"
+
+    # No orphaned task left registered after the run settles.
+    registry = getattr(sim_app.state, "functional_test_run_registry", {})
+    assert run_id not in registry

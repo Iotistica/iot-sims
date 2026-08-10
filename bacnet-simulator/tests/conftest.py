@@ -66,6 +66,14 @@ def _routers():
     except ImportError:
         pass
 
+    try:
+        from src.api.routers.functional_tests import router as functional_tests_router
+        from src.api.routers.functional_test_runs import router as functional_test_runs_router
+        routers.append(functional_tests_router)
+        routers.append(functional_test_runs_router)
+    except ImportError:
+        pass
+
     return routers
 
 

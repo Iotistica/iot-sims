@@ -576,3 +576,129 @@ export interface PacketCaptureFilters {
   offset?: number
   limit?: number
 }
+
+// ─── Functional Test Builder ────────────────────────────────────────────
+// A constrained, BAS-commissioning-specific graph (NOT a general workflow
+// engine) -- see admin/src/functionalTestSerializer.ts and
+// admin/src/functionalTestValidation.ts. `params` per node type never
+// contains free-form strings or expressions, only structured fields
+// resolved against the existing meta.point_types/equipment_types
+// vocabulary (same one DeviceDrawer/ObjectDrawer already use).
+
+export type FunctionalTestOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'
+
+export type FunctionalTestNodeType =
+  | 'start'
+  | 'wait'
+  | 'wait_until'
+  | 'capture'
+  | 'verify'
+  | 'compare'
+  | 'end'
+
+export type FunctionalTestOperand =
+  | { kind: 'point'; point_type: string }
+  | { kind: 'constant'; value: string | number | boolean }
+  | { kind: 'variable'; name: string; offset?: number }
+
+export interface FunctionalTestNodeParams {
+  start: Record<string, never>
+  wait: { seconds: number }
+  wait_until: {
+    point_type: string
+    operator: FunctionalTestOperator
+    value: string | number | boolean
+    timeout_seconds: number
+  }
+  capture: { point_type: string; variable: string }
+  verify: { left: FunctionalTestOperand; operator: FunctionalTestOperator; right: FunctionalTestOperand }
+  compare: { left: FunctionalTestOperand; operator: FunctionalTestOperator; right: FunctionalTestOperand }
+  end: { result: 'pass' | 'fail' | 'inconclusive'; message?: string }
+}
+
+export interface FunctionalTestNodeDefinition<T extends FunctionalTestNodeType = FunctionalTestNodeType> {
+  id: string
+  type: T
+  params: FunctionalTestNodeParams[T]
+}
+
+export interface FunctionalTestEdgeDefinition {
+  source: string
+  target: string
+  /** Only 'verify' nodes use 'pass'/'fail' -- every other node's single
+   * output edge uses null. */
+  source_handle: 'pass' | 'fail' | null
+}
+
+export interface FunctionalTestDefinition {
+  version: 1
+  nodes: FunctionalTestNodeDefinition[]
+  edges: FunctionalTestEdgeDefinition[]
+  /** Editor-only node positions -- the (future) runner must never depend
+   * on this, only on nodes/edges/params. */
+  layout: Record<string, { x: number; y: number }>
+}
+
+export interface FunctionalTest {
+  id: number
+  name: string
+  description: string
+  equipment_type: string
+  definition: FunctionalTestDefinition
+  created_at: string
+  updated_at: string
+}
+
+export interface FunctionalTestIssue {
+  nodeId: string | null
+  message: string
+}
+
+// ─── Functional Test execution (Phase 2) ────────────────────────────────
+// Read-only: target selection, semantic point resolution, and run state.
+// The graph itself is never sent to the run-creation endpoint -- only a
+// target_device_id; the backend always loads the saved definition fresh
+// and re-resolves every point itself (trust boundary).
+
+export type ExecutionMode = 'external' | 'simulation'
+
+export interface PointResolution {
+  status: 'resolved' | 'missing' | 'ambiguous' | 'inconsistent'
+  resolution_source: 'semantic_graph' | 'device_point_type'
+  object: { id: number; name: string; object_type: string; object_instance: number } | null
+  candidates: string[]
+  message: string | null
+}
+
+export interface FunctionalTestResolveResponse {
+  execution_mode: ExecutionMode
+  points: Record<string, PointResolution>
+}
+
+export interface FunctionalTestRunDetail {
+  node_id: string
+  type: FunctionalTestNodeType
+  outcome: string
+  message: string | null
+  started_at: string
+  finished_at: string
+}
+
+export type FunctionalTestRunState =
+  | 'pending' | 'running' | 'passed' | 'failed' | 'inconclusive' | 'cancelled' | 'error'
+
+export interface FunctionalTestRun {
+  id: number
+  functional_test_id: number
+  target_device_id: number
+  execution_mode: ExecutionMode
+  state: FunctionalTestRunState
+  started_at: string | null
+  finished_at: string | null
+  result: 'pass' | 'fail' | 'inconclusive' | null
+  result_message: string | null
+  current_node_id: string | null
+  error: string | null
+  details: FunctionalTestRunDetail[]
+  created_at: string
+}

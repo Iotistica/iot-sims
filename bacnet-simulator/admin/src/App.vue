@@ -16,6 +16,7 @@ import AlarmsPanel from './components/AlarmsPanel.vue'
 import SettingsView from './components/SettingsView.vue'
 import PacketCapturePanel from './components/PacketCapturePanel.vue'
 import SemanticPanel from './components/SemanticPanel.vue'
+import FunctionalTestsView from './components/functional-tests/FunctionalTestsView.vue'
 import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
 import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
@@ -28,7 +29,9 @@ import { api, projectDirty } from './api'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
 import { copyDeviceAndObjects } from './deviceCopy'
-import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined, DeleteOutlined } from '@ant-design/icons-vue'
+import { getLocationIcon } from './locationIcons'
+import { getEquipmentIcon } from './equipmentIcons'
+import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined, DeleteOutlined, ExperimentOutlined } from '@ant-design/icons-vue'
 
 const activeView = ref<
   'devices' |
@@ -37,7 +40,8 @@ const activeView = ref<
   'packet-capture' |
   'settings' |
   'utility' |
-  'semantic'
+  'semantic' |
+  'tests'
 >('devices')
 
 const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
@@ -527,6 +531,20 @@ const equipmentTypeLabel = computed(() => {
   return map
 })
 
+const locationKindLabel = computed(() => {
+  const map: Record<string, string> = {}
+  for (const o of meta.value.location_kinds) map[o.value] = o.label
+  return map
+})
+
+// Fixed icon slot so location/equipment/generic tree rows all align their
+// labels identically, regardless of which icon (and how visually "wide"
+// it looks) is shown.
+const TREE_ICON_SLOT_STYLE = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  width: '20px', height: '20px', fontSize: '16px', flexShrink: '0',
+} as const
+
 // Lifecycle — gated behind auth: protected endpoints 401 until logged in
 let healthTimer: ReturnType<typeof setInterval>
 
@@ -623,6 +641,7 @@ onUnmounted(() => {
           <a-radio-button value="packet-capture"><ClusterOutlined /> Network</a-radio-button>
           <a-radio-button value="utility"><DashboardOutlined /> Utilities</a-radio-button>
           <a-radio-button value="semantic"><PartitionOutlined /> Semantic</a-radio-button>
+          <a-radio-button value="tests"><ExperimentOutlined /> Tests</a-radio-button>
         </a-radio-group>
 
         <div style="flex:1" />
@@ -658,6 +677,7 @@ onUnmounted(() => {
       <SettingsView v-else-if="activeView === 'settings'" />
       <UtilitiesDashboard v-else-if="activeView === 'utility'" />
       <SemanticPanel v-else-if="activeView === 'semantic'" />
+      <FunctionalTestsView v-else-if="activeView === 'tests'" />
 
 
       <a-layout v-else>
@@ -709,7 +729,9 @@ onUnmounted(() => {
             <template #title="node">
               <!-- Location row -->
               <div v-if="node.kind === 'location'" style="display:flex;align-items:center;gap:6px;padding:2px 0">
-                <FolderOutlined style="color:#1890ff" />
+                <a-tooltip :title="node.location.kind ? (locationKindLabel[node.location.kind] ?? node.location.kind) : 'Unclassified'">
+                  <component :is="getLocationIcon(node.location.kind)" :style="[TREE_ICON_SLOT_STYLE, { color: '#1890ff' }]" />
+                </a-tooltip>
                 <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:12.5px">
                   {{ node.location.name }}
                 </span>
@@ -725,7 +747,9 @@ onUnmounted(() => {
                    source mutations (BACnet writes, simulation config) never
                    are, enforced backend-side regardless of this UI. -->
               <div v-else-if="node.device.source_type === 'external-bacnet'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
-                <ApiOutlined style="color:var(--text-muted)" />
+                <a-tooltip :title="node.device.equipment_type ? (equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type) : 'Unclassified device'">
+                  <component :is="getEquipmentIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
+                </a-tooltip>
                 <div style="flex:1;min-width:0">
                   <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
                   <div style="font-size:11px;color:var(--text-secondary)">
@@ -758,11 +782,16 @@ onUnmounted(() => {
 
               <!-- Device row -->
               <div v-else style="display:flex;align-items:center;gap:8px;padding:2px 0">
-                <a-badge :status="node.device.enabled ? 'success' : 'default'" />
+                <a-tooltip :title="node.device.equipment_type ? (equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type) : 'Unclassified device'">
+                  <component :is="getEquipmentIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
+                </a-tooltip>
                 <div style="flex:1;min-width:0">
                   <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
-                  <div style="font-size:11px;color:var(--text-secondary)">
-                    ID {{ node.device.device_instance }}<template v-if="node.device.equipment_type"> · {{ equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type }}</template>
+                  <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-secondary)">
+                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                      ID {{ node.device.device_instance }}<template v-if="node.device.equipment_type"> · {{ equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type }}</template>
+                    </span>
+                    <a-badge :status="node.device.enabled ? 'success' : 'default'" style="flex-shrink:0" />
                   </div>
                 </div>
                 <a-space :size="2" @click.stop>

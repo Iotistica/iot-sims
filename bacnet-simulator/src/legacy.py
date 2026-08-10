@@ -201,6 +201,14 @@ from .api.routers.semantic_suggestions import (
     router as semantic_suggestions_router,
 )
 
+from .api.routers.functional_tests import (
+    router as functional_tests_router,
+)
+
+from .api.routers.functional_test_runs import (
+    router as functional_test_runs_router,
+)
+
 from .api.guards import reject_external_device
 
 
@@ -373,6 +381,32 @@ class Database:
                     UNIQUE(source_entity_id, predicate, target_entity_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_semantic_relationships_target ON semantic_relationships(target_entity_id, predicate);
+
+                CREATE TABLE IF NOT EXISTS functional_tests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    equipment_type TEXT NOT NULL,
+                    definition_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE TABLE IF NOT EXISTS functional_test_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    functional_test_id INTEGER NOT NULL REFERENCES functional_tests(id) ON DELETE CASCADE,
+                    target_device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    execution_mode TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    started_at TEXT,
+                    finished_at TEXT,
+                    result TEXT,
+                    result_message TEXT,
+                    current_node_id TEXT,
+                    error TEXT,
+                    details_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
 
                 CREATE TABLE IF NOT EXISTS profiles (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2668,6 +2702,140 @@ class Database:
             cal.pop("device_id", None)
         dev["calendars"] = calendars
 
+    # ─── Functional tests ──────────────────────────────────────────────────
+    # Project-level data, independent of any single device/object/location
+    # (identified only by equipment_type, a plain validated string) --
+    # included verbatim in save_project/load_project below, no id-remapping
+    # needed since nothing references a functional_tests row and it
+    # references nothing itself.
+
+    def create_functional_test(self, data: dict) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO functional_tests (name, description, equipment_type, definition_json, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (data["name"], data.get("description", ""), data["equipment_type"], json.dumps(data["definition"]), now, now),
+            )
+            conn.commit()
+            return self._functional_test_row(conn, cur.lastrowid)
+
+    def get_functional_tests(self) -> list[dict]:
+        with self._conn() as conn:
+            return [
+                self._functional_test_dict(r)
+                for r in conn.execute("SELECT * FROM functional_tests ORDER BY name")
+            ]
+
+    def get_functional_test(self, test_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM functional_tests WHERE id=?", (test_id,)).fetchone()
+            return self._functional_test_dict(row) if row else None
+
+    def update_functional_test(self, test_id: int, data: dict) -> Optional[dict]:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE functional_tests SET name=?, description=?, equipment_type=?, definition_json=?, updated_at=? WHERE id=?",
+                (data["name"], data.get("description", ""), data["equipment_type"], json.dumps(data["definition"]),
+                 datetime.now(timezone.utc).isoformat(), test_id),
+            )
+            if cur.rowcount == 0:
+                conn.commit()
+                return None
+            conn.commit()
+            return self._functional_test_row(conn, test_id)
+
+    def delete_functional_test(self, test_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM functional_tests WHERE id=?", (test_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    @staticmethod
+    def _functional_test_row(conn: sqlite3.Connection, test_id: int) -> dict:
+        row = conn.execute("SELECT * FROM functional_tests WHERE id=?", (test_id,)).fetchone()
+        return Database._functional_test_dict(row)
+
+    @staticmethod
+    def _functional_test_dict(row: sqlite3.Row) -> dict:
+        d = dict(row)
+        d["definition"] = json.loads(d.pop("definition_json"))
+        return d
+
+    # ── Functional test runs (execution state -- not project data, see
+    # save_project/load_project below: deliberately not included in the
+    # project JSON blob, and ON DELETE CASCADE on both FKs means a project
+    # reload's DELETE FROM functional_tests / device wipe already cleans
+    # these up with no extra code needed here). ──────────────────────────
+
+    _FUNCTIONAL_TEST_RUN_UPDATABLE_FIELDS = {
+        "state", "started_at", "finished_at", "result", "result_message",
+        "current_node_id", "error",
+    }
+
+    def create_functional_test_run(self, data: dict) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO functional_test_runs (functional_test_id, target_device_id, execution_mode) "
+                "VALUES (?,?,?)",
+                (data["functional_test_id"], data["target_device_id"], data["execution_mode"]),
+            )
+            conn.commit()
+            return self._functional_test_run_row(conn, cur.lastrowid)
+
+    def get_functional_test_run(self, run_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            return self._functional_test_run_row(conn, run_id)
+
+    def find_active_functional_test_run(self, functional_test_id: int, target_device_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM functional_test_runs WHERE functional_test_id=? AND target_device_id=? "
+                "AND state IN ('pending','running') ORDER BY id DESC LIMIT 1",
+                (functional_test_id, target_device_id),
+            ).fetchone()
+            return self._functional_test_run_dict(row) if row else None
+
+    def update_functional_test_run(self, run_id: int, **fields) -> Optional[dict]:
+        updates = {k: v for k, v in fields.items() if k in self._FUNCTIONAL_TEST_RUN_UPDATABLE_FIELDS}
+        if not updates:
+            with self._conn() as conn:
+                return self._functional_test_run_row(conn, run_id)
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE functional_test_runs SET {set_clause} WHERE id=?",
+                (*updates.values(), run_id),
+            )
+            conn.commit()
+            return self._functional_test_run_row(conn, run_id)
+
+    def append_functional_test_run_detail(self, run_id: int, node_id: str, entry: dict) -> None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT details_json FROM functional_test_runs WHERE id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return
+            details = json.loads(row["details_json"] or "[]")
+            details.append(entry)
+            conn.execute(
+                "UPDATE functional_test_runs SET details_json=?, current_node_id=? WHERE id=?",
+                (json.dumps(details), node_id, run_id),
+            )
+            conn.commit()
+
+    @staticmethod
+    def _functional_test_run_row(conn: sqlite3.Connection, run_id: int) -> Optional[dict]:
+        row = conn.execute("SELECT * FROM functional_test_runs WHERE id=?", (run_id,)).fetchone()
+        return Database._functional_test_run_dict(row) if row else None
+
+    @staticmethod
+    def _functional_test_run_dict(row: sqlite3.Row) -> dict:
+        d = dict(row)
+        d["details"] = json.loads(d.pop("details_json") or "[]")
+        return d
+
     def save_project(
         self,
         name: str,
@@ -2700,12 +2868,18 @@ class Database:
             # the same way it already does for semantic_entities, rather
             # than trusting the stored id directly.
             energy_model_configs = [dict(r) for r in conn.execute("SELECT * FROM energy_model_configs")]
+            # No id-remapping needed on restore -- functional_tests has no FK
+            # to device/object/location at all (see create_functional_test's
+            # own comment), so this is stored/restored verbatim like the
+            # other blob fields but with none of their remap bookkeeping.
+            functional_tests = [dict(r) for r in conn.execute("SELECT * FROM functional_tests")]
             data = json.dumps({
                 "locations": locations,
                 "devices": devices,
                 "semantic_entities": semantic_entities,
                 "semantic_relationships": semantic_relationships,
                 "energy_model_configs": energy_model_configs,
+                "functional_tests": functional_tests,
                 "source_type": source_type,
                 "connection_config": connection_config,
             })
@@ -2749,12 +2923,14 @@ class Database:
             semantic_entities = [dict(r) for r in conn.execute("SELECT * FROM semantic_entities")]
             semantic_relationships = [dict(r) for r in conn.execute("SELECT * FROM semantic_relationships")]
             energy_model_configs = [dict(r) for r in conn.execute("SELECT * FROM energy_model_configs")]
+            functional_tests = [dict(r) for r in conn.execute("SELECT * FROM functional_tests")]
             data = json.dumps({
                 "locations": locations,
                 "devices": devices,
                 "semantic_entities": semantic_entities,
                 "semantic_relationships": semantic_relationships,
                 "energy_model_configs": energy_model_configs,
+                "functional_tests": functional_tests,
                 "source_type": source_type,
                 "connection_config": connection_config,
             })
@@ -2780,6 +2956,7 @@ class Database:
             conn.execute("DELETE FROM semantic_entities")
             conn.execute("DELETE FROM devices")
             conn.execute("DELETE FROM locations")
+            conn.execute("DELETE FROM functional_tests")
             conn.commit()
 
     def load_project(self, project_id: int) -> Optional[dict]:
@@ -2801,6 +2978,7 @@ class Database:
             conn.execute("DELETE FROM semantic_entities")
             conn.execute("DELETE FROM devices")
             conn.execute("DELETE FROM locations")
+            conn.execute("DELETE FROM functional_tests")
             conn.commit()
 
             # Restore locations parent-before-child, remapping old ids -> new
@@ -3003,6 +3181,22 @@ class Database:
                         cfg.get("instance_key") or "default",
                         cfg.get("enabled", 1),
                         cfg.get("parameters") or "{}",
+                    ),
+                )
+
+            # No FK to device/object/location at all -- unlike everything
+            # else restored above, nothing to remap, just re-insert verbatim.
+            for ft in payload.get("functional_tests", []):
+                conn.execute(
+                    "INSERT INTO functional_tests (name, description, equipment_type, definition_json, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        ft["name"],
+                        ft.get("description", ""),
+                        ft["equipment_type"],
+                        ft.get("definition_json") or "{}",
+                        ft.get("created_at") or datetime.now(timezone.utc).isoformat(),
+                        ft.get("updated_at") or datetime.now(timezone.utc).isoformat(),
                     ),
                 )
 
@@ -5792,6 +5986,8 @@ api.include_router(energy_router)
 api.include_router(discovery_router)
 api.include_router(external_objects_router)
 api.include_router(semantic_suggestions_router)
+api.include_router(functional_tests_router)
+api.include_router(functional_test_runs_router)
 
 api.add_middleware(
     CORSMiddleware,

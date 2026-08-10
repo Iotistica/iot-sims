@@ -25,6 +25,7 @@ from ..core.config import (
     VALID_RELIABILITY,
     VALID_SEGMENTATION,
 )
+from ..functional_tests.validation import validate_functional_test_definition
 from ..semantics.validation import validate_semantic_entity
 
 
@@ -331,3 +332,28 @@ class SettingsPayload(BaseModel):
 
 class PriorityWrite(BaseModel):
     value: Any = None  # None relinquishes the slot
+
+
+class FunctionalTestCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+    equipment_type: str
+    definition: dict
+
+    def validate_semantic(self) -> None:
+        if self.equipment_type not in EQUIPMENT_TYPES:
+            raise HTTPException(400, f"equipment_type must be one of: {sorted(EQUIPMENT_TYPES)}")
+
+    def validate_definition(self) -> None:
+        try:
+            validate_functional_test_definition(self.definition)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+
+class FunctionalTestUpdate(FunctionalTestCreate):
+    pass
+
+
+class FunctionalTestRunRequest(BaseModel):
+    target_device_id: int

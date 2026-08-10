@@ -37,6 +37,10 @@ import type {
   ExternalObjectRow,
   SemanticSuggestionsResponse,
   SemanticSuggestionEntry,
+  FunctionalTest,
+  FunctionalTestDefinition,
+  FunctionalTestResolveResponse,
+  FunctionalTestRun,
 } from './types'
 
 import { authToken, logout } from './auth'
@@ -219,6 +223,29 @@ export const api = {
     create: (b: Omit<SemanticRelationship, 'id'>)                 =>
       req<SemanticRelationship>('/semantic-relationships', { method: 'POST', body: JSON.stringify(b) }),
     del:    (id: number)                                          => req<null>(`/semantic-relationships/${id}`, { method: 'DELETE' }),
+  },
+
+  functionalTests: {
+    list:   ()                                                     => req<FunctionalTest[]>('/functional-tests'),
+    get:    (id: number)                                           => req<FunctionalTest>(`/functional-tests/${id}`),
+    create: (b: { name: string; description: string; equipment_type: string; definition: FunctionalTestDefinition }) =>
+      req<FunctionalTest>('/functional-tests', { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: { name: string; description: string; equipment_type: string; definition: FunctionalTestDefinition }) =>
+      req<FunctionalTest>(`/functional-tests/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)                                           => req<null>(`/functional-tests/${id}`, { method: 'DELETE' }),
+    resolve: (id: number, targetDeviceId: number) =>
+      req<FunctionalTestResolveResponse>(`/functional-tests/${id}/resolve`, {
+        method: 'POST', body: JSON.stringify({ target_device_id: targetDeviceId }),
+      }),
+    createRun: (id: number, targetDeviceId: number) =>
+      req<FunctionalTestRun>(`/functional-tests/${id}/runs`, {
+        method: 'POST', body: JSON.stringify({ target_device_id: targetDeviceId }),
+      }),
+  },
+
+  functionalTestRuns: {
+    get:    (runId: number) => req<FunctionalTestRun>(`/functional-test-runs/${runId}`),
+    cancel: (runId: number) => req<FunctionalTestRun>(`/functional-test-runs/${runId}/cancel`, { method: 'POST' }),
   },
 
   objects: {
