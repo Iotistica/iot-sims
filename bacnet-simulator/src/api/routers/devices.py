@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from ...bacnet.schemas import DeviceCreate, DeviceUpdate, EnergyModelConfigCreate
 from ...energy.registry import energy_model_config_to_api, validate_energy_model_parameters
+from ..guards import reject_external_device, reject_external_source_mutation
 
 
 router = APIRouter(
@@ -259,6 +260,9 @@ async def update_device(
             detail="Device not found",
         )
 
+    body_dict = body.model_dump()
+    reject_external_source_mutation(existing, body_dict)
+
     await validate_location(
         database,
         body.location_id,
@@ -268,7 +272,7 @@ async def update_device(
         updated = await asyncio.to_thread(
             database.update_device,
             device_id,
-            body.model_dump(),
+            body_dict,
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
@@ -360,6 +364,11 @@ async def delete_device(
             detail="Device not found",
         )
 
+    # Deliberately no reject_external_device() here: removing a device from
+    # the project inventory performs no BACnet action and doesn't touch
+    # simulator ownership, so it's allowed for external devices too --
+    # unlike every object/value/priority/simulation mutation below, which
+    # stays blocked.
     log_event(
         request,
         device_id,
@@ -436,6 +445,8 @@ async def create_device_energy_model(
             status_code=404,
             detail="Device not found",
         )
+
+    reject_external_device(device)
 
     try:
         validate_energy_model_parameters(body.model_type, body.parameters)

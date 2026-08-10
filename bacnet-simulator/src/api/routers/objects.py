@@ -14,6 +14,7 @@ from ...bacnet.schemas import (
     SetValueRequest,
 )
 from ...core.config import COMMANDABLE_TYPES
+from ..guards import reject_external_device
 
 
 router = APIRouter(
@@ -183,6 +184,7 @@ async def create_object(
         database,
         device_id,
     )
+    reject_external_device(device)
 
     try:
         obj = await asyncio.to_thread(
@@ -250,6 +252,12 @@ async def update_object(
 
     body.validate_type()
     body.validate_semantic()
+
+    device = await require_device(
+        database,
+        device_id,
+    )
+    reject_external_device(device)
 
     existing = await require_object(
         database,
@@ -339,6 +347,12 @@ async def delete_object(
 ) -> Response:
     database = get_database(request)
 
+    device = await require_device(
+        database,
+        device_id,
+    )
+    reject_external_device(device)
+
     obj = await require_object(
         database,
         device_id,
@@ -383,6 +397,12 @@ async def set_object_value(
 ):
     database = get_database(request)
     engine = get_engine(request)
+
+    device = await require_device(
+        database,
+        device_id,
+    )
+    reject_external_device(device)
 
     obj = await require_object(
         database,
@@ -504,6 +524,12 @@ async def write_priority_array(
             status_code=400,
             detail="priority must be between 1 and 16",
         )
+
+    device = await require_device(
+        database,
+        device_id,
+    )
+    reject_external_device(device)
 
     obj = await require_object(
         database,

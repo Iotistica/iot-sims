@@ -187,6 +187,16 @@ from .api.routers.fault_detection import (
 
 from .api.routers.energy import router as energy_router
 
+from .api.routers.discovery import (
+    router as discovery_router,
+)
+
+from .api.routers.external_objects import (
+    router as external_objects_router,
+)
+
+from .api.guards import reject_external_device
+
 
 _debug = 0
 _log = ModuleLogger(globals())
@@ -567,8 +577,90 @@ class Database:
             # that inference.
             if "can_receive_event_notifications" not in existing_dev_cols:
                 conn.execute("ALTER TABLE devices ADD COLUMN can_receive_event_notifications INTEGER")
+            # Schema migration: devices gains a source_type discriminator
+            # (simulated vs. external-bacnet, see src/api/routers/discovery.py)
+            # and a UNIQUE(device_instance) -> UNIQUE(device_instance,
+            # source_type) constraint change, so a discovered external device
+            # and a future simulated copy of it can coexist at the same BACnet
+            # instance. SQLite can't ALTER a UNIQUE constraint in place, and
+            # `devices` has ~10 FK-dependent child tables (objects,
+            # energy_model_configs, semantic_entities, trend_logs,
+            # bacnet_schedules, bacnet_calendars, fault_rule_configs,
+            # fault_events, notification_classes, event_enrollments,
+            # energy_history) with PRAGMA foreign_keys=ON (see _conn()) --
+            # verified live that the usual RENAME-old/recreate/DROP-old
+            # migration pattern (used elsewhere in this function for
+            # energy_model_configs) is unsafe here: RENAME rewrites every
+            # child table's stored REFERENCES text to point at the renamed-
+            # away name, and DROP TABLE on a table with incoming FK
+            # references fails outright once children hold rows. This
+            # follows SQLite's own documented procedure for that case instead:
+            # disable FK enforcement for the rebuild, rebuild under a new
+            # name, DROP the ORIGINAL (never renamed, so no child SQL text
+            # ever needs rewriting), rename the new table into place, verify
+            # with foreign_key_check before committing, then re-enable
+            # enforcement.
+            if "source_type" not in existing_dev_cols:
+                conn.commit()  # flush any pending transaction -- foreign_keys can't be toggled mid-transaction
+                conn.execute("PRAGMA foreign_keys = OFF")
+                conn.execute("BEGIN")
+                conn.execute("""
+                    CREATE TABLE devices_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        device_instance INTEGER NOT NULL
+                            CHECK(device_instance >= 1 AND device_instance <= 4194302),
+                        name TEXT NOT NULL,
+                        description TEXT NOT NULL DEFAULT '',
+                        vendor_name TEXT NOT NULL DEFAULT 'Iotistica',
+                        model_name TEXT NOT NULL DEFAULT 'BACnet Simulator',
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        firmware_revision TEXT NOT NULL DEFAULT 'N/A',
+                        protocol_revision INTEGER NOT NULL DEFAULT 22,
+                        max_apdu_length_accepted INTEGER NOT NULL DEFAULT 1024,
+                        segmentation_supported TEXT NOT NULL DEFAULT 'segmented-both',
+                        location_id INTEGER REFERENCES locations(id),
+                        equipment_type TEXT,
+                        can_receive_event_notifications INTEGER,
+                        source_type TEXT NOT NULL DEFAULT 'simulated'
+                            CHECK(source_type IN ('simulated','external-bacnet')),
+                        external_host TEXT,
+                        external_port INTEGER,
+                        external_vendor_id INTEGER,
+                        external_last_seen_at TEXT,
+                        UNIQUE(device_instance, source_type)
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO devices_new (
+                        id, device_instance, name, description, vendor_name, model_name,
+                        enabled, firmware_revision, protocol_revision, max_apdu_length_accepted,
+                        segmentation_supported, location_id, equipment_type,
+                        can_receive_event_notifications, source_type
+                    )
+                    SELECT
+                        id, device_instance, name, description, vendor_name, model_name,
+                        enabled, firmware_revision, protocol_revision, max_apdu_length_accepted,
+                        segmentation_supported, location_id, equipment_type,
+                        can_receive_event_notifications, 'simulated'
+                    FROM devices
+                """)
+                conn.execute("DROP TABLE devices")
+                conn.execute("ALTER TABLE devices_new RENAME TO devices")
+                fk_problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if fk_problems:
+                    conn.rollback()
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    raise RuntimeError(f"devices migration broke FK integrity: {fk_problems}")
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_devices_source_type ON devices(source_type)")
             if "point_type" not in existing_cols:
                 conn.execute("ALTER TABLE objects ADD COLUMN point_type TEXT")
+            # Additive migration: description, for external-BACnet discovered
+            # points (see src/api/routers/external_objects.py) -- also usable
+            # for simulated objects later, never interpreted by SimEngine.
+            if "description" not in existing_cols:
+                conn.execute("ALTER TABLE objects ADD COLUMN description TEXT")
             existing_loc_cols = {row[1] for row in conn.execute("PRAGMA table_info(locations)")}
             if "kind" not in existing_loc_cols:
                 conn.execute("ALTER TABLE locations ADD COLUMN kind TEXT")
@@ -1412,6 +1504,51 @@ class Database:
             r = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
             return dict(r) if r else None
 
+    def sync_external_devices(self, discovered: list[dict]) -> list[dict]:
+        """
+        Reconciles a fresh discovery pass into the project's external-BACnet
+        device inventory: updates the existing row if a device with this
+        instance was already synced, inserts a new row if not. Never
+        deletes -- a device missing from one Discover/Rediscover run may
+        just be temporarily offline (see plan notes). (device_instance,
+        source_type) is the reconciliation key, matching the table's own
+        UNIQUE constraint -- this is the only place in the codebase that
+        ever writes source_type='external-bacnet'.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            for d in discovered:
+                meta = d.get("metadata") or {}
+                conn.execute(
+                    "INSERT INTO devices (device_instance, name, description, vendor_name, "
+                    "model_name, enabled, source_type, external_host, external_port, "
+                    "external_vendor_id, external_last_seen_at) "
+                    "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, "
+                    "1, 'external-bacnet', :external_host, :external_port, "
+                    ":external_vendor_id, :external_last_seen_at) "
+                    "ON CONFLICT(device_instance, source_type) DO UPDATE SET "
+                    "name=excluded.name, description=excluded.description, "
+                    "vendor_name=excluded.vendor_name, model_name=excluded.model_name, "
+                    "external_host=excluded.external_host, external_port=excluded.external_port, "
+                    "external_vendor_id=excluded.external_vendor_id, "
+                    "external_last_seen_at=excluded.external_last_seen_at",
+                    {
+                        "device_instance": d["device_instance"],
+                        "name": meta.get("objectName") or d.get("name") or f"bacnet_device_{d['device_instance']}",
+                        "description": meta.get("description") or "",
+                        "vendor_name": meta.get("vendorName") or "Unknown",
+                        "model_name": meta.get("modelName") or "Unknown",
+                        "external_host": d.get("host"),
+                        "external_port": d.get("port"),
+                        "external_vendor_id": meta.get("vendorId"),
+                        "external_last_seen_at": now,
+                    },
+                )
+            conn.commit()
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM devices WHERE source_type='external-bacnet' ORDER BY device_instance"
+            )]
+
     def create_device(self, data: dict) -> dict:
         # `equipment_type` is presented in the UI as the device's Brick
         # class -- Brick is the source of truth, `devices.equipment_type`
@@ -1484,6 +1621,52 @@ class Database:
         with self._conn() as conn:
             r = conn.execute("SELECT * FROM objects WHERE id=?", (obj_id,)).fetchone()
             return dict(r) if r else None
+
+    def touch_external_device_last_seen(self, device_id: int) -> None:
+        """Bumps external_last_seen_at after a successful discover/refresh
+        touch -- the minimal "seen/not seen" signal, no device-health
+        subsystem."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE devices SET external_last_seen_at=? WHERE id=? AND source_type='external-bacnet'",
+                (datetime.now(timezone.utc).isoformat(), device_id),
+            )
+            conn.commit()
+
+    def sync_external_objects(self, device_id: int, points: list[dict]) -> list[dict]:
+        """
+        Upserts structural object identity for an external-BACnet device's
+        discovered points, keyed on the existing UNIQUE(device_id,
+        object_type, object_instance) constraint -- the same identity
+        already used for simulated objects. Each `points` entry is a plain
+        dict with object_type/object_instance/name/units/description.
+        Deliberately never touches behavior/behavior_params/manual_value
+        (simulation-only columns, left at their harmless defaults) or any
+        live present-value -- present values are read fresh and returned in
+        the API response only, never persisted here (see the discovery-vs-
+        refresh split in src/api/routers/external_objects.py).
+        """
+        with self._conn() as conn:
+            for p in points:
+                conn.execute(
+                    "INSERT INTO objects (device_id, object_type, object_instance, name, units, description) "
+                    "VALUES (:device_id, :object_type, :object_instance, :name, :units, :description) "
+                    "ON CONFLICT(device_id, object_type, object_instance) DO UPDATE SET "
+                    "name=excluded.name, units=excluded.units, description=excluded.description",
+                    {
+                        "device_id": device_id,
+                        "object_type": p["object_type"],
+                        "object_instance": p["object_instance"],
+                        "name": p.get("name") or f"{p['object_type']}_{p['object_instance']}",
+                        "units": p.get("units") or "no-units",
+                        "description": p.get("description"),
+                    },
+                )
+            conn.commit()
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance",
+                (device_id,),
+            )]
 
     def create_object(self, device_id: int, data: dict) -> dict:
         # `point_type` is presented in the UI as the point's Brick class --
@@ -2467,7 +2650,13 @@ class Database:
             cal.pop("device_id", None)
         dev["calendars"] = calendars
 
-    def save_project(self, name: str, description: str) -> dict:
+    def save_project(
+        self,
+        name: str,
+        description: str,
+        source_type: str = "simulated",
+        connection_config: Optional[dict] = None,
+    ) -> dict:
         with self._conn() as conn:
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             devices = [dict(r) for r in conn.execute(
@@ -2499,19 +2688,34 @@ class Database:
                 "semantic_entities": semantic_entities,
                 "semantic_relationships": semantic_relationships,
                 "energy_model_configs": energy_model_configs,
+                "source_type": source_type,
+                "connection_config": connection_config,
             })
             cur = conn.execute(
                 "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
                 (name, description, len(devices), data),
             )
             conn.commit()
-            return dict(conn.execute(
+            row = dict(conn.execute(
                 "SELECT id, name, description, created_at, device_count FROM profiles WHERE id=?",
                 (cur.lastrowid,),
             ).fetchone())
+            row["source_type"] = source_type
+            row["connection_config"] = connection_config
+            return row
 
     def update_project(self, project_id: int, name: str, description: str) -> bool:
         with self._conn() as conn:
+            # source_type/connection_config aren't part of live device/location
+            # state -- they only exist in this row's own stored data blob, so
+            # they must be read back and re-embedded rather than dropped.
+            existing = conn.execute(
+                "SELECT data FROM profiles WHERE id=?", (project_id,)
+            ).fetchone()
+            existing_payload = json.loads(existing["data"]) if existing else {}
+            source_type = existing_payload.get("source_type", "simulated")
+            connection_config = existing_payload.get("connection_config")
+
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             devices = [dict(r) for r in conn.execute(
                 "SELECT * FROM devices ORDER BY device_instance"
@@ -2533,6 +2737,8 @@ class Database:
                 "semantic_entities": semantic_entities,
                 "semantic_relationships": semantic_relationships,
                 "energy_model_configs": energy_model_configs,
+                "source_type": source_type,
+                "connection_config": connection_config,
             })
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
@@ -2541,11 +2747,28 @@ class Database:
             conn.commit()
             return cur.rowcount > 0
 
-    def load_project(self, project_id: int) -> bool:
+    def clear_live_state(self) -> None:
+        """Wipes all live project state back to blank -- the exact same
+        sequence load_project() uses to clear the slate before restoring a
+        saved snapshot (see that method's own comment for why semantic
+        tables must be cleared before devices/locations, not via cascade:
+        semantic_entities.location_id has no ON DELETE CASCADE, so an
+        unguarded location delete can be permanently blocked by a leftover
+        semantic entity). Used by the "New Project" reset flow so it can't
+        leave orphaned locations/semantic entities behind the way a pile of
+        individual per-row API deletes could."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM semantic_relationships")
+            conn.execute("DELETE FROM semantic_entities")
+            conn.execute("DELETE FROM devices")
+            conn.execute("DELETE FROM locations")
+            conn.commit()
+
+    def load_project(self, project_id: int) -> Optional[dict]:
         with self._conn() as conn:
             row = conn.execute("SELECT data FROM profiles WHERE id=?", (project_id,)).fetchone()
             if not row:
-                return False
+                return None
             payload = json.loads(row["data"])
             # Wipe semantic tables BEFORE devices/locations, not after and
             # not via cascade: semantic_entities.location_id has no
@@ -2611,10 +2834,12 @@ class Database:
                 cur = conn.execute(
                     "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
                     "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, "
-                    "location_id, equipment_type) "
+                    "location_id, equipment_type, source_type, external_host, external_port, "
+                    "external_vendor_id, external_last_seen_at) "
                     "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
                     ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, "
-                    ":location_id, :equipment_type)",
+                    ":location_id, :equipment_type, :source_type, :external_host, :external_port, "
+                    ":external_vendor_id, :external_last_seen_at)",
                     {
                         **dev,
                         "firmware_revision": dev.get("firmware_revision") or "N/A",
@@ -2623,6 +2848,17 @@ class Database:
                         "segmentation_supported": dev.get("segmentation_supported") or "segmented-both",
                         "location_id": location_id_map.get(old_location_id) if old_location_id is not None else None,
                         "equipment_type": dev.get("equipment_type"),
+                        # Older saved projects (pre-dating this column) have no
+                        # source_type at all -- default to 'simulated', same
+                        # fallback SimEngine._simulated_enabled_devices() uses,
+                        # so a device never silently becomes external (or vice
+                        # versa, see the safety-boundary requirement) just by
+                        # being saved/reloaded.
+                        "source_type": dev.get("source_type") or "simulated",
+                        "external_host": dev.get("external_host"),
+                        "external_port": dev.get("external_port"),
+                        "external_vendor_id": dev.get("external_vendor_id"),
+                        "external_last_seen_at": dev.get("external_last_seen_at"),
                     },
                 )
                 dev_id = cur.lastrowid
@@ -2635,9 +2871,9 @@ class Database:
                     obj_cur = conn.execute(
                         "INSERT OR IGNORE INTO objects "
                         "(device_id, object_type, object_instance, name, units, behavior, "
-                        "behavior_params, enabled, manual_value, number_of_states, reliability, polarity, point_type) "
+                        "behavior_params, enabled, manual_value, number_of_states, reliability, polarity, point_type, description) "
                         "VALUES (:device_id, :object_type, :object_instance, :name, :units, "
-                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability, :polarity, :point_type)",
+                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability, :polarity, :point_type, :description)",
                         {
                             **obj,
                             "device_id": dev_id,
@@ -2646,6 +2882,7 @@ class Database:
                             "reliability": obj.get("reliability") or "no-fault-detected",
                             "polarity": obj.get("polarity") or "normal",
                             "point_type": obj.get("point_type"),
+                            "description": obj.get("description"),
                         },
                     )
                     obj_id = obj_cur.lastrowid if obj_cur.lastrowid else conn.execute(
@@ -2807,7 +3044,10 @@ class Database:
                 )
 
             conn.commit()
-            return True
+            return {
+                "source_type": payload.get("source_type", "simulated"),
+                "connection_config": payload.get("connection_config"),
+            }
 
     def import_project(self, name: str, description: str, data: dict) -> dict:
         with self._conn() as conn:
@@ -3336,6 +3576,18 @@ class SimApplication(Application):
         self._virtual_object_lists: dict[int, list] = {}
         self._sim_engine: Any = None  # set by SimEngine after construction
         self._own_ip: Optional[str] = None  # set by SimEngine.start(), for I-Am loopback filtering
+        self._i_am_listeners: list[Callable[[Any], None]] = []
+
+    def add_i_am_listener(self, listener: Callable[[Any], None]) -> None:
+        """Register a callback invoked with every inbound I-Am APDU, after
+        this class's own duplicate-device-ID handling. Used by
+        src/bacnet/client/transport.py's targeted-discovery I-Am collector.
+        Purely additive -- never replaces do_IAmRequest itself."""
+        self._i_am_listeners.append(listener)
+
+    def remove_i_am_listener(self, listener: Callable[[Any], None]) -> None:
+        if listener in self._i_am_listeners:
+            self._i_am_listeners.remove(listener)
 
     def get_object_id(self, objid):
         obj = super().get_object_id(objid)
@@ -3414,6 +3666,22 @@ class SimApplication(Application):
             metrics.duplicate_id_events.append({
                 "ts": now, "device_instance": instance, "source": src_str,
             })
+
+        # Restore BACpypes3's own I-Am processing (WhoIsIAmServices's
+        # _who_is_futures matching, used by Application.who_is() callers) --
+        # previously unreachable since this override never chained to it.
+        try:
+            await super().do_IAmRequest(apdu)
+        except Exception:
+            log.exception("super().do_IAmRequest failed for %r", apdu)
+
+        # Notify any registered temporary listeners (targeted-discovery I-Am
+        # collectors, see src/bacnet/client/transport.py) -- purely additive.
+        for listener in list(self._i_am_listeners):
+            try:
+                listener(apdu)
+            except Exception:
+                log.exception("I-Am listener failed for %r", apdu)
 
     def _log_received_event_notification(self, apdu) -> None:
         """Parses a real, wire-received APDU and defers to the shared logger.
@@ -3755,6 +4023,37 @@ def normalize_present_value(object_type: str, val: Any) -> Any:
 
 # ─── Sim Engine ───────────────────────────────────────────────────────────────
 
+def _force_close_bacnet_transports(app: Any) -> None:
+    """
+    Defensive cleanup for what app.close() can't handle: if a link-layer UDP
+    endpoint's creation task hadn't finished binding yet when close() ran (it
+    can raise AttributeError trying to close a transport that was never set
+    -- see bacpypes3's ipv4/__init__.py IPv4DatagramServer.close()), close()
+    bails out without ever touching that task. BACpypes3's own endpoint
+    setup (retrying_create_datagram_endpoint) then keeps it retrying forever
+    in the background, fully detached from this now-abandoned Application --
+    if it eventually succeeds, it binds a real socket nothing else will ever
+    release, permanently occupying this simulator's own BACnet port even
+    though self.app has already been reset to None. Reaches into each link
+    layer's server and either cancels the task (still pending) or closes the
+    transport it already produced (finished just after close() gave up).
+    """
+    for link_layer in getattr(app, "link_layers", {}).values():
+        server = getattr(link_layer, "server", None)
+        for task in getattr(server, "_transport_tasks", None) or []:
+            if not task.done():
+                task.cancel()
+                continue
+            try:
+                transport, _protocol = task.result()
+            except Exception:
+                continue
+            try:
+                transport.close()
+            except Exception:
+                pass
+
+
 class SimEngine:
     """Manages the running BACnet application and the simulation tick loop."""
 
@@ -3836,10 +4135,26 @@ class SimEngine:
                 behavior._fault_active = False
                 behavior._fault_end_elapsed = -1.0
 
+    @staticmethod
+    def _simulated_enabled_devices(devices: list[dict]) -> list[dict]:
+        """The ONLY devices SimEngine ever turns into live virtual BACnet
+        DeviceObjects. External BACnet devices (source_type ==
+        'external-bacnet') must NEVER appear here -- they belong to a real
+        physical device the simulator only reads from, never impersonates.
+        Every downstream effect (virtual-device registration, object/
+        trend-log/schedule/calendar creation, and the I-Am announcement
+        loop) cascades from this one list -- see start(). A device dict
+        with no source_type key at all (pre-migration shape) defaults to
+        'simulated' for backward compatibility."""
+        return [
+            d for d in devices
+            if d["enabled"] and d.get("source_type", "simulated") == "simulated"
+        ]
+
     async def start(self) -> None:
         devices = await asyncio.to_thread(self.db.get_devices)
         self._devices_by_instance = {d["device_instance"]: d for d in devices}
-        enabled = [d for d in devices if d["enabled"]]
+        enabled = self._simulated_enabled_devices(devices)
         if not enabled:
             log.info("No enabled devices — BACnet stack idle")
             self.app = None
@@ -4538,6 +4853,14 @@ class SimEngine:
                     await self.app.close()
                 except Exception:
                     pass
+                finally:
+                    # Always sweep for any endpoint task close() didn't get
+                    # to, so a failure here can never leak a live socket
+                    # bind past this reload (see the helper's docstring).
+                    try:
+                        _force_close_bacnet_transports(self.app)
+                    except Exception:
+                        pass
                 self.app = None
             await self.start()
             log.info("Reload complete")
@@ -4575,6 +4898,11 @@ class SimEngine:
                 await self.app.close()
             except Exception:
                 pass
+            finally:
+                try:
+                    _force_close_bacnet_transports(self.app)
+                except Exception:
+                    pass
             self.app = None
         log.info("BACnet stack stopped")
 
@@ -5443,6 +5771,8 @@ api.include_router(simulation_router)
 api.include_router(websocket_router)
 api.include_router(fault_router)
 api.include_router(energy_router)
+api.include_router(discovery_router)
+api.include_router(external_objects_router)
 
 api.add_middleware(
     CORSMiddleware,
@@ -5535,8 +5865,10 @@ async def update_settings(body: SettingsPayload):
 
 @api.post("/devices/{device_id}/import/ede")
 async def import_device_ede(device_id: int, file: UploadFile = File(...)):
-    if not await asyncio.to_thread(db.get_device, device_id):
+    device = await asyncio.to_thread(db.get_device, device_id)
+    if not device:
         raise HTTPException(404, "Device not found")
+    reject_external_device(device)
     text = (await file.read()).decode("utf-8", errors="replace")
     rows = ede.parse_ede_rows(text)
     instances = sorted({row["device_instance"] for row in rows})

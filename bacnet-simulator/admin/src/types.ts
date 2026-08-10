@@ -16,6 +16,12 @@ export interface Device {
   can_receive_event_notifications?: boolean | null
   /** Server-computed: the override if set, otherwise the equipment_type-based inference. */
   effective_can_receive_event_notifications?: boolean
+  /** 'simulated' (default) or 'external-bacnet' (read-only, discovered from a real device). */
+  source_type?: 'simulated' | 'external-bacnet'
+  external_host?: string | null
+  external_port?: number | null
+  external_vendor_id?: number | null
+  external_last_seen_at?: string | null
 }
 
 export interface Location {
@@ -41,6 +47,14 @@ export interface SimObject {
   reliability: string
   polarity: string
   point_type?: string | null
+  description?: string | null
+}
+
+/** SimObject shape plus a live-read value, returned by the external-device
+ * discover/refresh endpoints. present_value is transient -- never persisted,
+ * always re-read fresh (see Database.sync_external_objects's docstring). */
+export interface ExternalObjectRow extends SimObject {
+  present_value: unknown
 }
 
 export interface MetaOption {
@@ -281,12 +295,35 @@ export interface Calendar {
   enabled: boolean
 }
 
+export type ProjectSourceType = 'simulated' | 'external-bacnet'
+
+export interface BACnetConnectionConfig {
+  discovery_target: string | null
+  device_instance_low: number
+  device_instance_high: number
+  timeout_ms: number
+}
+
 export interface Project {
   id: number
   name: string
   description: string
   created_at: string
   device_count: number
+  source_type?: ProjectSourceType
+  connection_config?: BACnetConnectionConfig | null
+}
+
+export interface DiscoveredDevice {
+  name: string
+  fingerprint: string
+  host: string
+  port: number
+  device_instance: number
+  confidence: 'high' | 'medium'
+  discovered_at: string
+  validated: boolean
+  metadata: Record<string, unknown>
 }
 
 export interface BackupEntry {

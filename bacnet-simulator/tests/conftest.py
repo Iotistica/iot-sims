@@ -52,6 +52,14 @@ def _routers():
     except ImportError:
         pass  # not added until phase 3
 
+    try:
+        from src.api.routers.objects import router as objects_router
+        from src.api.routers.external_objects import router as external_objects_router
+        routers.append(objects_router)
+        routers.append(external_objects_router)
+    except ImportError:
+        pass
+
     return routers
 
 

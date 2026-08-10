@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import type { TableColumnsType } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import LocationDrawer from './components/LocationDrawer.vue'
-import ObjectDrawer from './components/ObjectDrawer.vue'
 import ProjectsDrawer from './components/ProjectsDrawer.vue'
-import TemplatePickerModal from './components/TemplatePickerModal.vue'
-import SaveTemplateModal from './components/SaveTemplateModal.vue'
+import NewProjectModal from './components/NewProjectModal.vue'
+import ObjectsPanel from './components/ObjectsPanel.vue'
+import CreateSimulatedCopyModal from './components/CreateSimulatedCopyModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import LoginView from './components/LoginView.vue'
@@ -23,15 +22,13 @@ import TrendLogDrawer from './components/TrendLogDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
 import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
-import HistoryChart from './components/HistoryChart.vue'
-import GridFilterToolbar from './components/GridFilterToolbar.vue'
 
-import type { Device, SimObject, Meta, Health, HistoryPoint, Location } from './types'
+import type { Device, Meta, Health, Location, Project, ProjectSourceType, BACnetConnectionConfig } from './types'
 import { api, projectDirty } from './api'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
-import { formatPresentValue } from './format'
-import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
+import { copyDeviceAndObjects } from './deviceCopy'
+import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 
 const activeView = ref<
   'devices' |
@@ -61,6 +58,34 @@ const filteredDevices = computed(() => {
     d.model_name.toLowerCase().includes(q)
   )
 })
+
+// External-BACnet projects: "Discover Devices"/"Rediscover" persists
+// results as real Device rows (source_type='external-bacnet') via
+// api.discovery.sync(), so they flow through the exact same
+// devices/filteredDevices/sidebarTree path simulated devices already use —
+// no separate tree structure needed. These two refs are just local button
+// UI state (loading spinner, last-run error), not a device list.
+const externalSyncLoading = ref(false)
+const externalSyncError = ref<string | null>(null)
+
+async function runDiscovery() {
+  externalSyncLoading.value = true
+  externalSyncError.value = null
+  try {
+    const result = await api.discovery.sync(activeProjectConnectionConfig.value ?? {
+      discovery_target: null, device_instance_low: 0, device_instance_high: 4194303, timeout_ms: 5000,
+    })
+    message.success(result.devices.length
+      ? `Discovered ${result.devices.length} device${result.devices.length !== 1 ? 's' : ''}`
+      : 'No devices found')
+    await loadDevices()
+    await loadHealth()
+  } catch (e: unknown) {
+    externalSyncError.value = (e as Error).message ?? 'Discovery failed'
+  } finally {
+    externalSyncLoading.value = false
+  }
+}
 
 interface SidebarTreeNode {
   key: string
@@ -96,6 +121,10 @@ const sidebarTree = computed<SidebarTreeNode[]>(() => {
   }
   return roots
 })
+const sidebarRawCount = computed(() => devices.value.length)
+const sidebarFilteredCount = computed(() => filteredDevices.value.length)
+const hasExternalDevices = computed(() => devices.value.some(d => d.source_type === 'external-bacnet'))
+
 const expandedKeys = ref<string[]>([])
 watch(locations, () => { expandedKeys.value = locations.value.map(l => `location-${l.id}`) }, { immediate: true })
 
@@ -105,7 +134,7 @@ function onTreeSelect(_keys: unknown, info: { node: { dataRef?: SidebarTreeNode 
 }
 
 const selectedDevice = ref<Device | null>(null)
-const objects = ref<SimObject[]>([])
+const objectsPanelRef = ref<{ reload: () => void } | null>(null)
 const liveValues = ref<Record<number, number | boolean>>({})
 
 // Drawers
@@ -113,11 +142,9 @@ const deviceDrawerOpen  = ref(false)
 const editingDevice     = ref<Device | null>(null)
 const locationDrawerOpen = ref(false)
 const editingLocation    = ref<Location | null>(null)
-const objectDrawerOpen  = ref(false)
-const editingObject     = ref<SimObject | null>(null)
 const projectsDrawerOpen   = ref(false)
-const templateModalOpen    = ref(false)
-const saveTemplateOpen     = ref(false)
+const createCopyModalOpen  = ref(false)
+const createCopySource     = ref<Device | null>(null)
 
 // Active project state — persisted to localStorage so a page reload (e.g.
 // after a frontend rebuild) doesn't lose track of which project "Save"
@@ -126,21 +153,30 @@ const ACTIVE_PROJECT_KEY = 'bacnet-sim-active-project'
 const activeProjectId   = ref<number | null>(null)
 const activeProjectName = ref<string | null>(null)
 const activeProjectDesc = ref<string>('')
+const activeProjectSourceType = ref<ProjectSourceType>('simulated')
+const activeProjectConnectionConfig = ref<BACnetConnectionConfig | null>(null)
 
 function loadActiveProjectFromStorage() {
   try {
     const raw = localStorage.getItem(ACTIVE_PROJECT_KEY)
     if (!raw) return
-    const saved = JSON.parse(raw) as { id: number; name: string; desc: string }
+    const saved = JSON.parse(raw) as {
+      id: number; name: string; desc: string
+      sourceType?: ProjectSourceType; connectionConfig?: BACnetConnectionConfig | null
+    }
     activeProjectId.value = saved.id
     activeProjectName.value = saved.name
     activeProjectDesc.value = saved.desc
+    // Older stored entries (pre-source_type) have neither field — default to
+    // 'simulated' so existing projects keep behaving exactly as before.
+    activeProjectSourceType.value = saved.sourceType ?? 'simulated'
+    activeProjectConnectionConfig.value = saved.connectionConfig ?? null
   } catch {
     // Malformed/stale storage — ignore and fall back to "no active project"
   }
 }
 
-watch([activeProjectId, activeProjectName, activeProjectDesc], () => {
+watch([activeProjectId, activeProjectName, activeProjectDesc, activeProjectSourceType, activeProjectConnectionConfig], () => {
   if (activeProjectId.value === null) {
     localStorage.removeItem(ACTIVE_PROJECT_KEY)
   } else {
@@ -148,23 +184,17 @@ watch([activeProjectId, activeProjectName, activeProjectDesc], () => {
       id: activeProjectId.value,
       name: activeProjectName.value,
       desc: activeProjectDesc.value,
+      sourceType: activeProjectSourceType.value,
+      connectionConfig: activeProjectConnectionConfig.value,
     }))
   }
-})
+}, { deep: true })
 
 // Save-project modal
 const saveModalOpen    = ref(false)
 const saveModalName    = ref('')
 const saveModalDesc    = ref('')
 const saveModalLoading = ref(false)
-
-// Set-value modal
-const setValOpen    = ref(false)
-const setValObj     = ref<SimObject | null>(null)
-const setValInput   = ref(0)
-const setValActive  = ref(true)
-const setValLoading = ref(false)
-const setValIsBinary = computed(() => setValObj.value?.object_type.startsWith('binary') ?? false)
 
 // WebSocket
 let ws: WebSocket | null = null
@@ -183,19 +213,6 @@ function wsConnect() {
   // otherwise reconnect forever against a server that immediately closes it.
   ws.onclose = () => { if (authToken.value) wsTimer = setTimeout(wsConnect, 3000) }
   ws.onerror = () => ws?.close()
-}
-
-function liveVal(id: number): number | boolean | null {
-  const v = liveValues.value[id]
-  return v !== undefined ? v : null
-}
-
-function hasLive(id: number): boolean {
-  return liveValues.value[id] !== undefined
-}
-
-function fmtVal(obj: SimObject): string {
-  return formatPresentValue(obj.object_type, liveVal(obj.id))
 }
 
 // Loaders
@@ -236,14 +253,9 @@ async function loadDevices() {
 async function loadLocations() {
   try { locations.value = await api.locations.list() } catch { /* swallow */ }
 }
-async function loadObjects() {
-  if (!selectedDevice.value) return
-  try { objects.value = await api.objects.list(selectedDevice.value.id) } catch { /* swallow */ }
-}
 
 function selectDevice(d: Device) {
   selectedDevice.value = d
-  loadObjects()
 }
 
 // Device actions
@@ -255,40 +267,44 @@ async function duplicateDevice(d: Device) {
     ? Math.max(...devices.value.map(x => x.device_instance)) + 1
     : d.device_instance + 1
   try {
-    const created = await api.devices.create({
-      device_instance: nextInstance,
-      name:            `${d.name} Copy`,
-      description:     d.description,
-      vendor_name:     d.vendor_name,
-      model_name:      d.model_name,
-      enabled:         d.enabled,
-      firmware_revision:        d.firmware_revision,
-      protocol_revision:        d.protocol_revision,
-      max_apdu_length_accepted: d.max_apdu_length_accepted,
-      segmentation_supported:   d.segmentation_supported,
-      location_id:              d.location_id,
-    })
     const srcObjects = await api.objects.list(d.id)
-    for (const obj of srcObjects) {
-      await api.objects.create(created.id, {
-        object_type:      obj.object_type,
-        object_instance:  obj.object_instance,
-        name:             obj.name,
-        units:            obj.units,
-        behavior:         obj.behavior,
-        behavior_params:  obj.behavior_params,
-        enabled:          obj.enabled,
-        number_of_states: obj.number_of_states,
-        reliability:      obj.reliability,
-        polarity:         obj.polarity,
-      })
-    }
+    const { objectCount } = await copyDeviceAndObjects(d, srcObjects, { name: `${d.name} Copy`, deviceInstance: nextInstance })
     await loadDevices()
     await loadHealth()
-    message.success(`Duplicated "${d.name}" with ${srcObjects.length} object${srcObjects.length !== 1 ? 's' : ''}`)
+    message.success(`Duplicated "${d.name}" with ${objectCount} object${objectCount !== 1 ? 's' : ''}`)
   } catch (e: unknown) {
     message.error((e as Error).message)
   }
+}
+
+// External devices — "Create Simulated Copy" (tree dropdown) and "Remove
+// from Project" (also available from DeviceDrawer's Edit form).
+function openCreateSimulatedCopy(d: Device) {
+  createCopySource.value = d
+  createCopyModalOpen.value = true
+}
+async function onSimulatedCopyCreated() {
+  await loadDevices()
+  await loadHealth()
+}
+function removeExternalDevice(d: Device) {
+  Modal.confirm({
+    title: `Remove "${d.name}" from this project?`,
+    content: 'Removes this device and its discovered objects from the project inventory. The physical device on the network is unaffected.',
+    okType: 'danger',
+    okText: 'Remove',
+    onOk: async () => {
+      try {
+        await api.devices.del(d.id)
+        if (selectedDevice.value?.id === d.id) selectedDevice.value = null
+        await loadDevices()
+        await loadHealth()
+        message.success('Device removed from project')
+      } catch (e: unknown) {
+        message.error((e as Error).message ?? 'Failed to remove device')
+      }
+    },
+  })
 }
 // Location actions
 function openAddLocation() { editingLocation.value = null; locationDrawerOpen.value = true }
@@ -381,30 +397,44 @@ async function onEdeImportFileChange(e: Event) {
   try {
     const result = await api.devices.importEde(target.id, file)
     message.success(`${result.objects_imported} object${result.objects_imported !== 1 ? 's' : ''} imported into "${target.name}"`)
-    if (selectedDevice.value?.id === target.id) await loadObjects()
+    if (selectedDevice.value?.id === target.id) objectsPanelRef.value?.reload()
   } catch (e2: unknown) {
     message.error((e2 as Error).message ?? 'Import failed')
   }
 }
 
 // Project actions
-async function resetToNewProject() {
-  await Promise.allSettled(devices.value.map(d => api.devices.del(d.id)))
+async function resetToNewProject(silent = false) {
+  // Reuses the server's own load_project() wipe sequence (semantic
+  // relationships/entities, then devices, then locations, in that order --
+  // see clear_live_project's docstring) instead of looping individual
+  // per-row deletes. That per-row approach used to leave locations
+  // (and their parents) permanently stuck: delete_location() refuses to
+  // remove a location a leftover semantic entity still points at, and nothing
+  // in a device-only delete loop ever touched semantic tables at all.
+  await api.projects.clear()
   selectedDevice.value = null
-  objects.value = []
   activeProjectId.value = null
   activeProjectName.value = null
   activeProjectDesc.value = ''
+  activeProjectSourceType.value = 'simulated'
+  activeProjectConnectionConfig.value = null
   projectDirty.value = false
   await loadDevices()
+  await loadLocations()
   await loadHealth()
-  message.success('Ready — add your first device')
+  // NewProjectModal's Create flow calls this first and shows its own,
+  // more specific "<name>" created" message right after — skip the
+  // generic one there to avoid two toasts for one action.
+  if (!silent) message.success('Ready — add your first device')
 }
 
-function newProject() {
+const newProjectModalOpen = ref(false)
+
+function onNewProjectClick() {
   if (!projectDirty.value) {
-    // Nothing unsaved to lose — proceed straight to a fresh project.
-    resetToNewProject()
+    // Nothing unsaved to lose — go straight to the modal.
+    newProjectModalOpen.value = true
     return
   }
   Modal.confirm({
@@ -412,8 +442,16 @@ function newProject() {
     content: 'Save the current setup as a project first if you want to keep it.',
     okText: 'Start Fresh',
     okType: 'danger',
-    onOk: resetToNewProject,
+    onOk: () => { newProjectModalOpen.value = true },
   })
+}
+
+function onNewProjectCreated(project: Project) {
+  activeProjectId.value = project.id
+  activeProjectName.value = project.name
+  activeProjectDesc.value = project.description
+  activeProjectSourceType.value = project.source_type ?? 'simulated'
+  activeProjectConnectionConfig.value = project.connection_config ?? null
 }
 
 function openSaveAs() {
@@ -443,10 +481,20 @@ async function doSave() {
   if (!saveModalName.value.trim()) return
   saveModalLoading.value = true
   try {
-    const project = await api.projects.save(saveModalName.value.trim(), saveModalDesc.value.trim())
+    // Save As duplicates the current project's identity too — an External
+    // BACnet project's copy should still be External BACnet with the same
+    // connection config, not silently downgrade to a blank Simulated one.
+    const project = await api.projects.save(
+      saveModalName.value.trim(),
+      saveModalDesc.value.trim(),
+      activeProjectSourceType.value,
+      activeProjectConnectionConfig.value,
+    )
     activeProjectId.value = project.id
     activeProjectName.value = project.name
     activeProjectDesc.value = project.description
+    activeProjectSourceType.value = project.source_type ?? 'simulated'
+    activeProjectConnectionConfig.value = project.connection_config ?? null
     saveModalOpen.value = false
     projectDirty.value = false
     message.success(`"${project.name}" saved`)
@@ -457,255 +505,27 @@ async function doSave() {
   }
 }
 
-async function onProjectLoaded(id: number, name: string, desc: string) {
+async function onProjectLoaded(
+  id: number, name: string, desc: string,
+  sourceType: ProjectSourceType, connectionConfig: BACnetConnectionConfig | null,
+) {
   activeProjectId.value = id
   activeProjectName.value = name
   activeProjectDesc.value = desc
+  activeProjectSourceType.value = sourceType
+  activeProjectConnectionConfig.value = connectionConfig
   projectDirty.value = false
   await loadDevices()
   await loadLocations()
   selectedDevice.value = null
-  objects.value = []
   await loadHealth()
 }
-
-// Object actions
-function openAddObject() { editingObject.value = null; objectDrawerOpen.value = true }
-function openEditObject(obj: SimObject) { editingObject.value = obj; objectDrawerOpen.value = true }
-async function onObjectSaved() { await loadObjects() }
-async function duplicateObject(obj: SimObject) {
-  if (!selectedDevice.value) return
-  const nextInstance = objects.value.length
-    ? Math.max(...objects.value.map(o => o.object_instance)) + 1
-    : obj.object_instance + 1
-  try {
-    await api.objects.create(selectedDevice.value.id, {
-      object_type:     obj.object_type,
-      object_instance: nextInstance,
-      name:            `${obj.name} Copy`,
-      units:           obj.units,
-      behavior:        obj.behavior,
-      behavior_params: obj.behavior_params,
-      enabled:         obj.enabled,
-    })
-    await loadObjects()
-    message.success(`Duplicated "${obj.name}"`)
-  } catch (e: unknown) {
-    message.error((e as Error).message)
-  }
-}
-async function toggleObjectEnabled(obj: SimObject) {
-  const nextEnabled = obj.enabled ? 0 : 1
-  try {
-    await api.objects.update(selectedDevice.value!.id, obj.id, {
-      object_type:     obj.object_type,
-      object_instance: obj.object_instance,
-      name:            obj.name,
-      units:           obj.units,
-      behavior:        obj.behavior,
-      behavior_params: obj.behavior_params,
-      enabled:         nextEnabled,
-    })
-    obj.enabled = nextEnabled
-  } catch (e) {
-    message.error((e as Error).message || 'Failed to toggle object')
-  }
-}
-
-// History chart
-const histModalOpen   = ref(false)
-const histObj         = ref<SimObject | null>(null)
-const histData        = ref<HistoryPoint[]>([])
-const histLoading     = ref(false)
-
-async function openHistory(obj: SimObject) {
-  if (!selectedDevice.value) return
-  histObj.value = obj
-  histData.value = []
-  histLoading.value = true
-  histModalOpen.value = true
-  try {
-    histData.value = await api.objects.history(selectedDevice.value.id, obj.id)
-  } catch { /* swallow */ } finally {
-    histLoading.value = false
-  }
-}
-
-function histFmt(v: number, obj: SimObject | null): string {
-  if (!obj) return v.toFixed(2)
-  return formatPresentValue(obj.object_type, v)
-}
-
-// Set value
-function openSetValue(obj: SimObject) {
-  setValObj.value = obj
-  const current = liveVal(obj.id)
-  if (obj.object_type.startsWith('binary')) {
-    setValActive.value = typeof current === 'boolean' ? current : Number(current ?? 0) >= 0.5
-  } else {
-    setValInput.value = Number(current ?? 0)
-  }
-  setValOpen.value = true
-}
-async function doSetValue() {
-  if (!setValObj.value || !selectedDevice.value) return
-  setValLoading.value = true
-  try {
-    const value = setValIsBinary.value ? setValActive.value : setValInput.value
-    await api.objects.setValue(selectedDevice.value.id, setValObj.value.id, value)
-    setValOpen.value = false
-    message.success('Value updated')
-  } catch (e: unknown) {
-    message.error((e as Error).message)
-  } finally {
-    setValLoading.value = false
-  }
-}
-
-// Table
-const BEHAVIOR_COLOR: Record<string, string> = {
-  constant: 'default', sine: 'blue', noise: 'orange', random_walk: 'purple', manual: 'red',
-  schedule: 'cyan', ramp: 'green', fault: 'volcano',
-}
-
-// Point Type stores the raw Brick class (e.g. "Supply_Air_Temperature_Sensor")
-// — look up its friendly display label from /meta rather than showing the
-// underscored class name directly.
-const pointTypeLabel = computed(() => {
-  const map: Record<string, string> = {}
-  for (const o of meta.value.point_types) map[o.value] = o.label
-  return map
-})
 
 const equipmentTypeLabel = computed(() => {
   const map: Record<string, string> = {}
   for (const o of meta.value.equipment_types) map[o.value] = o.label
   return map
 })
-
-function compareText(
-  a: string | null | undefined,
-  b: string | null | undefined,
-): number {
-  return (a ?? '').localeCompare(b ?? '', undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  })
-}
-
-function sortableLiveValue(obj: SimObject): number {
-  const value = liveVal(obj.id)
-
-  // Put objects without a live value at the beginning in ascending order.
-  if (value === null) return Number.NEGATIVE_INFINITY
-  if (typeof value === 'boolean') return value ? 1 : 0
-
-  const numericValue = Number(value)
-  return Number.isNaN(numericValue)
-    ? Number.NEGATIVE_INFINITY
-    : numericValue
-}
-
-const objectSearch = ref('')
-const objectTypeFilter = ref<string | undefined>(undefined)
-
-const filteredObjects = computed(() => {
-  const q = objectSearch.value.trim().toLowerCase()
-  return objects.value.filter(o => {
-    if (objectTypeFilter.value && o.object_type !== objectTypeFilter.value) return false
-    if (!q) return true
-    return o.name.toLowerCase().includes(q)
-  })
-})
-
-const objectFiltersActive = computed(() => !!objectSearch.value.trim() || objectTypeFilter.value !== undefined)
-
-function clearObjectFilters() {
-  objectSearch.value = ''
-  objectTypeFilter.value = undefined
-}
-
-const columns: TableColumnsType<SimObject> = [
-  {
-    title: 'Name',
-    dataIndex: 'name',
-    key: 'name',
-    sorter: (a, b) => compareText(a.name, b.name),
-    sortDirections: ['ascend', 'descend'],
-  },
-  {
-    title: 'Type',
-    key: 'type',
-    width: 170,
-    sorter: (a, b) => compareText(a.object_type, b.object_type),
-    sortDirections: ['ascend', 'descend'],
-  },
-  {
-    title: 'Inst.',
-    dataIndex: 'object_instance',
-    key: 'instance',
-    width: 65,
-    sorter: (a, b) => a.object_instance - b.object_instance,
-    sortDirections: ['ascend', 'descend'],
-    // Optional initial sorting:
-    // defaultSortOrder: 'ascend',
-  },
-  {
-    title: 'Behavior',
-    key: 'behavior',
-    width: 120,
-    sorter: (a, b) => compareText(a.behavior, b.behavior),
-    sortDirections: ['ascend', 'descend'],
-  },
-  {
-    title: 'Semantic Type',
-    key: 'point_type',
-    width: 190,
-    sorter: (a, b) => {
-      const aLabel = a.point_type
-        ? pointTypeLabel.value[a.point_type] ?? a.point_type
-        : ''
-
-      const bLabel = b.point_type
-        ? pointTypeLabel.value[b.point_type] ?? b.point_type
-        : ''
-
-      return compareText(aLabel, bLabel)
-    },
-    sortDirections: ['ascend', 'descend'],
-  },
-  {
-    title: 'Units',
-    dataIndex: 'units',
-    key: 'units',
-    width: 150,
-    sorter: (a, b) =>
-      compareText(
-        a.units === 'no-units' ? '' : a.units,
-        b.units === 'no-units' ? '' : b.units,
-      ),
-    sortDirections: ['ascend', 'descend'],
-  },
-  {
-    title: 'Live Value',
-    key: 'value',
-    width: 110,
-    sorter: (a, b) => sortableLiveValue(a) - sortableLiveValue(b),
-    sortDirections: ['ascend', 'descend'],
-  },
-  {
-    title: 'On',
-    key: 'enabled',
-    width: 50,
-    sorter: (a, b) => Number(Boolean(a.enabled)) - Number(Boolean(b.enabled)),
-    sortDirections: ['ascend', 'descend'],
-  },
-  {
-    title: '',
-    key: 'actions',
-    width: 200,
-  },
-]
 
 // Lifecycle — gated behind auth: protected endpoints 401 until logged in
 let healthTimer: ReturnType<typeof setInterval>
@@ -796,7 +616,7 @@ onUnmounted(() => {
         </div>
 
         <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
-          <a-radio-button value="devices"><ApartmentOutlined /> Networks</a-radio-button>
+          <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
           <a-radio-button value="bacnet"><ApiOutlined  /> BACnet</a-radio-button>
           <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
@@ -807,7 +627,7 @@ onUnmounted(() => {
 
         <div style="flex:1" />
         <a-tag v-if="activeProjectName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProjectName }}</a-tag>
-        <a-button size="small" @click="newProject">
+        <a-button size="small" @click="onNewProjectClick">
           <template #icon><FileAddOutlined /></template>
           New Project
         </a-button>
@@ -845,16 +665,19 @@ onUnmounted(() => {
         <!-- Sidebar: devices -->
         <a-layout-sider :width="320" style="background:var(--surface);border-right:1px solid var(--border);overflow:auto">
           <div style="padding:10px 12px 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-            <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Items ({{ health.devices }})</span>
+            <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Items ({{ sidebarRawCount }})</span>
             <a-space :size="4">
               <a-button size="small" title="Add Location" @click="openAddLocation">
                 <template #icon><FolderAddOutlined /></template>
               </a-button>
-              <a-button size="small" type="primary" @click="openAddDevice">+ Add</a-button>
+              <a-button size="small" type="primary" @click="openAddDevice">+ Add Device</a-button>
+              <a-button size="small" :title="hasExternalDevices ? 'Rediscover' : 'Discover Devices'" :loading="externalSyncLoading" @click="runDiscovery">
+                <template #icon><ApiOutlined /></template>
+              </a-button>
             </a-space>
           </div>
 
-          <div v-if="devices.length" style="padding:8px 12px;border-bottom:1px solid var(--border)">
+          <div v-if="sidebarRawCount" style="padding:8px 12px;border-bottom:1px solid var(--border)">
             <a-input
               v-model:value="deviceSearch"
               size="small"
@@ -865,10 +688,11 @@ onUnmounted(() => {
             </a-input>
           </div>
 
-          <div v-if="!devices.length" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
-            No devices yet
+          <div v-if="!sidebarRawCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
+            <span v-if="externalSyncError" style="color:var(--error, #ff4d4f)">{{ externalSyncError }}</span>
+            <span v-else>No devices yet</span>
           </div>
-          <div v-else-if="!filteredDevices.length" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
+          <div v-else-if="!sidebarFilteredCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
             No devices match "{{ deviceSearch }}"
           </div>
 
@@ -893,6 +717,42 @@ onUnmounted(() => {
                   <a-button type="text" size="small" title="Edit" @click="openEditLocation(node.location)">
                     <template #icon><EditOutlined /></template>
                   </a-button>
+                </a-space>
+              </div>
+
+              <!-- External BACnet device row — project-local mutations (Edit,
+                   Create Simulated Copy, Remove from Project) are allowed;
+                   source mutations (BACnet writes, simulation config) never
+                   are, enforced backend-side regardless of this UI. -->
+              <div v-else-if="node.device.source_type === 'external-bacnet'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
+                <ApiOutlined style="color:var(--text-muted)" />
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
+                  <div style="font-size:11px;color:var(--text-secondary)">
+                    ID {{ node.device.device_instance }}<template v-if="node.device.external_host"> · {{ node.device.external_host }}</template>
+                  </div>
+                </div>
+                <a-tag color="default" style="font-size:10px;margin:0;line-height:16px">External</a-tag>
+                <a-space :size="2" @click.stop>
+                  <a-dropdown :trigger="['click']">
+                    <a-button type="text" size="small" title="More">
+                      <template #icon><EllipsisOutlined /></template>
+                    </a-button>
+                    <template #overlay>
+                      <a-menu @click.stop>
+                        <a-menu-item key="edit" @click="openEditDevice(node.device)">
+                          <EditOutlined /> Edit
+                        </a-menu-item>
+                        <a-menu-item key="create-simulated-copy" @click="openCreateSimulatedCopy(node.device)">
+                          <CopyOutlined /> Create Simulated Copy
+                        </a-menu-item>
+                        <a-menu-divider />
+                        <a-menu-item key="remove" danger @click="removeExternalDevice(node.device)">
+                          <DeleteOutlined /> Remove from Project
+                        </a-menu-item>
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
                 </a-space>
               </div>
 
@@ -970,101 +830,13 @@ onUnmounted(() => {
             <span style="font-size:15px;color:var(--text-placeholder)">Select a device to manage its objects</span>
           </div>
 
-          <template v-else>
-            <div style="margin-bottom:16px">
-              <div style="font-size:18px;font-weight:600">{{ selectedDevice.name }}</div>
-              <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
-                Device {{ selectedDevice.device_instance }}
-                <template v-if="selectedDevice.description"> — {{ selectedDevice.description }}</template>
-                <template v-else> — {{ selectedDevice.model_name }}</template>
-              </div>
-            </div>
-
-            <GridFilterToolbar
-              v-model:search="objectSearch"
-              search-placeholder="Search objects…"
-              :can-clear="objectFiltersActive"
-              @clear="clearObjectFilters"
-            >
-              <a-select
-                v-model:value="objectTypeFilter"
-                allow-clear
-                size="small"
-                placeholder="Object Type"
-                style="width:170px"
-                :options="meta.object_types.map(t => ({ value: t, label: t }))"
-              />
-
-              <template #actions>
-                <a-button :disabled="!objects.length" @click="saveTemplateOpen = true">Save as Template</a-button>
-                <a-button @click="templateModalOpen = true">From Template</a-button>
-                <a-button type="primary" @click="openAddObject">+ Add Object</a-button>
-              </template>
-            </GridFilterToolbar>
-
-            <a-table
-              :data-source="filteredObjects"
-              :columns="columns"
-              :pagination="false"
-              size="small"
-              row-key="id"
-            >
-              <template #emptyText>
-                <div v-if="objects.length" style="padding:24px;color:var(--text-placeholder)">
-                  No objects match your filters —
-                  <a @click="clearObjectFilters">clear filters</a>
-                </div>
-                <div v-else style="padding:24px;color:var(--text-placeholder)">No objects yet — click Add Object</div>
-              </template>
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'type'">
-                  <a-tag style="font-family:monospace;font-size:11px">{{ (record as SimObject).object_type }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'behavior'">
-                  <a-tag :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'point_type'">
-                  <a-tag v-if="(record as SimObject).point_type">{{ pointTypeLabel[(record as SimObject).point_type!] ?? (record as SimObject).point_type }}</a-tag>
-                  <span v-else style="color:var(--text-disabled)">—</span>
-                </template>
-                <template v-else-if="column.key === 'units'">
-                  <span style="color:var(--text-secondary);font-size:12px">{{ (record as SimObject).units === 'no-units' ? '—' : (record as SimObject).units }}</span>
-                </template>
-                <template v-else-if="column.key === 'value'">
-                  <span :style="{ fontFamily:'monospace', color: hasLive((record as SimObject).id) ? '#1890ff' : 'var(--text-disabled)' }">
-                    {{ fmtVal(record as SimObject) }}
-                  </span>
-                </template>
-                <template v-else-if="column.key === 'enabled'">
-                  <a-switch
-                    size="small"
-                    :checked="!!(record as SimObject).enabled"
-                    @change="toggleObjectEnabled(record as SimObject)"
-                  />
-                </template>
-                <template v-else-if="column.key === 'actions'">
-                  <a-space :size="2">
-                     <a-button type="text" size="small" title="Edit" @click.stop="openEditObject(record as SimObject)">
-                <template #icon><EditOutlined /></template>
-              </a-button>
-                    <a-button type="text" size="small" title="Duplicate" @click.stop="duplicateObject(record as SimObject)">
-                <template #icon><CopyOutlined /></template>
-              </a-button>
-                   
-                    <a-button
-                      v-if="(record as SimObject).behavior === 'manual'"
-                      type="link" size="small"
-                      style="color:#fa8c16"
-                      @click="openSetValue(record as SimObject)"
-                    >Set</a-button>
-                    <a-button type="link" size="small" style="color:#722ed1" @click="openHistory(record as SimObject)">
-                      <template #icon><LineChartOutlined /></template>
-                    </a-button>
-                  </a-space>
-                </template>
-              </template>
-            </a-table>
-          </template>
+          <ObjectsPanel
+            v-else
+            ref="objectsPanelRef"
+            :device="selectedDevice"
+            :meta="meta"
+            :live-values="liveValues"
+          />
 
         </div>
         <DeviceLogPanel />
@@ -1091,20 +863,25 @@ onUnmounted(() => {
       @saved="loadLocations"
     />
 
-    <!-- Object drawer -->
-    <ObjectDrawer
-      v-model:open="objectDrawerOpen"
-      :object="editingObject"
-      :device-id="selectedDevice?.id"
-      :meta="meta"
-      :existing-objects="objects"
-      @saved="onObjectSaved"
+    <!-- Create Simulated Copy modal -->
+    <CreateSimulatedCopyModal
+      v-model:open="createCopyModalOpen"
+      :source-device="createCopySource"
+      :existing-instances="devices.map(d => d.device_instance)"
+      @created="onSimulatedCopyCreated"
     />
 
     <!-- Projects drawer -->
     <ProjectsDrawer
       v-model:open="projectsDrawerOpen"
       @loaded="onProjectLoaded"
+    />
+
+    <!-- New project modal -->
+    <NewProjectModal
+      v-model:open="newProjectModalOpen"
+      :reset-project="resetToNewProject"
+      @created="onNewProjectCreated"
     />
 
     <!-- Notification classes drawer -->
@@ -1125,22 +902,6 @@ onUnmounted(() => {
     <!-- Energy model drawer -->
     <EnergyModelDrawer v-model:open="energyModelDrawerOpen" :device="energyModelDevice" :meta="meta" />
 
-    <!-- Save as template -->
-    <SaveTemplateModal
-      v-model:open="saveTemplateOpen"
-      :objects="objects"
-      :device-name="selectedDevice?.name"
-    />
-
-    <!-- Template picker -->
-    <TemplatePickerModal
-      v-model:open="templateModalOpen"
-      :device-id="selectedDevice?.id"
-      :vendor-name="selectedDevice?.vendor_name"
-      :model-name="selectedDevice?.model_name"
-      @applied="loadObjects"
-    />
-
     <!-- Save project modal -->
     <a-modal
       v-model:open="saveModalOpen"
@@ -1158,52 +919,6 @@ onUnmounted(() => {
           <a-input v-model:value="saveModalDesc" placeholder="Optional description" />
         </a-form-item>
       </a-form>
-    </a-modal>
-
-    <!-- Set value modal -->
-    <a-modal
-      v-model:open="setValOpen"
-      :title="`Set Value — ${setValObj?.name}`"
-      ok-text="Set"
-      :confirm-loading="setValLoading"
-      @ok="doSetValue"
-    >
-      <div style="padding:8px 0">
-        <a-radio-group v-if="setValIsBinary" v-model:value="setValActive" style="width:100%">
-          <a-radio-button :value="true" style="width:50%;text-align:center">ON</a-radio-button>
-          <a-radio-button :value="false" style="width:50%;text-align:center">OFF</a-radio-button>
-        </a-radio-group>
-        <a-input-number
-          v-else
-          v-model:value="setValInput"
-          style="width:100%"
-          :step="0.1"
-          @pressEnter="doSetValue"
-        />
-      </div>
-    </a-modal>
-
-    <!-- History chart modal -->
-    <a-modal
-      v-model:open="histModalOpen"
-      :title="histObj ? `${histObj.name} — History` : 'History'"
-      :footer="null"
-      width="680px"
-      destroy-on-close
-    >
-      <template v-if="!histLoading && histObj">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-          <a-tag :color="BEHAVIOR_COLOR[histObj.behavior]">{{ histObj.behavior }}</a-tag>
-          <span style="font-size:12px;color:var(--text-secondary)">{{ histObj.units === 'no-units' ? '' : histObj.units }}</span>
-          <span style="font-size:12px;color:var(--text-placeholder);margin-left:auto">{{ histData.length }} samples</span>
-        </div>
-      </template>
-      <HistoryChart
-        :data="histData"
-        :loading="histLoading"
-        :format-value="(v: number) => histFmt(v, histObj)"
-        empty-label="Not enough data yet — check back after a few ticks (5 s each)"
-      />
     </a-modal>
 
   </a-config-provider>

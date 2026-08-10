@@ -4,6 +4,7 @@ import { Modal, message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
+import { nextFreeInstance } from '../deviceInstance'
 import type { Device, Meta, Location } from '../types'
 
 const props = defineProps<{
@@ -40,6 +41,14 @@ const form = reactive({
 })
 
 const locationTreeOptions = computed(() => buildLocationTreeOptions(props.locations ?? []))
+
+// External devices: "read-only toward the physical device" means
+// device_instance/vendor/model/BACnet-info/Enabled stay locked (they mirror
+// the real device or simulator ownership) -- everything else (name,
+// description, location, semantic type, event-notification override) is
+// project-local metadata and stays fully editable. Mirrors the backend's
+// reject_external_source_mutation() field list.
+const isExternal = computed(() => props.device?.source_type === 'external-bacnet')
 
 // Mirrors _effective_can_receive_events() in src/simulator.py: untagged
 // devices (no equipment_type — workstations, BMS servers, gateways have no
@@ -94,13 +103,6 @@ function onEdeFileChange(e: Event) {
     }
   }
   reader.readAsText(file)
-}
-
-function nextFreeInstance(): number {
-  const taken = new Set(props.existingInstances ?? [])
-  let id = 1001
-  while (taken.has(id)) id++
-  return id
 }
 
 // ── Vendor / model picker ─────────────────────────────────────────────────────
@@ -192,7 +194,7 @@ watch(() => props.open, (v) => {
     })
   } else {
     Object.assign(form, {
-      device_instance: nextFreeInstance(), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true,
+      device_instance: nextFreeInstance(props.existingInstances ?? []), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true,
       firmware_revision: 'N/A', protocol_revision: 22, max_apdu_length_accepted: 1024, segmentation_supported: 'segmented-both',
       location_id: null,
       equipment_type: null,
@@ -238,16 +240,19 @@ async function save() {
 function doDelete() {
   if (!props.device) return
   const dev = props.device
+  const external = isExternal.value
   Modal.confirm({
-    title: `Delete "${dev.name}"?`,
-    content: 'This also deletes all its objects and cannot be undone.',
+    title: external ? `Remove "${dev.name}" from this project?` : `Delete "${dev.name}"?`,
+    content: external
+      ? 'Removes this device and its discovered objects from the project inventory. The physical device on the network is unaffected.'
+      : 'This also deletes all its objects and cannot be undone.',
     okType: 'danger',
-    okText: 'Delete',
+    okText: external ? 'Remove' : 'Delete',
     onOk: async () => {
       deleting.value = true
       try {
         await api.devices.del(dev.id)
-        message.success('Device deleted')
+        message.success(external ? 'Device removed from project' : 'Device deleted')
         emit('update:open', false)
         emit('saved')
       } catch (e: unknown) {
@@ -276,7 +281,7 @@ function doDelete() {
         </a-col>
         <a-col :span="8">
           <a-form-item label="Device Instance" required>
-            <a-input-number v-model:value="form.device_instance" :min="1" :max="4194302" style="width:100%" />
+            <a-input-number v-model:value="form.device_instance" :disabled="isExternal" :min="1" :max="4194302" style="width:100%" />
           </a-form-item>
         </a-col>
       </a-row>
@@ -326,6 +331,7 @@ function doDelete() {
           <a-form-item label="Manufacturer">
             <a-auto-complete
               v-model:value="form.vendor_name"
+              :disabled="isExternal"
               :options="vendorOptions"
               :filter-option="filterOption"
               allow-clear
@@ -340,6 +346,7 @@ function doDelete() {
             <a-select
               v-if="modelOptions.length"
               v-model:value="form.model_name"
+              :disabled="isExternal"
               show-search
               allow-clear
               placeholder="Select model…"
@@ -350,6 +357,7 @@ function doDelete() {
             <a-input
               v-else
               v-model:value="form.model_name"
+              :disabled="isExternal"
               placeholder="e.g. BACnet Simulator"
             />
           </a-form-item>
@@ -378,7 +386,7 @@ function doDelete() {
         </div>
       </div>
 
-      <a-collapse ghost style="margin-top:16px">
+      <a-collapse v-if="!isExternal" ghost style="margin-top:16px">
         <a-collapse-panel key="device-info" header="BACnet Device Info (advanced)">
           <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
             Informational/cosmetic Device object properties some BACnet clients check — not enforced by the simulator itself.
@@ -424,14 +432,16 @@ function doDelete() {
         </a-button>
       </a-form-item>
 
-      <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
+      <a-form-item v-if="!isExternal" label="Enabled" style="margin-top:16px;margin-bottom:0">
         <a-switch v-model:checked="form.enabled" />
       </a-form-item>
     </a-form>
 
     <template #footer>
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <a-button v-if="device && !draftMode" danger :loading="deleting" @click="doDelete">Delete</a-button>
+        <a-button v-if="device && !draftMode" danger :loading="deleting" @click="doDelete">
+          {{ isExternal ? 'Remove from Project' : 'Delete' }}
+        </a-button>
         <div v-else />
         <a-space>
           <a-button @click="emit('update:open', false)">Cancel</a-button>

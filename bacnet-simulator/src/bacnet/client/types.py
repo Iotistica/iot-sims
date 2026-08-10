@@ -111,6 +111,10 @@ class BACnetObject:
     # support Priority_Array for this object. It does NOT grant write access.
     source_commandable: bool = False
 
+    # BACnet Description property, read best-effort (individually guarded,
+    # same as unit) -- many devices don't support it, absence is normal.
+    description: str | None = None
+
 
 @dataclass(slots=True)
 class BACnetDevice:

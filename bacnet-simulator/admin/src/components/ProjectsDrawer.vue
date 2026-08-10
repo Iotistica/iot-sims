@@ -2,13 +2,16 @@
 import { ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { DownloadOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons-vue'
-import type { Project } from '../types'
+import type { Project, ProjectSourceType, BACnetConnectionConfig } from '../types'
 import { api } from '../api'
 import ImportProjectModal from './ImportProjectModal.vue'
 
 const emit = defineEmits<{
   'update:open': [val: boolean]
-  loaded: [projectId: number, projectName: string, projectDesc: string]
+  loaded: [
+    projectId: number, projectName: string, projectDesc: string,
+    sourceType: ProjectSourceType, connectionConfig: BACnetConnectionConfig | null,
+  ]
 }>()
 
 const props = defineProps<{ open: boolean }>()
@@ -28,23 +31,15 @@ async function load() {
   }
 }
 
-function confirmLoad(p: Project) {
-  Modal.confirm({
-    title: `Load "${p.name}"?`,
-    content: 'This will replace all current devices and objects with the saved project.',
-    okType: 'danger',
-    okText: 'Load',
-    async onOk() {
-      try {
-        await api.projects.load(p.id)
-        message.success(`"${p.name}" loaded`)
-        emit('loaded', p.id, p.name, p.description)
-        emit('update:open', false)
-      } catch (e: unknown) {
-        message.error((e as Error).message ?? 'Failed to load project')
-      }
-    },
-  })
+async function loadProject(p: Project) {
+  try {
+    const result = await api.projects.load(p.id)
+    message.success(`"${p.name}" loaded`)
+    emit('loaded', p.id, p.name, p.description, result.source_type ?? 'simulated', result.connection_config ?? null)
+    emit('update:open', false)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to load project')
+  }
 }
 
 function exportProject(p: Project) {
@@ -127,7 +122,7 @@ watch(() => props.open, (isOpen) => {
             </div>
           </div>
           <a-space :size="4">
-            <a-button size="small" type="primary" ghost @click="confirmLoad(p)">Load</a-button>
+            <a-button size="small" type="primary" ghost @click="loadProject(p)">Load</a-button>
             <a-button size="small" title="Export as JSON" @click="exportProject(p)">
               <template #icon><DownloadOutlined /></template>
             </a-button>

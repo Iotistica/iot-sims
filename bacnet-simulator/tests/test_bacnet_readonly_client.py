@@ -8,10 +8,11 @@ constructible standalone, no live network required.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
-from bacpypes3.apdu import IAmRequest
+from bacpypes3.apdu import ErrorRejectAbortNack, IAmRequest
 from bacpypes3.basetypes import EngineeringUnits
 from bacpypes3.pdu import Address as Bp3Address
 from bacpypes3.primitivedata import ObjectIdentifier as Bp3ObjectIdentifier
@@ -122,6 +123,90 @@ def test_normalize_i_am_real_shape_with_port():
     assert result.address == "10.0.0.20"
     assert result.port == 47809
     assert result.vendor_id == 5
+
+
+# ── Bacpypes3Transport.read_property() must pass a real ObjectIdentifier ───
+# (regression: found via live testing against a real simulator instance --
+# Application.read_property() indexes objid[0] directly to look up the
+# object class for decoding and does NOT coerce a "type,instance" string
+# first. A plain string silently returned its first character there instead
+# of raising, so every live read "succeeded" but decoded to the literal
+# fallback "-no object class-".)
+
+class _CapturingApplication:
+    def __init__(self, return_value: Any = "ok") -> None:
+        self.calls: list[tuple] = []
+        self._return_value = return_value
+
+    async def read_property(self, address, objid, prop, array_index=None):
+        self.calls.append((address, objid, prop, array_index))
+        return self._return_value
+
+
+@pytest.mark.asyncio
+async def test_read_property_passes_real_object_identifier_not_string():
+    app = _CapturingApplication()
+    transport = Bacpypes3Transport(app)
+
+    await transport.read_property(
+        address="10.0.0.10",
+        object_identifier=ObjectIdentifier(type=8, instance=1000),
+        property_identifier=77,
+    )
+
+    assert len(app.calls) == 1
+    _address, objid, _prop, _array_index = app.calls[0]
+    assert isinstance(objid, Bp3ObjectIdentifier)
+    assert int(objid[0]) == 8  # device
+    assert objid[1] == 1000
+
+
+# ── Bacpypes3Transport.read_property() must not let BaseException-rooted ───
+# BACnet protocol errors escape as-is (regression: found via live testing --
+# bacpypes3.apdu.ErrorRejectAbortNack subclasses BaseException, not
+# Exception, so a completely normal real-device response like "this object
+# doesn't support Priority_Array" would otherwise crash every caller's plain
+# `except Exception` handling instead of being treated as one failed read.)
+
+class _FakeProtocolError(ErrorRejectAbortNack):
+    def __str__(self) -> str:
+        return "simulated-protocol-error"
+
+
+class _RaisingApplication:
+    async def read_property(self, address, objid, prop, array_index=None):
+        raise _FakeProtocolError("simulated")
+
+
+class _ReturningApplication:
+    async def read_property(self, address, objid, prop, array_index=None):
+        return _FakeProtocolError("simulated")
+
+
+@pytest.mark.asyncio
+async def test_read_property_converts_raised_protocol_error_to_exception():
+    transport = Bacpypes3Transport(_RaisingApplication())
+
+    with pytest.raises(Exception) as exc_info:
+        await transport.read_property(
+            address="10.0.0.10",
+            object_identifier=ObjectIdentifier(type=0, instance=1),
+            property_identifier=85,
+        )
+    assert not isinstance(exc_info.value, ErrorRejectAbortNack)
+
+
+@pytest.mark.asyncio
+async def test_read_property_converts_returned_protocol_error_to_exception():
+    transport = Bacpypes3Transport(_ReturningApplication())
+
+    with pytest.raises(Exception) as exc_info:
+        await transport.read_property(
+            address="10.0.0.10",
+            object_identifier=ObjectIdentifier(type=0, instance=1),
+            property_identifier=85,
+        )
+    assert not isinstance(exc_info.value, ErrorRejectAbortNack)
 
 
 # ── 2. ObjectIdentifier normalization (real bacpypes3.primitivedata.ObjectIdentifier) ──
@@ -302,6 +387,138 @@ async def test_validate_one_failed_point_does_not_fail_device():
     assert result["dataPoints"][0]["objectInstance"] == 1
 
 
+# ── 11b. Present-Value failure degrades to None, doesn't drop the object ───
+# (regression target: unlike Units/Priority_Array, Present-Value used to be
+# unguarded and a failed read dropped the whole object from the scan --
+# real BACnet devices vary considerably, this must degrade gracefully too.)
+
+@pytest.mark.asyncio
+async def test_validate_present_value_failure_does_not_drop_object():
+    device = DiscoveredDevice(
+        name="ahu_1", fingerprint="f", host="10.0.0.10",
+        port=47808, device_instance=1001,
+    )
+    refs = [Bp3ObjectIdentifier(("analog-input", 1))]
+
+    transport = FakeTransport(
+        property_values={
+            ("10.0.0.10", 8, 1001, 76): refs,
+            ("10.0.0.10", 0, 1, 77): "AI-1",
+            ("10.0.0.10", 0, 1, 117): int(EngineeringUnits("degrees-celsius")),
+            # Present-Value (85) deliberately has no configured value --
+            # FakeTransport raises KeyError for it, simulating a real read
+            # failure.
+        },
+    )
+    discovery = BACnetDiscovery(transport)
+
+    result = await discovery.validate(device)
+
+    assert len(result["dataPoints"]) == 1
+    assert result["dataPoints"][0]["objectInstance"] == 1
+    assert result["dataPoints"][0]["presentValue"] is None
+
+
+# ── 11c. Description is read best-effort per object ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_validate_reads_description_when_available():
+    device = DiscoveredDevice(
+        name="ahu_1", fingerprint="f", host="10.0.0.10",
+        port=47808, device_instance=1001,
+    )
+    refs = [Bp3ObjectIdentifier(("analog-input", 1))]
+
+    transport = FakeTransport(
+        property_values={
+            ("10.0.0.10", 8, 1001, 76): refs,
+            ("10.0.0.10", 0, 1, 77): "AI-1",
+            ("10.0.0.10", 0, 1, 85): 22.5,
+            ("10.0.0.10", 0, 1, 117): int(EngineeringUnits("degrees-celsius")),
+            ("10.0.0.10", 0, 1, 28): "Supply air temperature",
+        },
+    )
+    discovery = BACnetDiscovery(transport)
+
+    result = await discovery.validate(device)
+
+    assert result["dataPoints"][0]["description"] == "Supply air temperature"
+
+
+@pytest.mark.asyncio
+async def test_validate_missing_description_does_not_fail_object():
+    device = DiscoveredDevice(
+        name="ahu_1", fingerprint="f", host="10.0.0.10",
+        port=47808, device_instance=1001,
+    )
+    refs = [Bp3ObjectIdentifier(("analog-input", 1))]
+
+    transport = FakeTransport(
+        property_values={
+            ("10.0.0.10", 8, 1001, 76): refs,
+            ("10.0.0.10", 0, 1, 77): "AI-1",
+            ("10.0.0.10", 0, 1, 85): 22.5,
+            ("10.0.0.10", 0, 1, 117): int(EngineeringUnits("degrees-celsius")),
+            # No 28 (DESCRIPTION) configured -- FakeTransport raises for it.
+        },
+    )
+    discovery = BACnetDiscovery(transport)
+
+    result = await discovery.validate(device)
+
+    assert len(result["dataPoints"]) == 1
+    assert result["dataPoints"][0]["description"] is None
+
+
+# ── 11d. read_present_values(): lighter Refresh path, skips Object_List ────
+
+@pytest.mark.asyncio
+async def test_read_present_values_returns_values_for_known_points():
+    transport = FakeTransport(
+        property_values={
+            ("10.0.0.10", 0, 1, 85): 22.5,
+            ("10.0.0.10", 3, 2, 85): 1,
+        },
+    )
+    discovery = BACnetDiscovery(transport)
+
+    values = await discovery.read_present_values(
+        "10.0.0.10", 1001, [("analog-input", 1), ("binary-input", 2)],
+    )
+
+    assert values[("analog-input", 1)] == 22.5
+    assert values[("binary-input", 2)] == 1
+
+
+@pytest.mark.asyncio
+async def test_read_present_values_does_not_read_object_list():
+    transport = FakeTransport(
+        property_values={("10.0.0.10", 0, 1, 85): 22.5},
+    )
+    discovery = BACnetDiscovery(transport)
+
+    await discovery.read_present_values("10.0.0.10", 1001, [("analog-input", 1)])
+
+    object_list_key = ("10.0.0.10", 8, 1001, 76)
+    assert transport.call_count(object_list_key) == 0
+
+
+@pytest.mark.asyncio
+async def test_read_present_values_degrades_failed_point_to_none():
+    transport = FakeTransport(
+        property_values={("10.0.0.10", 0, 1, 85): 22.5},
+        always_fail_keys={("10.0.0.10", 0, 2, 85)},
+    )
+    discovery = BACnetDiscovery(transport)
+
+    values = await discovery.read_present_values(
+        "10.0.0.10", 1001, [("analog-input", 1), ("analog-input", 2)],
+    )
+
+    assert values[("analog-input", 1)] == 22.5
+    assert values[("analog-input", 2)] is None
+
+
 # ── 12. Retry behavior ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -466,3 +683,305 @@ async def test_adapter_stop_leaves_no_poll_task_running():
     await adapter.stop()
     assert adapter._poll_task is None
     assert adapter.running is False
+
+
+# ── 18. Targeted (unicast) Who-Is discovers all devices behind one host ────
+#
+# Regression coverage for: bacpypes3's own WhoIsFuture.only_one is True
+# whenever an explicit address is given to Application.who_is(), so it stops
+# collecting after the first I-Am -- the wrong tool for "discover every
+# device behind this one IP." Bacpypes3Transport._collect_i_ams() sidesteps
+# this entirely via a listener instead of WhoIsFuture. Two fake Application
+# shapes are exercised: a bare one (no native listener support, mimicking a
+# third-party Application -- exercises _ensure_i_am_listener_support's
+# one-time polyfill) and a native one (mimicking SimApplication, which
+# defines add_i_am_listener()/remove_i_am_listener() natively).
+
+class _BareApplication:
+    """Mimics a bare third-party bacpypes3 Application: only do_IAmRequest
+    and request(), no native listener support."""
+
+    def __init__(self) -> None:
+        self.requests: list[Any] = []
+        self.do_i_am_calls = 0
+
+    async def do_IAmRequest(self, apdu) -> None:
+        self.do_i_am_calls += 1
+
+    def request(self, pdu) -> None:
+        self.requests.append(pdu)
+
+
+class _NativeListenerApplication:
+    """Mimics SimApplication: already exposes native
+    add_i_am_listener()/remove_i_am_listener(), so _ensure_i_am_listener_support
+    must short-circuit without touching do_IAmRequest at all."""
+
+    def __init__(self) -> None:
+        self.requests: list[Any] = []
+        self._i_am_listeners: list[Any] = []
+
+    def add_i_am_listener(self, listener) -> None:
+        self._i_am_listeners.append(listener)
+
+    def remove_i_am_listener(self, listener) -> None:
+        if listener in self._i_am_listeners:
+            self._i_am_listeners.remove(listener)
+
+    def request(self, pdu) -> None:
+        self.requests.append(pdu)
+
+    def fire(self, apdu) -> None:
+        for listener in list(self._i_am_listeners):
+            listener(apdu)
+
+
+class _FakeRoutedSource:
+    """Stands in for a routed reply's pduSource (a RemoteStation in real
+    bacpypes3) -- deliberately NOT an IPv4Address instance."""
+
+    def __str__(self) -> str:
+        return "remote-station-stand-in"
+
+
+async def _who_is_with_injected_i_ams(transport, app, apdus, **who_is_kwargs):
+    """Starts transport.who_is() as a background task, yields once so
+    _collect_i_ams can register its listener and send the WhoIsRequest, then
+    delivers the given I-Am APDUs as if they'd just arrived over the wire."""
+    task = asyncio.create_task(transport.who_is(**who_is_kwargs))
+    await asyncio.sleep(0)
+    for apdu in apdus:
+        if hasattr(app, "fire"):
+            app.fire(apdu)
+        else:
+            await app.do_IAmRequest(apdu)  # polyfilled dispatching wrapper by now
+    return await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("app_factory", [_BareApplication, _NativeListenerApplication])
+async def test_targeted_who_is_collects_multiple_devices_from_one_host(app_factory):
+    app = app_factory()
+    transport = Bacpypes3Transport(app)
+    apdus = [
+        make_real_i_am(1000, "172.22.0.21"),
+        make_real_i_am(1001, "172.22.0.21"),
+        make_real_i_am(1002, "172.22.0.21"),
+    ]
+
+    devices = await _who_is_with_injected_i_ams(
+        transport, app, apdus,
+        address="172.22.0.21", low_limit=0, high_limit=4194303, timeout_ms=20,
+    )
+
+    assert {d.device_instance for d in devices} == {1000, 1001, 1002}
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_dedups_duplicate_device_instance():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+    apdus = [
+        make_real_i_am(1000, "172.22.0.21", vendor_id=1),
+        make_real_i_am(1000, "172.22.0.21", vendor_id=2),  # same instance, arrives second
+    ]
+
+    devices = await _who_is_with_injected_i_ams(
+        transport, app, apdus,
+        address="172.22.0.21", low_limit=0, high_limit=4194303, timeout_ms=20,
+    )
+
+    assert len(devices) == 1
+    assert devices[0].vendor_id == 1  # first-seen wins, matches discover()'s dedup convention
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_filters_by_device_instance_range():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+    apdus = [
+        make_real_i_am(500, "172.22.0.21"),   # below range
+        make_real_i_am(1005, "172.22.0.21"),  # in range
+        make_real_i_am(2000, "172.22.0.21"),  # above range
+    ]
+
+    devices = await _who_is_with_injected_i_ams(
+        transport, app, apdus,
+        address="172.22.0.21", low_limit=1000, high_limit=1010, timeout_ms=20,
+    )
+
+    assert {d.device_instance for d in devices} == {1005}
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_excludes_out_of_range_noise_among_many_replies():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+    apdus = [
+        make_real_i_am(1, "172.22.0.21"),
+        make_real_i_am(2, "172.22.0.21"),
+        make_real_i_am(1050, "172.22.0.21"),  # the only one actually in range
+        make_real_i_am(9999, "172.22.0.21"),
+    ]
+
+    devices = await _who_is_with_injected_i_ams(
+        transport, app, apdus,
+        address="172.22.0.21", low_limit=1050, high_limit=1050, timeout_ms=20,
+    )
+
+    assert [d.device_instance for d in devices] == [1050]
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_cleans_up_listener_on_pure_timeout():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+
+    devices = await transport.who_is(
+        address="172.22.0.21", low_limit=0, high_limit=4194303, timeout_ms=20,
+    )
+
+    assert devices == []
+    assert app._i_am_listeners == []
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_cleans_up_listener_when_another_listener_raises():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+
+    def bad_listener(apdu) -> None:
+        raise RuntimeError("simulated external listener failure")
+
+    apdus = [make_real_i_am(1000, "172.22.0.21")]
+
+    async def who_is_with_bad_listener():
+        # _ensure_i_am_listener_support runs on the first who_is() call;
+        # register a second, misbehaving listener right after so it's
+        # present when the I-Am arrives -- proves the dispatching wrapper's
+        # per-listener try/except keeps our own collector's cleanup intact
+        # regardless of what other listeners do.
+        task = asyncio.create_task(transport.who_is(
+            address="172.22.0.21", low_limit=0, high_limit=4194303, timeout_ms=20,
+        ))
+        await asyncio.sleep(0)
+        app.add_i_am_listener(bad_listener)
+        for apdu in apdus:
+            await app.do_IAmRequest(apdu)
+        return await task
+
+    devices = await who_is_with_bad_listener()
+
+    assert {d.device_instance for d in devices} == {1000}
+    # _collect_i_ams's own listener is removed in `finally` regardless of
+    # what bad_listener does; bad_listener itself is never touched by the
+    # transport (it's not the collector's to manage) so it's still there.
+    assert app._i_am_listeners == [bad_listener]
+    app.remove_i_am_listener(bad_listener)
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_do_i_am_request_identity_stable_across_calls():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+
+    await transport.who_is(address="172.22.0.21", low_limit=1, high_limit=1, timeout_ms=20)
+    first_handler = app.do_IAmRequest
+
+    await transport.who_is(address="172.22.0.21", low_limit=2, high_limit=2, timeout_ms=20)
+    second_handler = app.do_IAmRequest
+
+    assert first_handler is second_handler  # never reinstalled after the one-time polyfill
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_single_device_resolves_promptly_not_after_full_timeout():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+    apdus = [make_real_i_am(1000, "172.22.0.21")]
+
+    task = asyncio.create_task(_who_is_with_injected_i_ams(
+        transport, app, apdus,
+        address="172.22.0.21", low_limit=1000, high_limit=1000, timeout_ms=5000,
+    ))
+    devices = await asyncio.wait_for(task, timeout=0.5)  # would fail if it waited out the 5s window
+
+    assert {d.device_instance for d in devices} == {1000}
+
+
+@pytest.mark.asyncio
+async def test_broadcast_who_is_path_unchanged_no_listener_used():
+    class _SpyApplication:
+        def __init__(self) -> None:
+            self.who_is_calls: list[tuple] = []
+            self.add_i_am_listener_calls = 0
+
+        async def who_is(self, *, low_limit, high_limit):
+            self.who_is_calls.append((low_limit, high_limit))
+            return [make_real_i_am(1000, "172.22.0.21")]
+
+        def add_i_am_listener(self, listener) -> None:
+            self.add_i_am_listener_calls += 1
+
+    app = _SpyApplication()
+    transport = Bacpypes3Transport(app)
+
+    devices = await transport.who_is(address=None, low_limit=0, high_limit=4194303, timeout_ms=20)
+
+    assert {d.device_instance for d in devices} == {1000}
+    assert app.who_is_calls == [(0, 4194303)]
+    assert app.add_i_am_listener_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_overlapping_targeted_who_is_calls_do_not_cross_contaminate():
+    app = _NativeListenerApplication()
+    transport = Bacpypes3Transport(app)
+
+    async def run_one(low: int, high: int, apdus: list) -> Any:
+        return await _who_is_with_injected_i_ams(
+            transport, app, apdus,
+            address="172.22.0.21", low_limit=low, high_limit=high, timeout_ms=30,
+        )
+
+    results = await asyncio.gather(
+        run_one(1000, 1000, [make_real_i_am(1000, "172.22.0.21")]),
+        run_one(2000, 2000, [make_real_i_am(2000, "172.22.0.21")]),
+    )
+
+    first_instances = {d.device_instance for d in results[0]}
+    second_instances = {d.device_instance for d in results[1]}
+    assert first_instances == {1000}
+    assert second_instances == {2000}
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_excludes_unrelated_source_i_am():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+    apdus = [
+        make_real_i_am(1000, "172.22.0.21"),  # the actual target host
+        make_real_i_am(1001, "172.22.0.99"),  # unrelated device, in-range, wrong source
+    ]
+
+    devices = await _who_is_with_injected_i_ams(
+        transport, app, apdus,
+        address="172.22.0.21", low_limit=0, high_limit=4194303, timeout_ms=20,
+    )
+
+    assert {d.device_instance for d in devices} == {1000}
+
+
+@pytest.mark.asyncio
+async def test_targeted_who_is_does_not_incorrectly_filter_routed_source():
+    app = _BareApplication()
+    transport = Bacpypes3Transport(app)
+    routed_i_am = make_real_i_am(1000, "172.22.0.21")
+    routed_i_am.pduSource = _FakeRoutedSource()  # not an IPv4Address -- can't be compared reliably
+
+    devices = await _who_is_with_injected_i_ams(
+        transport, app, [routed_i_am],
+        address="172.22.0.21", low_limit=0, high_limit=4194303, timeout_ms=20,
+    )
+
+    assert {d.device_instance for d in devices} == {1000}

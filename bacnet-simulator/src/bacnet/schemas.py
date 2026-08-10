@@ -8,7 +8,7 @@ that coupling to FastAPI and to bacnet_calendar already existed in the
 original file; this is a move, not a redesign.
 """
 import json
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -276,6 +276,8 @@ class CalendarUpdate(CalendarCreate):
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
+    source_type: Literal["simulated", "external-bacnet"] = "simulated"
+    connection_config: Optional[dict] = None
 
 
 class ProjectUpdate(BaseModel):
@@ -286,7 +288,22 @@ class ProjectUpdate(BaseModel):
 class ProjectImport(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
+    # source_type/connection_config are NOT separate fields here: `data` is
+    # exactly the JSON blob previously exported from project_json_response()
+    # (see src/api/routers/exports.py), i.e. whatever save_project()/
+    # update_project() embedded at the top level of profiles.data -- so an
+    # export of a project that had source_type/connection_config already
+    # carries them through untouched via `data` itself. import_project()
+    # stores `data` verbatim; adding separate top-level params here would
+    # let them silently clobber values that already exist inside `data`.
     data: dict
+
+
+class DiscoveryTriggerRequest(BaseModel):
+    discovery_target: Optional[str] = Field(None, max_length=255)
+    device_instance_low: int = Field(0, ge=0, le=4194303)
+    device_instance_high: int = Field(4194303, ge=0, le=4194303)
+    timeout_ms: int = Field(5000, ge=100, le=60000)
 
 
 class Credentials(BaseModel):

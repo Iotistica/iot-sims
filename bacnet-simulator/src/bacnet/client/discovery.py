@@ -17,6 +17,7 @@ from .types import (
     DiscoveryOptions,
     IAmDevice,
     OBJECT_TYPE_CODE_TO_NAME,
+    OBJECT_TYPE_NAME_TO_CODE,
     ObjectIdentifier,
     BACnetTransport
 )
@@ -290,14 +291,35 @@ class BACnetDiscovery:
                         else f"{ref.type_name}_{ref.instance}"
                     )
 
+                    # Present-Value, unlike Object_Name, is treated as a
+                    # property that may individually fail or be absent
+                    # (real BACnet devices vary considerably) -- guarded the
+                    # same way Units/Priority_Array already are below, so
+                    # one bad read degrades to None instead of dropping the
+                    # whole object from the scan.
                     present_value: Any = None
                     if ref.type in READABLE_POINT_TYPES:
-                        present_value = await self.transport.read_property(
+                        try:
+                            present_value = await self.transport.read_property(
+                                address=device.host,
+                                object_identifier=ref,
+                                property_identifier=int(BACnetProperty.PRESENT_VALUE),
+                                timeout_ms=timeout_ms,
+                            )
+                        except Exception:
+                            present_value = None
+
+                    description: str | None = None
+                    try:
+                        raw_description = await self.transport.read_property(
                             address=device.host,
                             object_identifier=ref,
-                            property_identifier=int(BACnetProperty.PRESENT_VALUE),
+                            property_identifier=int(BACnetProperty.DESCRIPTION),
                             timeout_ms=timeout_ms,
                         )
+                        description = str(raw_description) if raw_description is not None else None
+                    except Exception:
+                        description = None
 
                     unit: str | None = None
                     if ref.type in ANALOG_TYPES:
@@ -332,6 +354,7 @@ class BACnetDiscovery:
                         object_instance=ref.instance,
                         unit=unit,
                         source_commandable=source_commandable,
+                        description=description,
                     )
                     return obj, present_value
                 except Exception as exc:
@@ -360,6 +383,7 @@ class BACnetDiscovery:
                 "objectInstance": obj.object_instance,
                 "presentValue": present_value,
                 "unit": obj.unit,
+                "description": obj.description,
                 "sourceCommandable": obj.source_commandable,
                 # Effective product policy:
                 "writable": False,
@@ -384,6 +408,49 @@ class BACnetDiscovery:
             "dataPoints": validated_points,
             "readOnly": True,
         }
+
+    async def read_present_values(
+        self,
+        host: str,
+        device_instance: int,
+        points: list[tuple[str, int]],
+        *,
+        timeout_ms: int = 10_000,
+        concurrency: int = 4,
+    ) -> dict[tuple[str, int], Any]:
+        """
+        Re-reads just Present-Value for an already-known set of objects
+        (object_type name, object_instance), skipping the Object_List read
+        validate() always does first. Used for a lightweight "Refresh"
+        action distinct from "Rediscover Objects" -- object inventory
+        discovery answers "what objects exist", this answers "what are
+        their current values" for objects already known. device_instance is
+        accepted for symmetry with validate()'s call shape but isn't
+        currently needed by read_property() itself (address is enough to
+        reach the device over BACnet/IP).
+        """
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+        results: dict[tuple[str, int], Any] = {}
+
+        async def read_one(object_type: str, object_instance: int) -> None:
+            code = OBJECT_TYPE_NAME_TO_CODE.get(object_type)
+            if code is None:
+                results[(object_type, object_instance)] = None
+                return
+            async with semaphore:
+                try:
+                    value = await self.transport.read_property(
+                        address=host,
+                        object_identifier=ObjectIdentifier(code, object_instance),
+                        property_identifier=int(BACnetProperty.PRESENT_VALUE),
+                        timeout_ms=timeout_ms,
+                    )
+                except Exception:
+                    value = None
+                results[(object_type, object_instance)] = value
+
+        await asyncio.gather(*(read_one(t, i) for t, i in points))
+        return results
 
     @staticmethod
     def _normalize_object_list(value: Any) -> list[ObjectIdentifier]:

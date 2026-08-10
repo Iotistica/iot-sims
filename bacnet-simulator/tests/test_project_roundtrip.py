@@ -141,6 +141,51 @@ def test_energy_model_configs_preserve_instance_key_on_reload(seeded_database):
     assert all(c["device_id"] == new_gateway_id for c in lighting_configs)
 
 
+def test_external_device_source_type_survives_project_reload(seeded_database):
+    """load_project()'s INSERT INTO devices/objects use explicit, hand-
+    written column lists (not a generic SELECT *) -- source_type and the
+    external_* columns must be included there explicitly or a saved
+    external-BACnet device would silently come back as 'simulated' on
+    every reload, which is exactly the safety-boundary regression the
+    external-device feature depends on never happening."""
+    seeded_database.sync_external_devices([{
+        "device_instance": 9001,
+        "name": "ext_ahu_9001",
+        "host": "172.22.0.99",
+        "port": 47808,
+        "metadata": {
+            "objectName": "External-AHU",
+            "vendorName": "Acme Controls",
+            "modelName": "X100",
+            "vendorId": 42,
+            "description": "a real physical device",
+        },
+    }])
+    ext_device = next(d for d in seeded_database.get_devices() if d["device_instance"] == 9001)
+    seeded_database.sync_external_objects(ext_device["id"], [
+        {"object_type": "analog-input", "object_instance": 1, "name": "SAT", "units": "degrees-celsius", "description": "supply air temp"},
+    ])
+
+    project = seeded_database.save_project("Round-trip Test", "")
+    seeded_database.load_project(project["id"])
+
+    reloaded = next(d for d in seeded_database.get_devices() if d["device_instance"] == 9001)
+    assert reloaded["source_type"] == "external-bacnet"
+    assert reloaded["external_host"] == "172.22.0.99"
+    assert reloaded["external_port"] == 47808
+    assert reloaded["external_vendor_id"] == 42
+    assert reloaded["vendor_name"] == "Acme Controls"
+    assert reloaded["description"] == "a real physical device"
+
+    reloaded_objects = seeded_database.get_objects(reloaded["id"])
+    assert len(reloaded_objects) == 1
+    assert reloaded_objects[0]["description"] == "supply air temp"
+
+    # Every other seeded (simulated) device must be unaffected.
+    simulated = [d for d in seeded_database.get_devices() if d["device_instance"] != 9001]
+    assert all(d["source_type"] == "simulated" for d in simulated)
+
+
 def test_no_semantic_key_collisions_on_repeated_reload(seeded_database):
     project = seeded_database.save_project("Round-trip Test", "")
 

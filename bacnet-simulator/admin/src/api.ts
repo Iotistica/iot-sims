@@ -31,6 +31,10 @@ import type {
   CapturedPacket,
   CapturedPacketPage,
   PacketCaptureFilters,
+  ProjectSourceType,
+  BACnetConnectionConfig,
+  DiscoveredDevice,
+  ExternalObjectRow,
 } from './types'
 
 import { authToken, logout } from './auth'
@@ -224,16 +228,58 @@ export const api = {
   // frontend-facing naming here was renamed to "project" to match the UI.
   projects: {
     list:    ()                                              => req<Project[]>('/profiles'),
-    save:    (name: string, description: string)            => req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description }) }),
+    save:    (name: string, description: string, sourceType?: ProjectSourceType, connectionConfig?: BACnetConnectionConfig | null) =>
+      req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description, source_type: sourceType, connection_config: connectionConfig }) }),
     update:  (id: number, name: string, description: string) => req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description }) }),
     del:     (id: number)                                   => req<null>(`/profiles/${id}`, { method: 'DELETE' }),
-    load:    (id: number)                                   => req<{ ok: boolean }>(`/profiles/${id}/load`, { method: 'POST' }),
+    load:    (id: number)                                   => req<{ ok: boolean; source_type: ProjectSourceType; connection_config: BACnetConnectionConfig | null }>(`/profiles/${id}/load`, { method: 'POST' }),
+    // Wipes live project state back to blank (devices/locations/semantic
+    // data) for "New Project" — reuses the server's own load_project()
+    // wipe sequence rather than looping individual per-row deletes, which
+    // could leave locations permanently stuck behind a leftover semantic
+    // entity (see clear_live_project's docstring).
+    clear:   ()                                              => req<{ ok: boolean }>('/profiles/clear', { method: 'POST' }),
     import_: (name: string, description: string, data: object) =>
       req<Project>('/profiles/import', { method: 'POST', body: JSON.stringify({ name, description, data }) }),
     exportEde: (id: number, name: string) => downloadFile(`/profiles/${id}/export/ede`, `${name}.ede`),
     importEde: (name: string, description: string, deviceName: string, file: File) =>
       uploadFile<Project>('/profiles/import/ede', file, { name, description, device_name: deviceName }),
     exportBrick: (id: number, name: string) => downloadFile(`/profiles/${id}/export/brick`, `${name}.ttl`),
+  },
+
+  discovery: {
+    // Pure ephemeral dry-run -- does not touch the devices table. Kept for
+    // reference/diagnostic use; the admin UI's "Discover Devices"/
+    // "Rediscover" action uses sync() below instead.
+    run: (opts: BACnetConnectionConfig) =>
+      req<{ devices: DiscoveredDevice[] }>('/bacnet-discovery/run', {
+        method: 'POST',
+        body: JSON.stringify({
+          discovery_target: opts.discovery_target,
+          device_instance_low: opts.device_instance_low,
+          device_instance_high: opts.device_instance_high,
+          timeout_ms: opts.timeout_ms,
+        }),
+      }),
+    // Runs discovery and persists results as external-BACnet project
+    // devices (upsert by device_instance, never deletes).
+    sync: (opts: BACnetConnectionConfig) =>
+      req<{ devices: Device[] }>('/bacnet-discovery/sync', {
+        method: 'POST',
+        body: JSON.stringify({
+          discovery_target: opts.discovery_target,
+          device_instance_low: opts.device_instance_low,
+          device_instance_high: opts.device_instance_high,
+          timeout_ms: opts.timeout_ms,
+        }),
+      }),
+  },
+
+  externalObjects: {
+    discover: (deviceId: number) =>
+      req<{ objects: ExternalObjectRow[] }>(`/devices/${deviceId}/external-objects/discover`, { method: 'POST' }),
+    refresh: (deviceId: number) =>
+      req<{ objects: ExternalObjectRow[] }>(`/devices/${deviceId}/external-objects/refresh`, { method: 'POST' }),
   },
 
   // Whole-database snapshot/restore — distinct from `projects` above (which

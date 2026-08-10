@@ -84,6 +84,8 @@ async def create_project(
         database.save_project,
         body.name,
         body.description,
+        body.source_type,
+        body.connection_config,
     )
 
 
@@ -150,7 +152,7 @@ async def load_project(
         project_id,
     )
 
-    if not loaded:
+    if loaded is None:
         raise HTTPException(
             status_code=404,
             detail="Project not found",
@@ -162,6 +164,33 @@ async def load_project(
 
     # Preserve the existing behavior: a loaded project starts
     # paused/reset until the user explicitly starts the simulation.
+    engine.reset()
+
+    return {
+        "ok": True,
+        "source_type": loaded["source_type"],
+        "connection_config": loaded["connection_config"],
+    }
+
+
+@router.post("/clear")
+async def clear_live_project(
+    request: Request,
+):
+    """
+    Wipes live project state back to blank for the "New Project" flow --
+    reuses load_project()'s own wipe sequence (Database.clear_live_state())
+    rather than the frontend looping individual device/location deletes,
+    which could leave locations permanently stuck (delete_location()
+    refuses to remove a location a leftover semantic entity still points
+    at, and per-row deletes never touch semantic tables at all).
+    """
+    database = get_database(request)
+    engine = get_engine(request)
+
+    await asyncio.to_thread(database.clear_live_state)
+
+    schedule_engine_reload(request)
     engine.reset()
 
     return {"ok": True}
