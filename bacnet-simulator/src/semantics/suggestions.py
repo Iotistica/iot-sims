@@ -287,16 +287,25 @@ POINT_RULES: tuple[SemanticRule, ...] = (
         units=frozenset({"percent"}),
         object_types=frozenset({"analog-input", "analog-value"}),
         equipment_classes=frozenset({"Variable_Air_Volume_Box", "Air_Handling_Unit"}),
-        base_score=0.25,
+        base_score=0.28,
     ),
 
+    # No `units` constraint here, unlike Damper_Position_Status -- valve
+    # status legitimately comes as either modulating (percent, analog) or
+    # simple open/closed (binary), so a blanket percent bonus would
+    # incorrectly penalize a real binary valve status point. base_score is
+    # tuned slightly above Damper_Position_Status's own (0.28) specifically
+    # so it doesn't tie with Valve_Position_Command on an analog-input
+    # "Valve-Position"-style name: Command's units-match bonus (which fires
+    # even though its object_type is wrong for an input point) would
+    # otherwise exactly offset Status's correct object_type match.
     SemanticRule(
         brick_class="Valve_Status",
         required_any=frozenset({"valve"}),
         preferred=frozenset({"position", "status", "feedback"}),
         object_types=frozenset({"analog-input", "analog-value", "binary-input", "binary-value"}),
         equipment_classes=frozenset({"Variable_Air_Volume_Box", "Air_Handling_Unit"}),
-        base_score=0.25,
+        base_score=0.30,
     ),
 
     # Electrical / utility meter points. Units are especially strong evidence
