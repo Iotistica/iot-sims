@@ -123,6 +123,50 @@ def test_damper_position_command_suggests_damper_position_command():
     assert result.suggested_class == "Damper_Position_Command"
 
 
+# ─── VAV command points (obvious cases should reach HIGH deterministically) ──
+
+def test_vav_damper_command_is_high_confidence():
+    device = DeviceSnapshot(device_instance=1102, name="VAV-L1-02")
+    point = PointSnapshot("analog-output", 4, "Damper-Cmd", units="percent")
+    result = suggest_point(device, point, equipment_class="Variable_Air_Volume_Box")
+    assert result.suggested_class == "Damper_Position_Command"
+    assert result.confidence == "high"
+
+
+def test_vav_reheat_valve_is_high_confidence():
+    device = DeviceSnapshot(device_instance=1102, name="VAV-L1-02")
+    point = PointSnapshot("analog-output", 6, "Reheat-Valve", units="percent")
+    result = suggest_point(device, point, equipment_class="Variable_Air_Volume_Box")
+    assert result.suggested_class == "Valve_Position_Command"
+    assert result.confidence == "high"
+
+
+def test_zone_humidity_never_becomes_a_position_command():
+    device = DeviceSnapshot(device_instance=1102, name="VAV-L1-02")
+    point = PointSnapshot("analog-input", 9, "Zone-Humidity", units="percent")
+    result = suggest_point(device, point, equipment_class="Variable_Air_Volume_Box")
+    assert result.suggested_class not in ("Damper_Position_Command", "Valve_Position_Command")
+
+
+def test_damper_position_input_is_not_automatically_a_command():
+    device = DeviceSnapshot(device_instance=1102, name="VAV-L1-02")
+    point = PointSnapshot("analog-input", 10, "Damper-Position", units="percent")
+    result = suggest_point(device, point, equipment_class="Variable_Air_Volume_Box")
+    assert result.suggested_class != "Damper_Position_Command"
+    # analog-input + "damper"/"position" should resolve to the status/
+    # feedback counterpart rather than being forced into an unsupported
+    # class or over-confidently guessing.
+    assert result.suggested_class in (None, "Damper_Position_Status")
+
+
+def test_valve_position_input_is_not_automatically_a_command():
+    device = DeviceSnapshot(device_instance=1102, name="VAV-L1-02")
+    point = PointSnapshot("analog-input", 11, "Valve-Position", units="percent")
+    result = suggest_point(device, point, equipment_class="Variable_Air_Volume_Box")
+    assert result.suggested_class != "Valve_Position_Command"
+    assert result.suggested_class in (None, "Valve_Status")
+
+
 def test_ambiguous_point_never_returns_unsupported_class():
     device = DeviceSnapshot(device_instance=9999, name="Misc-Device")
     point = PointSnapshot("analog-input", 1, "TEMP1")

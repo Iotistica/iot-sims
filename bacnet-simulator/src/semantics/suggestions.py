@@ -244,13 +244,24 @@ POINT_RULES: tuple[SemanticRule, ...] = (
         base_score=0.20,
     ),
 
+    # Damper/valve command vs. position-status/feedback: both keywords are
+    # near-unique to one rule pair each (unlike "temperature", shared by 4+
+    # sensor rules), and combined with a real output object_type + percent
+    # + the equipment it's actually mounted on, this is about as strong as
+    # deterministic evidence gets -- base_score reflects that specificity
+    # (same reasoning the Meter sensor rules below already use), and
+    # equipment_classes rewards the parent context exactly like the
+    # temperature/pressure sensor rules above already do for theirs.
+    # Dampers/valves exist on both VAV boxes and AHUs (confirmed against
+    # seed_default()'s own AHU OAD-Position -> Damper_Position_Command).
     SemanticRule(
         brick_class="Damper_Position_Command",
         required_any=frozenset({"damper"}),
         preferred=frozenset({"position", "command"}),
         units=frozenset({"percent"}),
         object_types=frozenset({"analog-output", "analog-value"}),
-        base_score=0.25,
+        equipment_classes=frozenset({"Variable_Air_Volume_Box", "Air_Handling_Unit"}),
+        base_score=0.30,
     ),
 
     SemanticRule(
@@ -259,6 +270,32 @@ POINT_RULES: tuple[SemanticRule, ...] = (
         preferred=frozenset({"position", "command"}),
         units=frozenset({"percent"}),
         object_types=frozenset({"analog-output", "analog-value"}),
+        equipment_classes=frozenset({"Variable_Air_Volume_Box", "Air_Handling_Unit"}),
+        base_score=0.30,
+    ),
+
+    # Position-status/feedback counterparts -- an analog-INPUT "damper
+    # position"/"valve position" point is reporting where the actuator
+    # currently sits, not commanding it; object_types deliberately excludes
+    # analog-output/analog-value so these never outscore the *_Command
+    # rules above for a real output point (a mismatched object_type is a
+    # scoring penalty, same mechanism as everywhere else in this file).
+    SemanticRule(
+        brick_class="Damper_Position_Status",
+        required_any=frozenset({"damper"}),
+        preferred=frozenset({"position", "status", "feedback"}),
+        units=frozenset({"percent"}),
+        object_types=frozenset({"analog-input", "analog-value"}),
+        equipment_classes=frozenset({"Variable_Air_Volume_Box", "Air_Handling_Unit"}),
+        base_score=0.25,
+    ),
+
+    SemanticRule(
+        brick_class="Valve_Status",
+        required_any=frozenset({"valve"}),
+        preferred=frozenset({"position", "status", "feedback"}),
+        object_types=frozenset({"analog-input", "analog-value", "binary-input", "binary-value"}),
+        equipment_classes=frozenset({"Variable_Air_Volume_Box", "Air_Handling_Unit"}),
         base_score=0.25,
     ),
 
