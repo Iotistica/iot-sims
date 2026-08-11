@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { api } from '../api'
-import type { Project, ProjectSourceType, BACnetConnectionConfig } from '../types'
+import type { Project, ProjectSourceType, BACnetConnectionConfig, ModelingMode } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -15,6 +15,7 @@ const emit = defineEmits<{ 'update:open': [v: boolean]; created: [project: Proje
 
 const name = ref('')
 const description = ref('')
+const modelingMode = ref<ModelingMode>('standard')
 const sourceType = ref<ProjectSourceType>('simulated')
 const discoveryTarget = ref('')
 const deviceInstanceLow = ref(0)
@@ -26,6 +27,7 @@ watch(() => props.open, (v) => {
   if (!v) return
   name.value = ''
   description.value = ''
+  modelingMode.value = 'standard'
   sourceType.value = 'simulated'
   discoveryTarget.value = ''
   deviceInstanceLow.value = 0
@@ -58,6 +60,7 @@ async function doCreate() {
       description.value.trim(),
       sourceType.value,
       connectionConfig,
+      modelingMode.value,
     )
     message.success(`"${project.name}" created`)
     emit('created', project)
@@ -100,6 +103,25 @@ async function doCreate() {
               External BACnet
               <div style="font-size:12px;color:var(--text-secondary);margin-left:24px">
                 Connect to an existing BACnet network and discover devices.
+              </div>
+            </a-radio>
+          </div>
+        </a-radio-group>
+      </a-form-item>
+
+      <a-form-item label="Modeling Mode">
+        <a-radio-group v-model:value="modelingMode" style="width:100%">
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <a-radio value="standard">
+              Standard BACnet Simulator
+              <div style="font-size:12px;color:var(--text-secondary);margin-left:24px">
+                Simulate BACnet devices, objects, values, alarms and network behavior.
+              </div>
+            </a-radio>
+            <a-radio value="semantic">
+              Semantic Building Model (Brick)
+              <div style="font-size:12px;color:var(--text-secondary);margin-left:24px">
+                Also model Controllers, Equipment and their relationships using Brick.
               </div>
             </a-radio>
           </div>

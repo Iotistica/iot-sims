@@ -5,7 +5,7 @@ import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
 import { nextFreeInstance } from '../deviceInstance'
-import type { Device, Meta, Location, Equipment } from '../types'
+import type { Device, Meta, Location, Equipment, ModelingMode } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -13,6 +13,7 @@ const props = defineProps<{
   meta: Meta
   locations?: Location[]
   equipment?: Equipment[]
+  modelingMode: ModelingMode
   existingInstances?: number[]
   draftMode?: boolean
   draftDevice?: Record<string, any> | null
@@ -80,6 +81,23 @@ const equipmentOptionGroups = computed(() => {
 // project-local metadata and stays fully editable. Mirrors the backend's
 // reject_external_source_mutation() field list.
 const isExternal = computed(() => props.device?.source_type === 'external-bacnet')
+
+// Title is NOT a pure function of modelingMode -- switching a project from
+// Standard to Semantic does not retroactively convert any existing device
+// into a Controller (modeling_mode only controls whether Controller
+// modeling is *available*, not which devices *are* Controllers). In
+// Standard mode Controller/Controls concepts are fully hidden, so editing
+// always reads "Edit Device" there regardless of has_controller_entity; in
+// Semantic mode, editing reads the device's own has_controller_entity flag.
+// Only the Create title (no device yet to check) depends on modelingMode
+// directly, since it's only reachable via "+ Add > Controller" (semantic)
+// or "+ Add > Device" (standard).
+const drawerTitle = computed(() => {
+  if (props.device) {
+    return props.modelingMode === 'semantic' && props.device.has_controller_entity ? 'Edit Controller' : 'Edit Device'
+  }
+  return props.modelingMode === 'semantic' ? 'Add Controller' : 'Add Device'
+})
 
 // Mirrors _effective_can_receive_events() in src/simulator.py: untagged
 // devices (no equipment_type — workstations, BMS servers, gateways have no
@@ -324,11 +342,14 @@ async function save() {
       // Case 3 (legacy device, never explicitly made a Controller): stop
       // here -- editing/saving must never by itself grant the Controller
       // semantic role. Case 2 (already a Controller): keep its semantic
-      // entity's name in sync, same as any other idempotent upsert. NEW:
-      // an explicit Controls selection on a legacy device is itself an
+      // entity's name in sync, same as any other idempotent upsert --
+      // unconditional regardless of modelingMode, since this is maintaining
+      // an already-existing entity, not new semantic-model creation. NEW:
+      // an explicit Controls selection (only reachable in Semantic mode,
+      // see the Controls field's v-if) on a legacy device is itself an
       // explicit "make this a Controller" action, same principle as
       // Case 1 below -- so it also triggers the upgrade.
-      if (props.device.has_controller_entity || controlsEquipmentIds.value.length > 0) {
+      if (props.device.has_controller_entity || (props.modelingMode === 'semantic' && controlsEquipmentIds.value.length > 0)) {
         try {
           await api.devices.markAsController(deviceId)
         } catch {
@@ -339,12 +360,15 @@ async function save() {
       const created = await api.devices.create(body)
       deviceId = created.id
       createdNew = true
-      // Case 1: the only entry path is "+ Add > Controller" -- unambiguous
-      // explicit Controller creation, always mark it.
-      try {
-        await api.devices.markAsController(deviceId)
-      } catch {
-        semanticSyncFailed = true
+      // Case 1: only reachable via "+ Add > Controller" in Semantic mode --
+      // unambiguous explicit Controller creation, always mark it. "+ Add >
+      // Device" in Standard mode must never create a Controller entity.
+      if (props.modelingMode === 'semantic') {
+        try {
+          await api.devices.markAsController(deviceId)
+        } catch {
+          semanticSyncFailed = true
+        }
       }
       if (edeFile.value) {
         try {
@@ -407,7 +431,7 @@ function doDelete() {
 
 <template>
   <a-drawer
-    :title="device ? 'Edit Controller' : 'Add Controller'"
+    :title="drawerTitle"
     :open="open"
     width="440"
     @close="emit('update:open', false)"
@@ -441,7 +465,7 @@ function doDelete() {
         />
       </a-form-item>
 
-      <a-form-item label="Controls" help="Select equipment controlled by this controller.">
+      <a-form-item v-if="modelingMode === 'semantic'" label="Controls" help="Select equipment controlled by this controller.">
         <a-select
           v-model:value="controlsEquipmentIds"
           mode="multiple"

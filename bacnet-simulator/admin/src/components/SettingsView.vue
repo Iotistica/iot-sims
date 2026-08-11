@@ -2,9 +2,16 @@
 import { reactive, ref, onMounted } from 'vue'
 import { message } from 'ant-design-vue'
 import { api } from '../api'
-import type { Settings } from '../types'
+import type { Settings, ModelingMode } from '../types'
 import UsersDrawer from './UsersDrawer.vue'
 import BackupsPanel from './BackupsPanel.vue'
+
+defineProps<{
+  modelingMode: ModelingMode
+}>()
+const emit = defineEmits<{
+  'change-modeling-mode': [mode: ModelingMode]
+}>()
 
 const loading = ref(false)
 const savingGeneral = ref(false)
@@ -60,6 +67,10 @@ async function saveBuffers() {
 }
 
 onMounted(load)
+
+function onModelingModeChange(e: { target: { value: ModelingMode } }) {
+  emit('change-modeling-mode', e.target.value)
+}
 </script>
 
 <template>
@@ -67,6 +78,35 @@ onMounted(load)
     <h2 style="margin:0 0 16px;font-size:16px">Settings</h2>
 
     <a-tabs>
+      <a-tab-pane key="project" tab="Project">
+        <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:16px;max-width:480px">
+          <div style="font-weight:600;margin-bottom:2px">Modeling Mode</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
+            Controls whether Equipment/Controller/Brick modeling is exposed for this project. Both modes run the same BACnet simulation.
+          </div>
+          <a-radio-group
+            :value="modelingMode"
+            style="width:100%"
+            @change="onModelingModeChange"
+          >
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <a-radio value="standard">
+                Standard BACnet Simulator
+                <div style="font-size:12px;color:var(--text-secondary);margin-left:24px">
+                  Simulate BACnet devices, objects, values, alarms and network behavior.
+                </div>
+              </a-radio>
+              <a-radio value="semantic">
+                Semantic Building Model (Brick)
+                <div style="font-size:12px;color:var(--text-secondary);margin-left:24px">
+                  Also model Controllers, Equipment and their relationships using Brick.
+                </div>
+              </a-radio>
+            </div>
+          </a-radio-group>
+        </div>
+      </a-tab-pane>
+
       <a-tab-pane key="general" tab="General">
         <a-spin :spinning="loading">
           <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:16px;max-width:480px">

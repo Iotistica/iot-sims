@@ -357,6 +357,12 @@ export interface SemanticSuggestionsResponse {
 
 export type ProjectSourceType = 'simulated' | 'external-bacnet'
 
+/** Standard = plain BACnet simulator; Semantic = also exposes the Brick
+ * Equipment/Controller-relationship modeling layer (Equipment, Controls,
+ * the Semantic tab/graph). Both modes run the same runtime/BACnet engine --
+ * this only controls which UI surfaces are shown. */
+export type ModelingMode = 'standard' | 'semantic'
+
 export interface BACnetConnectionConfig {
   discovery_target: string | null
   device_instance_low: number
@@ -372,6 +378,7 @@ export interface Project {
   device_count: number
   source_type?: ProjectSourceType
   connection_config?: BACnetConnectionConfig | null
+  modeling_mode?: ModelingMode
 }
 
 export interface DiscoveredDevice {

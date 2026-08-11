@@ -296,11 +296,20 @@ class ProjectCreate(BaseModel):
     description: str = Field("", max_length=500)
     source_type: Literal["simulated", "external-bacnet"] = "simulated"
     connection_config: Optional[dict] = None
+    # Standard = plain BACnet simulator, Semantic = also exposes the Brick
+    # Equipment/Controller-relationship modeling layer. New projects default
+    # to "standard" -- see Database.load_project()'s own comment for why
+    # pre-existing (legacy) projects default to "semantic" instead.
+    modeling_mode: Literal["standard", "semantic"] = "standard"
 
 
 class ProjectUpdate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
+    # None = preserve whatever modeling_mode is already stored (the ordinary
+    # "Save" flow never touches this) -- only the explicit Settings toggle
+    # passes a real value.
+    modeling_mode: Optional[Literal["standard", "semantic"]] = None
 
 
 class ProjectImport(BaseModel):
