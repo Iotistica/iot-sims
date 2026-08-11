@@ -86,7 +86,6 @@ async def create_project(
         body.description,
         body.source_type,
         body.connection_config,
-        body.modeling_mode,
     )
 
 
@@ -103,7 +102,6 @@ async def update_project(
         project_id,
         body.name,
         body.description,
-        body.modeling_mode,
     )
 
     if not updated:
@@ -172,7 +170,6 @@ async def load_project(
         "ok": True,
         "source_type": loaded["source_type"],
         "connection_config": loaded["connection_config"],
-        "modeling_mode": loaded["modeling_mode"],
     }
 
 

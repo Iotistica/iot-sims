@@ -3129,7 +3129,6 @@ class Database:
         description: str,
         source_type: str = "simulated",
         connection_config: Optional[dict] = None,
-        modeling_mode: str = "standard",
     ) -> dict:
         with self._conn() as conn:
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
@@ -3172,7 +3171,6 @@ class Database:
                 "functional_tests": functional_tests,
                 "source_type": source_type,
                 "connection_config": connection_config,
-                "modeling_mode": modeling_mode,
             })
             cur = conn.execute(
                 "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
@@ -3185,28 +3183,19 @@ class Database:
             ).fetchone())
             row["source_type"] = source_type
             row["connection_config"] = connection_config
-            row["modeling_mode"] = modeling_mode
             return row
 
-    def update_project(
-        self, project_id: int, name: str, description: str, modeling_mode: Optional[str] = None,
-    ) -> bool:
+    def update_project(self, project_id: int, name: str, description: str) -> bool:
         with self._conn() as conn:
-            # source_type/connection_config/modeling_mode aren't part of live
-            # device/location state -- they only exist in this row's own
-            # stored data blob, so they must be read back and re-embedded
-            # rather than dropped. modeling_mode is the one field a caller
-            # can explicitly override here (see App.vue's setModelingMode) --
-            # omitted (None) means "preserve whatever was already stored",
-            # same as source_type/connection_config always do.
+            # source_type/connection_config aren't part of live device/location
+            # state -- they only exist in this row's own stored data blob, so
+            # they must be read back and re-embedded rather than dropped.
             existing = conn.execute(
                 "SELECT data FROM profiles WHERE id=?", (project_id,)
             ).fetchone()
             existing_payload = json.loads(existing["data"]) if existing else {}
             source_type = existing_payload.get("source_type", "simulated")
             connection_config = existing_payload.get("connection_config")
-            if modeling_mode is None:
-                modeling_mode = existing_payload.get("modeling_mode") or "semantic"
 
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             equipment = [dict(r) for r in conn.execute("SELECT * FROM equipment")]
@@ -3235,7 +3224,6 @@ class Database:
                 "functional_tests": functional_tests,
                 "source_type": source_type,
                 "connection_config": connection_config,
-                "modeling_mode": modeling_mode,
             })
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
@@ -3587,18 +3575,6 @@ class Database:
             return {
                 "source_type": payload.get("source_type", "simulated"),
                 "connection_config": payload.get("connection_config"),
-                # Legacy projects saved before modeling_mode existed default
-                # to "semantic" unconditionally -- NOT inferred from whether
-                # the project currently has equipment/semantic_entities rows.
-                # Older app versions may already have auto-created semantic
-                # entities behind the scenes, so an empty-looking project is
-                # not reliable evidence the user never touched semantic
-                # features; defaulting to "semantic" preserves the full
-                # feature set a pre-existing project already had. New
-                # projects get an explicit modeling_mode written at creation
-                # time (see save_project), so this fallback only ever fires
-                # for genuinely old data.
-                "modeling_mode": payload.get("modeling_mode") or "semantic",
             }
 
     def import_project(self, name: str, description: str, data: dict) -> dict:

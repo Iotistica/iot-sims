@@ -34,7 +34,6 @@ import type {
   CapturedPacketPage,
   PacketCaptureFilters,
   ProjectSourceType,
-  ModelingMode,
   BACnetConnectionConfig,
   DiscoveredDevice,
   ExternalObjectRow,
@@ -305,14 +304,11 @@ export const api = {
   // frontend-facing naming here was renamed to "project" to match the UI.
   projects: {
     list:    ()                                              => req<Project[]>('/profiles'),
-    save:    (name: string, description: string, sourceType?: ProjectSourceType, connectionConfig?: BACnetConnectionConfig | null, modelingMode?: ModelingMode) =>
-      req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description, source_type: sourceType, connection_config: connectionConfig, modeling_mode: modelingMode }) }),
-    // modelingMode omitted (undefined) -> not sent -> backend preserves the
-    // already-stored value. Only the explicit Settings toggle passes one.
-    update:  (id: number, name: string, description: string, modelingMode?: ModelingMode) =>
-      req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description, modeling_mode: modelingMode }) }),
+    save:    (name: string, description: string, sourceType?: ProjectSourceType, connectionConfig?: BACnetConnectionConfig | null) =>
+      req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description, source_type: sourceType, connection_config: connectionConfig }) }),
+    update:  (id: number, name: string, description: string) => req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description }) }),
     del:     (id: number)                                   => req<null>(`/profiles/${id}`, { method: 'DELETE' }),
-    load:    (id: number)                                   => req<{ ok: boolean; source_type: ProjectSourceType; connection_config: BACnetConnectionConfig | null; modeling_mode: ModelingMode }>(`/profiles/${id}/load`, { method: 'POST' }),
+    load:    (id: number)                                   => req<{ ok: boolean; source_type: ProjectSourceType; connection_config: BACnetConnectionConfig | null }>(`/profiles/${id}/load`, { method: 'POST' }),
     // Wipes live project state back to blank (devices/locations/semantic
     // data) for "New Project" — reuses the server's own load_project()
     // wipe sequence rather than looping individual per-row deletes, which

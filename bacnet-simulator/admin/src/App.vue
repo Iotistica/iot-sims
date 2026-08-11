@@ -26,7 +26,7 @@ import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
 import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
 
-import type { Device, Meta, Health, Location, Equipment, Project, ProjectSourceType, BACnetConnectionConfig, ModelingMode } from './types'
+import type { Device, Meta, Health, Location, Equipment, Project, ProjectSourceType, BACnetConnectionConfig } from './types'
 import { api, projectDirty } from './api'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
@@ -127,16 +127,11 @@ const sidebarTree = computed<SidebarTreeNode[]>(() => {
     if (parent) parent.children!.push(node)
     else roots.push(node)
   }
-  // Equipment nodes are Semantic-mode-only -- in Standard mode the project
-  // may still have Equipment rows (e.g. after a Semantic -> Standard
-  // switch), but they stay hidden, not just unreachable via +Add.
-  if (activeProjectModelingMode.value === 'semantic') {
-    for (const e of equipment.value) {
-      const node: SidebarTreeNode = { key: `equipment-${e.id}`, kind: 'equipment', equipment: e }
-      const parent = e.location_id != null ? locationNodes.get(e.location_id) : undefined
-      if (parent) parent.children!.push(node)
-      else roots.push(node)
-    }
+  for (const e of equipment.value) {
+    const node: SidebarTreeNode = { key: `equipment-${e.id}`, kind: 'equipment', equipment: e }
+    const parent = e.location_id != null ? locationNodes.get(e.location_id) : undefined
+    if (parent) parent.children!.push(node)
+    else roots.push(node)
   }
   return roots
 })
@@ -144,11 +139,8 @@ const sidebarTree = computed<SidebarTreeNode[]>(() => {
 // devices.value.length alone, otherwise a project containing only a
 // location or only equipment (zero devices) would hit the "no devices"
 // empty state and never render the tree at all, even though sidebarTree
-// above has nodes to show. Equipment only counts in Semantic mode, matching
-// sidebarTree's own gating above.
-const sidebarRawCount = computed(() =>
-  devices.value.length + locations.value.length + (activeProjectModelingMode.value === 'semantic' ? equipment.value.length : 0)
-)
+// above has nodes to show.
+const sidebarRawCount = computed(() => devices.value.length + locations.value.length + equipment.value.length)
 // While searching, the tree itself falls back to a flat device-only list
 // (see sidebarTree's own comment) -- so the "no results" gate must match
 // that same device-only scope, not the total count above.
@@ -196,13 +188,6 @@ const activeProjectName = ref<string | null>(null)
 const activeProjectDesc = ref<string>('')
 const activeProjectSourceType = ref<ProjectSourceType>('simulated')
 const activeProjectConnectionConfig = ref<BACnetConnectionConfig | null>(null)
-// Standard = plain BACnet simulator, Semantic = also exposes Equipment/
-// Controller relationship modeling (Equipment, Controls, Semantic tab/
-// graph). Purely a UI-visibility flag -- both modes run the same runtime.
-// After an explicit project load (ProjectsDrawer "Load"), the backend's
-// load_project() response is authoritative and always overwrites this --
-// never read back from localStorage at that point (see onProjectLoaded()).
-const activeProjectModelingMode = ref<ModelingMode>('standard')
 
 function loadActiveProjectFromStorage() {
   try {
@@ -211,23 +196,20 @@ function loadActiveProjectFromStorage() {
     const saved = JSON.parse(raw) as {
       id: number; name: string; desc: string
       sourceType?: ProjectSourceType; connectionConfig?: BACnetConnectionConfig | null
-      modelingMode?: ModelingMode
     }
     activeProjectId.value = saved.id
     activeProjectName.value = saved.name
     activeProjectDesc.value = saved.desc
-    // Older stored entries (pre-source_type/pre-modeling_mode) have neither
-    // field — default to 'simulated'/'standard' so existing projects keep
-    // behaving exactly as before.
+    // Older stored entries (pre-source_type) have neither field — default to
+    // 'simulated' so existing projects keep behaving exactly as before.
     activeProjectSourceType.value = saved.sourceType ?? 'simulated'
     activeProjectConnectionConfig.value = saved.connectionConfig ?? null
-    activeProjectModelingMode.value = saved.modelingMode ?? 'standard'
   } catch {
     // Malformed/stale storage — ignore and fall back to "no active project"
   }
 }
 
-watch([activeProjectId, activeProjectName, activeProjectDesc, activeProjectSourceType, activeProjectConnectionConfig, activeProjectModelingMode], () => {
+watch([activeProjectId, activeProjectName, activeProjectDesc, activeProjectSourceType, activeProjectConnectionConfig], () => {
   if (activeProjectId.value === null) {
     localStorage.removeItem(ACTIVE_PROJECT_KEY)
   } else {
@@ -237,7 +219,6 @@ watch([activeProjectId, activeProjectName, activeProjectDesc, activeProjectSourc
       desc: activeProjectDesc.value,
       sourceType: activeProjectSourceType.value,
       connectionConfig: activeProjectConnectionConfig.value,
-      modelingMode: activeProjectModelingMode.value,
     }))
   }
 }, { deep: true })
@@ -495,7 +476,6 @@ async function resetToNewProject(silent = false) {
   activeProjectDesc.value = ''
   activeProjectSourceType.value = 'simulated'
   activeProjectConnectionConfig.value = null
-  activeProjectModelingMode.value = 'standard'
   projectDirty.value = false
   await loadDevices()
   await loadLocations()
@@ -530,7 +510,6 @@ function onNewProjectCreated(project: Project) {
   activeProjectDesc.value = project.description
   activeProjectSourceType.value = project.source_type ?? 'simulated'
   activeProjectConnectionConfig.value = project.connection_config ?? null
-  activeProjectModelingMode.value = project.modeling_mode ?? 'standard'
 }
 
 function openSaveAs() {
@@ -568,14 +547,12 @@ async function doSave() {
       saveModalDesc.value.trim(),
       activeProjectSourceType.value,
       activeProjectConnectionConfig.value,
-      activeProjectModelingMode.value,
     )
     activeProjectId.value = project.id
     activeProjectName.value = project.name
     activeProjectDesc.value = project.description
     activeProjectSourceType.value = project.source_type ?? 'simulated'
     activeProjectConnectionConfig.value = project.connection_config ?? null
-    activeProjectModelingMode.value = project.modeling_mode ?? 'standard'
     saveModalOpen.value = false
     projectDirty.value = false
     message.success(`"${project.name}" saved`)
@@ -589,54 +566,18 @@ async function doSave() {
 async function onProjectLoaded(
   id: number, name: string, desc: string,
   sourceType: ProjectSourceType, connectionConfig: BACnetConnectionConfig | null,
-  modelingMode: ModelingMode,
 ) {
   activeProjectId.value = id
   activeProjectName.value = name
   activeProjectDesc.value = desc
   activeProjectSourceType.value = sourceType
   activeProjectConnectionConfig.value = connectionConfig
-  // Authoritative: the just-loaded project's own modeling_mode always wins,
-  // regardless of whatever was previously in state/localStorage.
-  activeProjectModelingMode.value = modelingMode
-  if (activeView.value === 'semantic' && modelingMode !== 'semantic') activeView.value = 'devices'
-  selectedEquipment.value = null
   projectDirty.value = false
   await loadDevices()
   await loadLocations()
   await loadEquipment()
   selectedDevice.value = null
   await loadHealth()
-}
-
-// Modeling mode is a UI-visibility flag only -- switching it never touches
-// devices/objects/equipment/semantic_entities/semantic_relationships (see
-// Database.update_project()). Standard -> Semantic applies immediately;
-// Semantic -> Standard asks first since it hides Equipment/Controls/the
-// Graph tab (data stays intact, just unreachable until switched back).
-function setModelingMode(mode: ModelingMode) {
-  const apply = () => {
-    activeProjectModelingMode.value = mode
-    if (activeView.value === 'semantic' && mode !== 'semantic') activeView.value = 'devices'
-    selectedEquipment.value = null
-    if (activeProjectId.value !== null) {
-      // Persist immediately -- this is already an explicit, deliberate user
-      // action, it shouldn't be lost if they forget to hit Save afterward.
-      api.projects.update(activeProjectId.value, activeProjectName.value!, activeProjectDesc.value, mode)
-        .catch((e: unknown) => message.error((e as Error).message ?? 'Failed to save modeling mode'))
-    }
-  }
-
-  if (mode === 'standard' && activeProjectModelingMode.value === 'semantic') {
-    Modal.confirm({
-      title: 'Switch to Standard mode?',
-      content: 'Equipment and semantic relationships will be hidden, not deleted — they’ll reappear if you switch back to Semantic Building Model.',
-      okText: 'Switch to Standard',
-      onOk: apply,
-    })
-  } else {
-    apply()
-  }
 }
 
 const equipmentTypeLabel = computed(() => {
@@ -754,7 +695,7 @@ onUnmounted(() => {
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
           <a-radio-button value="packet-capture"><ClusterOutlined /> Network</a-radio-button>
           <a-radio-button value="utility"><DashboardOutlined /> Utilities</a-radio-button>
-          <a-radio-button v-if="activeProjectModelingMode === 'semantic'" value="semantic"><PartitionOutlined /> Graph</a-radio-button>
+          <a-radio-button value="semantic"><PartitionOutlined /> Semantic</a-radio-button>
           <a-radio-button value="tests"><ExperimentOutlined /> Tests</a-radio-button>
         </a-radio-group>
 
@@ -788,11 +729,7 @@ onUnmounted(() => {
       <AnalyticsDashboard v-if="activeView === 'bacnet'" />
       <AlarmsPanel v-else-if="activeView === 'alarms'" />
       <PacketCapturePanel v-else-if="activeView === 'packet-capture'" :initial-device-id="packetCaptureDeviceFilter"/>
-      <SettingsView
-        v-else-if="activeView === 'settings'"
-        :modeling-mode="activeProjectModelingMode"
-        @change-modeling-mode="setModelingMode"
-      />
+      <SettingsView v-else-if="activeView === 'settings'" />
       <UtilitiesDashboard v-else-if="activeView === 'utility'" />
       <SemanticPanel v-else-if="activeView === 'semantic'" />
       <FunctionalTestsView v-else-if="activeView === 'tests'" />
@@ -812,11 +749,11 @@ onUnmounted(() => {
                     <a-menu-item key="location" @click="openAddLocation()">
                       <FolderAddOutlined /> Location
                     </a-menu-item>
-                    <a-menu-item v-if="activeProjectModelingMode === 'semantic'" key="equipment" @click="openAddEquipment()">
+                    <a-menu-item key="equipment" @click="openAddEquipment()">
                       <DeploymentUnitOutlined /> Equipment
                     </a-menu-item>
                     <a-menu-item key="controller" @click="openAddDevice()">
-                      <ApiOutlined /> {{ activeProjectModelingMode === 'semantic' ? 'Controller' : 'Device' }}
+                      <ApiOutlined /> Controller
                     </a-menu-item>
                   </a-menu>
                 </template>
@@ -840,8 +777,7 @@ onUnmounted(() => {
 
           <div v-if="!sidebarRawCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
             <span v-if="externalSyncError" style="color:var(--error, #ff4d4f)">{{ externalSyncError }}</span>
-            <span v-else-if="activeProjectModelingMode === 'semantic'">Nothing here yet — use "+ Add" to create a Location, Equipment, or Controller</span>
-            <span v-else>Nothing here yet — use "+ Add" to create a Location or Device</span>
+            <span v-else>Nothing here yet — use "+ Add" to create a Location, Equipment, or Controller</span>
           </div>
           <div v-else-if="!sidebarFilteredCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
             No devices match "{{ deviceSearch }}"
@@ -879,11 +815,11 @@ onUnmounted(() => {
                         <a-menu-item key="location" @click="openAddLocation(node.location.id)">
                           <FolderAddOutlined /> Location
                         </a-menu-item>
-                        <a-menu-item v-if="activeProjectModelingMode === 'semantic'" key="equipment" @click="openAddEquipment(node.location.id)">
+                        <a-menu-item key="equipment" @click="openAddEquipment(node.location.id)">
                           <DeploymentUnitOutlined /> Equipment
                         </a-menu-item>
                         <a-menu-item key="controller" @click="openAddDevice(node.location.id)">
-                          <ApiOutlined /> {{ activeProjectModelingMode === 'semantic' ? 'Controller' : 'Device' }}
+                          <ApiOutlined /> Controller
                         </a-menu-item>
                       </a-menu>
                     </template>
@@ -1058,7 +994,6 @@ onUnmounted(() => {
       :meta="meta"
       :locations="locations"
       :equipment="equipment"
-      :modeling-mode="activeProjectModelingMode"
       :existing-instances="devices.map(d => d.device_instance)"
       :default-location-id="addContextLocationId"
       @saved="onDeviceSaved"
