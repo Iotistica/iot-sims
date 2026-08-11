@@ -5,16 +5,21 @@ import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
 import { nextFreeInstance } from '../deviceInstance'
-import type { Device, Meta, Location } from '../types'
+import type { Device, Meta, Location, Equipment } from '../types'
 
 const props = defineProps<{
   open: boolean
   device: Device | null
   meta: Meta
   locations?: Location[]
+  equipment?: Equipment[]
   existingInstances?: number[]
   draftMode?: boolean
   draftDevice?: Record<string, any> | null
+  /** Preselects Location when opening for a fresh Add (e.g. invoked from a
+   * location row's contextual "+" action) -- ignored when editing an
+   * existing device. */
+  defaultLocationId?: number | null
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
@@ -41,6 +46,32 @@ const form = reactive({
 })
 
 const locationTreeOptions = computed(() => buildLocationTreeOptions(props.locations ?? []))
+
+// ── Controls (Controller -> Equipment semantic relationship) ────────────────
+// Reuses the existing `controls` predicate the Equipment panel's "Controlled
+// By"/"Assign Controller" already read/write from the other direction --
+// see src/semantics/mirror.py's sync_controller_entity for why a device only
+// ever gets a Controller semantic entity through an explicit action (device
+// creation via "+ Add > Controller", or -- new here -- an explicit Controls
+// selection on an existing device).
+const controlsEquipmentIds = ref<number[]>([])
+const initialControlsEquipmentIds = ref<number[]>([])
+const controllerEntityId = ref<number | null>(null)
+const relationshipIdByEquipmentId = ref<Record<number, number>>({})
+
+const equipmentOptionGroups = computed(() => {
+  const all = props.equipment ?? []
+  const toOption = (e: Equipment) => ({ value: e.id, label: e.name })
+  if (form.location_id == null) {
+    return [{ label: 'Equipment', options: all.map(toOption) }]
+  }
+  const here = all.filter(e => e.location_id === form.location_id)
+  const elsewhere = all.filter(e => e.location_id !== form.location_id)
+  const groups = []
+  if (here.length) groups.push({ label: 'In this location', options: here.map(toOption) })
+  if (elsewhere.length) groups.push({ label: 'Other equipment', options: elsewhere.map(toOption) })
+  return groups
+})
 
 // External devices: "read-only toward the physical device" means
 // device_instance/vendor/model/BACnet-info/Enabled stay locked (they mirror
@@ -153,8 +184,8 @@ const selectedModelObjectTypes = computed(() => {
   }))
 })
 
-function filterOption(input: string, opt: { value?: string; label?: string }) {
-  return (opt.label ?? opt.value ?? '').toLowerCase().includes(input.toLowerCase())
+function filterOption(input: string, opt: { value?: string | number; label?: string }) {
+  return (opt.label ?? String(opt.value ?? '')).toLowerCase().includes(input.toLowerCase())
 }
 
 async function loadVendors() {
@@ -170,9 +201,44 @@ async function loadVendors() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+async function loadControls() {
+  controlsEquipmentIds.value = []
+  initialControlsEquipmentIds.value = []
+  controllerEntityId.value = null
+  relationshipIdByEquipmentId.value = {}
+
+  if (props.draftMode || !props.device) return
+
+  const controllerEntities = await api.semanticEntities.list({ device_id: props.device.id, entity_kind: 'controller' })
+  const entity = controllerEntities[0]
+  if (!entity) return
+  controllerEntityId.value = entity.id
+
+  const [targets, relationships] = await Promise.all([
+    api.semanticEntities.related(entity.id, 'controls', 'out'),
+    api.semanticRelationships.list({ source_entity_id: entity.id, predicate: 'controls' }),
+  ])
+
+  const relIdByTargetEntityId: Record<number, number> = {}
+  for (const rel of relationships) relIdByTargetEntityId[rel.target_entity_id] = rel.id
+
+  const ids: number[] = []
+  const relByEquipmentId: Record<number, number> = {}
+  for (const t of targets) {
+    if (t.equipment_id == null) continue
+    ids.push(t.equipment_id)
+    const relId = relIdByTargetEntityId[t.id]
+    if (relId != null) relByEquipmentId[t.equipment_id] = relId
+  }
+  controlsEquipmentIds.value = ids
+  initialControlsEquipmentIds.value = [...ids]
+  relationshipIdByEquipmentId.value = relByEquipmentId
+}
+
 watch(() => props.open, (v) => {
   if (!v) return
   loadVendors()
+  loadControls()
   edeFile.value = null
   edeFileName.value = ''
   const src = props.draftMode ? props.draftDevice : props.device
@@ -196,12 +262,42 @@ watch(() => props.open, (v) => {
     Object.assign(form, {
       device_instance: nextFreeInstance(props.existingInstances ?? []), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true,
       firmware_revision: 'N/A', protocol_revision: 22, max_apdu_length_accepted: 1024, segmentation_supported: 'segmented-both',
-      location_id: null,
+      location_id: props.defaultLocationId ?? null,
       equipment_type: null,
       can_receive_event_notifications: null,
     })
   }
 })
+
+// Reconciles this Controller's `controls` edges against controlsEquipmentIds
+// -- only ever touches `controls` relationships sourced from THIS
+// controller entity; every other predicate/entity is untouched.
+async function syncControlsRelationships(deviceId: number) {
+  const finalIds = controlsEquipmentIds.value
+  const initialIds = initialControlsEquipmentIds.value
+  if (finalIds.length === 0 && initialIds.length === 0) return
+
+  let entityId = controllerEntityId.value
+  if (entityId == null) {
+    const entities = await api.semanticEntities.list({ device_id: deviceId, entity_kind: 'controller' })
+    entityId = entities[0]?.id ?? null
+  }
+  if (entityId == null) return
+
+  const toAdd = finalIds.filter(id => !initialIds.includes(id))
+  const toRemove = initialIds.filter(id => !finalIds.includes(id))
+
+  for (const equipmentId of toAdd) {
+    const targets = await api.semanticEntities.list({ entity_kind: 'equipment', equipment_id: equipmentId })
+    const target = targets[0]
+    if (!target) continue
+    await api.semanticRelationships.create({ source_entity_id: entityId, predicate: 'controls', target_entity_id: target.id })
+  }
+  for (const equipmentId of toRemove) {
+    const relId = relationshipIdByEquipmentId.value[equipmentId]
+    if (relId != null) await api.semanticRelationships.del(relId)
+  }
+}
 
 async function save() {
   if (!form.name.trim()) { message.error('Name is required'); return }
@@ -212,22 +308,66 @@ async function save() {
   }
   loading.value = true
   const body = { ...form, enabled: form.enabled ? 1 : 0 }
+  // Tracks whether ANY semantic step (Controller-role sync, Controls
+  // relationship sync) failed -- the primary device save is authoritative
+  // and is never rolled back for this, but the user must be able to tell
+  // "fully succeeded" apart from "device saved, semantic sync failed"
+  // rather than getting an unconditional success toast either way.
+  let semanticSyncFailed = false
   try {
+    let deviceId: number
+    let createdNew: boolean
     if (props.device) {
       await api.devices.update(props.device.id, body)
-      message.success('Device updated')
+      deviceId = props.device.id
+      createdNew = false
+      // Case 3 (legacy device, never explicitly made a Controller): stop
+      // here -- editing/saving must never by itself grant the Controller
+      // semantic role. Case 2 (already a Controller): keep its semantic
+      // entity's name in sync, same as any other idempotent upsert. NEW:
+      // an explicit Controls selection on a legacy device is itself an
+      // explicit "make this a Controller" action, same principle as
+      // Case 1 below -- so it also triggers the upgrade.
+      if (props.device.has_controller_entity || controlsEquipmentIds.value.length > 0) {
+        try {
+          await api.devices.markAsController(deviceId)
+        } catch {
+          semanticSyncFailed = true
+        }
+      }
     } else {
       const created = await api.devices.create(body)
-      message.success('Device created')
+      deviceId = created.id
+      createdNew = true
+      // Case 1: the only entry path is "+ Add > Controller" -- unambiguous
+      // explicit Controller creation, always mark it.
+      try {
+        await api.devices.markAsController(deviceId)
+      } catch {
+        semanticSyncFailed = true
+      }
       if (edeFile.value) {
         try {
-          const result = await api.devices.importEde(created.id, edeFile.value)
+          const result = await api.devices.importEde(deviceId, edeFile.value)
           message.success(`${result.objects_imported} object${result.objects_imported !== 1 ? 's' : ''} imported from EDE`)
         } catch (e: unknown) {
           message.error(`Device created, but EDE import failed: ${(e as Error).message}`)
         }
       }
     }
+
+    try {
+      await syncControlsRelationships(deviceId)
+    } catch {
+      semanticSyncFailed = true
+    }
+
+    if (semanticSyncFailed) {
+      message.warning('Controller saved, but Equipment relationships could not be updated.')
+    } else {
+      message.success(createdNew ? 'Device created' : 'Device updated')
+    }
+
     emit('update:open', false)
     emit('saved')
   } catch (e: unknown) {
@@ -267,7 +407,7 @@ function doDelete() {
 
 <template>
   <a-drawer
-    :title="device ? 'Edit Equipment' : 'Add Equipment'"
+    :title="device ? 'Edit Controller' : 'Add Controller'"
     :open="open"
     width="440"
     @close="emit('update:open', false)"
@@ -287,7 +427,7 @@ function doDelete() {
       </a-row>
 
       <a-form-item label="Description">
-        <a-input v-model:value="form.description" placeholder="Air Handling Unit 1" />
+        <a-input v-model:value="form.description" placeholder="3rd floor BACnet router" />
       </a-form-item>
 
       <a-form-item label="Location">
@@ -301,13 +441,14 @@ function doDelete() {
         />
       </a-form-item>
 
-      <a-form-item label="Semantic Type" help="Describes what this device represents in the building.">
+      <a-form-item label="Controls" help="Select equipment controlled by this controller.">
         <a-select
-          v-model:value="form.equipment_type"
+          v-model:value="controlsEquipmentIds"
+          mode="multiple"
           show-search
           allow-clear
-          placeholder="Not classified"
-          :options="meta.equipment_types"
+          placeholder="No equipment selected"
+          :options="equipmentOptionGroups"
           :filter-option="filterOption"
         />
       </a-form-item>
@@ -341,7 +482,7 @@ function doDelete() {
           </a-form-item>
         </a-col>
         <a-col :span="12">
-          <a-form-item label="Controller Model">
+          <a-form-item label="Model">
             <!-- a-select when vendor is in BTL list (click-to-open dropdown) -->
             <a-select
               v-if="modelOptions.length"

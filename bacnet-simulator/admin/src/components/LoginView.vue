@@ -57,11 +57,11 @@ async function submit() {
 
 <template>
   <div style="height:100vh;display:flex;align-items:center;justify-content:center;background:var(--surface-alt)">
-    <div style="width:340px;padding:32px;background:var(--surface);border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.08)">
+    <div style="width:340px;padding:32px;background:var(--panel-bg);border:1px solid var(--border);border-radius:8px">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px">
         <IotisticaLogo :size="28" />
         <div>
-          <div style="font-size:15px;font-weight:600">Iotistica</div>
+          <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Iotistica</div>
           <div style="font-size:12px;color:var(--text-muted)">BACnet Simulator</div>
         </div>
       </div>
@@ -69,7 +69,7 @@ async function submit() {
       <a-spin v-if="checking" style="display:block;text-align:center;padding:24px 0" />
 
       <template v-else>
-        <div style="font-size:16px;font-weight:600;margin-bottom:4px">
+        <div style="font-size:16px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">
           {{ mode === 'setup' ? 'Create the admin account' : 'Sign in' }}
         </div>
         <div v-if="mode === 'setup'" style="font-size:12px;color:var(--text-muted);margin-bottom:16px">

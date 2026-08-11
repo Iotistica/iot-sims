@@ -43,8 +43,9 @@ def _routers():
     # to import doesn't break every other test file's collection.
     from src.api.routers.locations import router as locations_router
     from src.api.routers.devices import router as devices_router
+    from src.api.routers.equipment import router as equipment_router
 
-    routers = [locations_router, devices_router]
+    routers = [locations_router, devices_router, equipment_router]
 
     try:
         from src.api.routers.semantic import router as semantic_router

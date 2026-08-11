@@ -229,4 +229,4 @@ def test_meta_exposes_semantic_predicates(client):
 def test_semantic_predicates_dict_shape():
     from src.core.config import SEMANTIC_PREDICATES
 
-    assert set(SEMANTIC_PREDICATES) == {"isPointOf", "isPartOf", "feeds", "hasLocation"}
+    assert set(SEMANTIC_PREDICATES) == {"isPointOf", "isPartOf", "feeds", "hasLocation", "controls", "isHostedBy"}

@@ -237,6 +237,7 @@ onUnmounted(() => {
       :columns="columns"
       :data-source="filteredAlarms"
       :loading="loading"
+      :show-sorter-tooltip="false"
       row-key="id"
       size="small"
       :pagination="{ pageSize: 25 }"

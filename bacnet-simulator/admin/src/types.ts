@@ -22,6 +22,8 @@ export interface Device {
   external_port?: number | null
   external_vendor_id?: number | null
   external_last_seen_at?: string | null
+  /** Server-computed: whether this device already has an entity_kind='controller' semantic entity. */
+  has_controller_entity?: boolean
 }
 
 export interface Location {
@@ -30,6 +32,31 @@ export interface Location {
   parent_location_id: number | null
   description: string
   kind?: string | null
+}
+
+export interface Equipment {
+  id: number
+  name: string
+  description: string
+  location_id?: number | null
+  equipment_type?: string | null
+}
+
+/** A candidate object for the Equipment panel's "Assign Points" action --
+ * see GET /equipment/{id}/assignable-points. current_assignment is set
+ * when the object's point is already isPointOf some other (or the same)
+ * equipment/location entity -- the UI must surface this, never silently
+ * reassign it. */
+export interface AssignablePoint {
+  object_id: number
+  object_type: string
+  object_instance: number
+  name: string
+  point_type?: string | null
+  device_id: number
+  device_name: string
+  point_entity_id: number | null
+  current_assignment: { entity_id: number; name: string } | null
 }
 
 export interface SimObject {
@@ -71,6 +98,7 @@ export interface Meta {
   segmentation_options: string[]
   brick_version: string
   equipment_types: MetaOption[]
+  controller_types: MetaOption[]
   point_types: MetaOption[]
   location_kinds: MetaOption[]
   semantic_predicates: MetaOption[]
@@ -89,16 +117,17 @@ export interface SemanticEntity {
   local_slug?: string | null
   semantic_key?: string | null
   brick_class: string
-  entity_kind: 'equipment' | 'point' | 'location'
+  entity_kind: 'equipment' | 'point' | 'location' | 'controller'
   device_id?: number | null
   object_id?: number | null
   location_id?: number | null
+  equipment_id?: number | null
 }
 
 export interface SemanticRelationship {
   id: number
   source_entity_id: number
-  predicate: 'isPointOf' | 'isPartOf' | 'feeds' | 'hasLocation'
+  predicate: 'isPointOf' | 'isPartOf' | 'feeds' | 'hasLocation' | 'controls' | 'isHostedBy'
   target_entity_id: number
 }
 

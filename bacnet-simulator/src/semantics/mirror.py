@@ -107,6 +107,29 @@ def find_real_location_entity(conn: sqlite3.Connection, location_id: int) -> Opt
     return dict(row) if row else None
 
 
+def find_equipment_entity(conn: sqlite3.Connection, equipment_id: int) -> Optional[dict]:
+    """Unambiguous: idx_semantic_entities_equipment_unique guarantees at
+    most one entity_kind='equipment' row can ever reference a given
+    equipment_id -- unlike device_id-rooted equipment (find_direct_
+    equipment_entity), a real `equipment` row has no sub-equipment concept,
+    so there's no isPartOf-exclusion needed here."""
+    row = conn.execute(
+        "SELECT * FROM semantic_entities WHERE entity_kind='equipment' AND equipment_id=?", (equipment_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def find_direct_controller_entity(conn: sqlite3.Connection, device_id: int) -> Optional[dict]:
+    """Unambiguous: idx_semantic_entities_controller_unique guarantees at
+    most one entity_kind='controller' row can ever reference a given
+    device_id -- no sub-controller concept, so (unlike find_direct_
+    equipment_entity) no isPartOf-exclusion is needed."""
+    row = conn.execute(
+        "SELECT * FROM semantic_entities WHERE entity_kind='controller' AND device_id=?", (device_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def _write_direct_entity(
     conn: sqlite3.Connection,
     *,
@@ -117,6 +140,7 @@ def _write_direct_entity(
     device_id: Optional[int] = None,
     object_id: Optional[int] = None,
     location_id: Optional[int] = None,
+    equipment_id: Optional[int] = None,
 ) -> None:
     """brick_class=None deletes `existing` (if any) -- clearing a
     classification removes its Brick entity rather than leaving it behind
@@ -130,12 +154,12 @@ def _write_direct_entity(
 
     validate_semantic_entity(
         entity_kind, brick_class,
-        device_id=device_id, object_id=object_id, location_id=location_id,
+        device_id=device_id, object_id=object_id, location_id=location_id, equipment_id=equipment_id,
     )
     local_slug = existing.get("local_slug") if existing else None
     semantic_key = derive_semantic_key(
         entity_kind, brick_class,
-        device_id=device_id, object_id=object_id, location_id=location_id,
+        device_id=device_id, object_id=object_id, location_id=location_id, equipment_id=equipment_id,
         local_slug=local_slug,
     )
 
@@ -147,9 +171,9 @@ def _write_direct_entity(
     else:
         conn.execute(
             "INSERT INTO semantic_entities "
-            "(name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id),
+            "(name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id, equipment_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id, equipment_id),
         )
 
 
@@ -283,14 +307,23 @@ def sync_entity_from_flat_field(
     device_id: Optional[int] = None,
     object_id: Optional[int] = None,
     location_id: Optional[int] = None,
+    equipment_id: Optional[int] = None,
 ) -> None:
     """Direction 1 (primary path): a flat field (equipment_type/point_type/
-    kind) was just written via the ordinary Device/Object/Location drawer
-    -- keep that row's DIRECT Brick entity in lockstep, server-side, so
-    the user never has to separately visit the Semantic Model panel for
-    ordinary (non-sub-equipment, non-relationship) classification."""
+    kind) was just written via the ordinary Device/Object/Location/Equipment
+    drawer -- keep that row's DIRECT Brick entity in lockstep, server-side,
+    so the user never has to separately visit the Semantic Model panel for
+    ordinary (non-sub-equipment, non-relationship) classification.
+
+    entity_kind='equipment' dispatches on which of device_id/equipment_id
+    is provided: device_id is the legacy "this device is also its own
+    equipment" path (find_direct_equipment_entity, unchanged); equipment_id
+    is the new real `equipment` row path (find_equipment_entity, always
+    unambiguous 1:1). Exactly one is ever passed by any real caller --
+    validate_semantic_entity enforces that."""
     if entity_kind == "equipment":
-        existing = find_direct_equipment_entity(conn, device_id)
+        existing = find_equipment_entity(conn, equipment_id) if equipment_id is not None \
+            else find_direct_equipment_entity(conn, device_id)
     elif entity_kind == "point":
         existing = find_point_entity(conn, object_id)
     elif entity_kind == "location":
@@ -300,10 +333,18 @@ def sync_entity_from_flat_field(
 
     _write_direct_entity(
         conn, existing=existing, name=name, brick_class=brick_class,
-        entity_kind=entity_kind, device_id=device_id, object_id=object_id, location_id=location_id,
+        entity_kind=entity_kind, device_id=device_id, object_id=object_id,
+        location_id=location_id, equipment_id=equipment_id,
     )
 
     if entity_kind in ("equipment", "point"):
+        # Auto-link-every-point-on-this-device only makes sense for the
+        # legacy 1-device-1-equipment case (device_id) -- a real `equipment`
+        # row (equipment_id) has no "its device" to scan objects from, so
+        # points must be manually related to it via the Semantic panel
+        # instead (see the module docstring's Brick-graph-not-FK-shortcut
+        # principle). _sync_point_membership's own device_id-only condition
+        # already makes this a no-op when equipment_id was used instead.
         _sync_point_membership(conn, entity_kind=entity_kind, device_id=device_id, object_id=object_id)
     elif entity_kind == "location":
         _sync_devices_for_location(conn, location_id=location_id)
@@ -316,17 +357,62 @@ def sync_flat_field_from_entity(
     brick_class: Optional[str],
     object_id: Optional[int] = None,
     location_id: Optional[int] = None,
+    equipment_id: Optional[int] = None,
 ) -> None:
-    """Direction 2 (secondary path, point/location only -- see this
-    module's docstring for why equipment is excluded): a semantic entity
-    was just created/updated/deleted via the generic Semantic Model panel
-    CRUD -- if it directly represents an object/location row, keep that
-    row's flat field in lockstep too, so a user who classifies a point
-    through the Semantic panel instead of the Object drawer still sees it
-    reflected there (and vice versa). brick_class=None clears the flat
-    field (used on delete, or when an entity is re-linked away from this
-    row)."""
+    """Direction 2 (secondary path): a semantic entity was just created/
+    updated/deleted via the generic Semantic Model panel CRUD -- if it
+    directly represents an object/location/equipment row, keep that row's
+    flat field in lockstep too, so a user who classifies through the
+    Semantic panel instead of the Object/Location/Equipment drawer still
+    sees it reflected there (and vice versa). brick_class=None clears the
+    flat field (used on delete, or when an entity is re-linked away from
+    this row).
+
+    Point/location were always safe here (object_id/location_id are
+    unambiguously 1:1 via their own partial unique indexes). The
+    device_id-rooted equipment case is still deliberately excluded (see
+    module docstring: a device_id alone can't distinguish top-level from
+    sub-equipment). The NEW equipment_id case is safe to implement, unlike
+    device_id: idx_semantic_entities_equipment_unique guarantees it's
+    always unambiguous 1:1, exactly like point/location."""
     if entity_kind == "point" and object_id is not None:
         conn.execute("UPDATE objects SET point_type=? WHERE id=?", (brick_class, object_id))
     elif entity_kind == "location" and location_id is not None:
         conn.execute("UPDATE locations SET kind=? WHERE id=?", (brick_class, location_id))
+    elif entity_kind == "equipment" and equipment_id is not None:
+        conn.execute("UPDATE equipment SET equipment_type=? WHERE id=?", (brick_class, equipment_id))
+
+
+def sync_controller_entity(conn: sqlite3.Connection, *, device_id: int, name: str) -> dict:
+    """Upserts (never deletes) the entity_kind='controller' semantic
+    identity for a device -- a device can't be "un-controllered" once
+    explicitly made one. Deliberately has exactly ONE call site in the
+    whole codebase: the dedicated POST /devices/{id}/controller endpoint,
+    itself only ever invoked by the frontend's explicit Controller-creation
+    flow (see src/api/routers/devices.py). NOT wired into
+    create_device()/update_device(), and there is no startup backfill for
+    it -- a device is the runtime/communication abstraction; Controller is
+    a semantic role a device MAY explicitly be given, never inferred or
+    bulk-applied (would otherwise silently modify every legacy project the
+    instant it's opened or any device is saved)."""
+    existing = find_direct_controller_entity(conn, device_id)
+    semantic_key = derive_semantic_key("controller", "Controller", device_id=device_id)
+
+    if existing is not None:
+        conn.execute(
+            "UPDATE semantic_entities SET name=?, semantic_key=? WHERE id=?",
+            (name, semantic_key, existing["id"]),
+        )
+        entity_id = existing["id"]
+    else:
+        validate_semantic_entity("controller", "Controller", device_id=device_id, object_id=None, location_id=None)
+        cur = conn.execute(
+            "INSERT INTO semantic_entities "
+            "(name, local_slug, semantic_key, brick_class, entity_kind, device_id) "
+            "VALUES (?,?,?,?,?,?)",
+            (name, None, semantic_key, "Controller", "controller", device_id),
+        )
+        entity_id = cur.lastrowid
+
+    row = conn.execute("SELECT * FROM semantic_entities WHERE id=?", (entity_id,)).fetchone()
+    return dict(row)

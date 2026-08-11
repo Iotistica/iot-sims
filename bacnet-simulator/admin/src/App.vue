@@ -3,6 +3,8 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import LocationDrawer from './components/LocationDrawer.vue'
+import EquipmentDrawer from './components/EquipmentDrawer.vue'
+import EquipmentPanel from './components/EquipmentPanel.vue'
 import ProjectsDrawer from './components/ProjectsDrawer.vue'
 import NewProjectModal from './components/NewProjectModal.vue'
 import ObjectsPanel from './components/ObjectsPanel.vue'
@@ -24,14 +26,14 @@ import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
 import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
 
-import type { Device, Meta, Health, Location, Project, ProjectSourceType, BACnetConnectionConfig } from './types'
+import type { Device, Meta, Health, Location, Equipment, Project, ProjectSourceType, BACnetConnectionConfig } from './types'
 import { api, projectDirty } from './api'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
 import { copyDeviceAndObjects } from './deviceCopy'
 import { getLocationIcon } from './locationIcons'
-import { getEquipmentIcon } from './equipmentIcons'
-import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined, DeleteOutlined, ExperimentOutlined } from '@ant-design/icons-vue'
+import { getEquipmentIcon, getControllerIcon } from './equipmentIcons'
+import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, DeploymentUnitOutlined } from '@ant-design/icons-vue'
 
 const activeView = ref<
   'devices' |
@@ -48,9 +50,10 @@ const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices:
 const simActionLoading = ref(false)
 const SIM_STATE_COLOR: Record<Health['sim_state'], string> = { running: '#52c41a', paused: '#faad14', stopped: '#ff4d4f' }
 const SIM_STATE_LABEL: Record<Health['sim_state'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped' }
-const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], point_types: [], location_kinds: [], semantic_predicates: [], energy_model_types: [], network_address: null })
+const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliability_options: [], polarity_options: [], segmentation_options: [], brick_version: '', equipment_types: [], controller_types: [], point_types: [], location_kinds: [], semantic_predicates: [], energy_model_types: [], network_address: null })
 const devices = ref<Device[]>([])
 const locations = ref<Location[]>([])
+const equipment = ref<Equipment[]>([])
 const deviceSearch = ref('')
 const filteredDevices = computed(() => {
   const q = deviceSearch.value.trim().toLowerCase()
@@ -93,9 +96,10 @@ async function runDiscovery() {
 
 interface SidebarTreeNode {
   key: string
-  kind: 'location' | 'device'
+  kind: 'location' | 'device' | 'equipment'
   location?: Location
   device?: Device
+  equipment?: Equipment
   children?: SidebarTreeNode[]
 }
 
@@ -123,10 +127,26 @@ const sidebarTree = computed<SidebarTreeNode[]>(() => {
     if (parent) parent.children!.push(node)
     else roots.push(node)
   }
+  for (const e of equipment.value) {
+    const node: SidebarTreeNode = { key: `equipment-${e.id}`, kind: 'equipment', equipment: e }
+    const parent = e.location_id != null ? locationNodes.get(e.location_id) : undefined
+    if (parent) parent.children!.push(node)
+    else roots.push(node)
+  }
   return roots
 })
-const sidebarRawCount = computed(() => devices.value.length)
-const sidebarFilteredCount = computed(() => filteredDevices.value.length)
+// Total sidebar item count (devices + locations + equipment) -- NOT
+// devices.value.length alone, otherwise a project containing only a
+// location or only equipment (zero devices) would hit the "no devices"
+// empty state and never render the tree at all, even though sidebarTree
+// above has nodes to show.
+const sidebarRawCount = computed(() => devices.value.length + locations.value.length + equipment.value.length)
+// While searching, the tree itself falls back to a flat device-only list
+// (see sidebarTree's own comment) -- so the "no results" gate must match
+// that same device-only scope, not the total count above.
+const sidebarFilteredCount = computed(() =>
+  deviceSearch.value.trim() ? filteredDevices.value.length : sidebarRawCount.value
+)
 const hasExternalDevices = computed(() => devices.value.some(d => d.source_type === 'external-bacnet'))
 
 const expandedKeys = ref<string[]>([])
@@ -135,9 +155,11 @@ watch(locations, () => { expandedKeys.value = locations.value.map(l => `location
 function onTreeSelect(_keys: unknown, info: { node: { dataRef?: SidebarTreeNode } & Partial<SidebarTreeNode> }) {
   const data = info.node.dataRef ?? (info.node as SidebarTreeNode)
   if (data.kind === 'device' && data.device) selectDevice(data.device)
+  else if (data.kind === 'equipment' && data.equipment) selectEquipment(data.equipment)
 }
 
 const selectedDevice = ref<Device | null>(null)
+const selectedEquipment = ref<Equipment | null>(null)
 const objectsPanelRef = ref<{ reload: () => void } | null>(null)
 const liveValues = ref<Record<number, number | boolean>>({})
 
@@ -146,6 +168,13 @@ const deviceDrawerOpen  = ref(false)
 const editingDevice     = ref<Device | null>(null)
 const locationDrawerOpen = ref(false)
 const editingLocation    = ref<Location | null>(null)
+const equipmentDrawerOpen = ref(false)
+const editingEquipment    = ref<Equipment | null>(null)
+// Preselected location/parent for the unified "+ Add" flow (null = top
+// level / no location) -- only consulted by the drawers when adding fresh,
+// never when editing (see DeviceDrawer/LocationDrawer's defaultLocationId/
+// defaultParentLocationId props).
+const addContextLocationId = ref<number | null>(null)
 const projectsDrawerOpen   = ref(false)
 const createCopyModalOpen  = ref(false)
 const createCopySource     = ref<Device | null>(null)
@@ -257,13 +286,33 @@ async function loadDevices() {
 async function loadLocations() {
   try { locations.value = await api.locations.list() } catch { /* swallow */ }
 }
+async function loadEquipment() {
+  try {
+    equipment.value = await api.equipment.list()
+    if (selectedEquipment.value) {
+      const found = equipment.value.find(e => e.id === selectedEquipment.value!.id)
+      selectedEquipment.value = found ?? null
+    }
+  } catch { /* swallow */ }
+}
 
 function selectDevice(d: Device) {
+  selectedEquipment.value = null
   selectedDevice.value = d
 }
 
+function selectEquipment(e: Equipment) {
+  selectedDevice.value = null
+  selectedEquipment.value = e
+}
+
+function onSelectController(deviceId: number) {
+  const device = devices.value.find(d => d.id === deviceId)
+  if (device) selectDevice(device)
+}
+
 // Device actions
-function openAddDevice() { editingDevice.value = null; deviceDrawerOpen.value = true }
+function openAddDevice(locationId: number | null = null) { editingDevice.value = null; addContextLocationId.value = locationId; deviceDrawerOpen.value = true }
 function openEditDevice(d: Device) { editingDevice.value = d; deviceDrawerOpen.value = true }
 async function onDeviceSaved() { await loadDevices(); await loadHealth() }
 async function duplicateDevice(d: Device) {
@@ -311,8 +360,12 @@ function removeExternalDevice(d: Device) {
   })
 }
 // Location actions
-function openAddLocation() { editingLocation.value = null; locationDrawerOpen.value = true }
+function openAddLocation(parentLocationId: number | null = null) { editingLocation.value = null; addContextLocationId.value = parentLocationId; locationDrawerOpen.value = true }
 function openEditLocation(l: Location) { editingLocation.value = l; locationDrawerOpen.value = true }
+
+// Equipment actions
+function openAddEquipment(locationId: number | null = null) { editingEquipment.value = null; addContextLocationId.value = locationId; equipmentDrawerOpen.value = true }
+function openEditEquipment(e: Equipment) { editingEquipment.value = e; equipmentDrawerOpen.value = true }
 
 async function exportDeviceEde(d: Device) {
   try {
@@ -426,6 +479,7 @@ async function resetToNewProject(silent = false) {
   projectDirty.value = false
   await loadDevices()
   await loadLocations()
+  await loadEquipment()
   await loadHealth()
   // NewProjectModal's Create flow calls this first and shows its own,
   // more specific "<name>" created" message right after — skip the
@@ -521,6 +575,7 @@ async function onProjectLoaded(
   projectDirty.value = false
   await loadDevices()
   await loadLocations()
+  await loadEquipment()
   selectedDevice.value = null
   await loadHealth()
 }
@@ -549,7 +604,7 @@ const TREE_ICON_SLOT_STYLE = {
 let healthTimer: ReturnType<typeof setInterval>
 
 async function startApp() {
-  await Promise.all([loadMeta(), loadDevices(), loadLocations(), loadHealth()])
+  await Promise.all([loadMeta(), loadDevices(), loadLocations(), loadEquipment(), loadHealth()])
   wsConnect()
   healthTimer = setInterval(loadHealth, 10_000)
 }
@@ -687,10 +742,22 @@ onUnmounted(() => {
           <div style="padding:10px 12px 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
             <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Items ({{ sidebarRawCount }})</span>
             <a-space :size="4">
-              <a-button size="small" title="Add Location" @click="openAddLocation">
-                <template #icon><FolderAddOutlined /></template>
-              </a-button>
-              <a-button size="small" type="primary" @click="openAddDevice">+ Add Device</a-button>
+              <a-dropdown :trigger="['click']">
+                <a-button size="small" type="primary">+ Add</a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item key="location" @click="openAddLocation()">
+                      <FolderAddOutlined /> Location
+                    </a-menu-item>
+                    <a-menu-item key="equipment" @click="openAddEquipment()">
+                      <DeploymentUnitOutlined /> Equipment
+                    </a-menu-item>
+                    <a-menu-item key="controller" @click="openAddDevice()">
+                      <ApiOutlined /> Controller
+                    </a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
               <a-button size="small" :title="hasExternalDevices ? 'Rediscover' : 'Discover Devices'" :loading="externalSyncLoading" @click="runDiscovery">
                 <template #icon><ApiOutlined /></template>
               </a-button>
@@ -702,7 +769,7 @@ onUnmounted(() => {
               v-model:value="deviceSearch"
               size="small"
               allow-clear
-              placeholder="Search devices…"
+              placeholder="Search…"
             >
               <template #prefix><SearchOutlined style="color:var(--text-placeholder)" /></template>
             </a-input>
@@ -710,7 +777,7 @@ onUnmounted(() => {
 
           <div v-if="!sidebarRawCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
             <span v-if="externalSyncError" style="color:var(--error, #ff4d4f)">{{ externalSyncError }}</span>
-            <span v-else>No devices yet</span>
+            <span v-else>Nothing here yet — use "+ Add" to create a Location, Equipment, or Controller</span>
           </div>
           <div v-else-if="!sidebarFilteredCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
             No devices match "{{ deviceSearch }}"
@@ -720,7 +787,7 @@ onUnmounted(() => {
             v-else
             v-model:expanded-keys="expandedKeys"
             :tree-data="sidebarTree"
-            :selected-keys="selectedDevice ? [`device-${selectedDevice.id}`] : []"
+            :selected-keys="selectedDevice ? [`device-${selectedDevice.id}`] : selectedEquipment ? [`equipment-${selectedEquipment.id}`] : []"
             :field-names="{ children: 'children', title: 'key', key: 'key' }"
             block-node
             style="padding:6px 4px"
@@ -739,6 +806,24 @@ onUnmounted(() => {
                   <a-button type="text" size="small" title="Edit" @click="openEditLocation(node.location)">
                     <template #icon><EditOutlined /></template>
                   </a-button>
+                  <a-dropdown :trigger="['click']">
+                    <a-button type="text" size="small" title="Add">
+                      <template #icon><PlusOutlined /></template>
+                    </a-button>
+                    <template #overlay>
+                      <a-menu>
+                        <a-menu-item key="location" @click="openAddLocation(node.location.id)">
+                          <FolderAddOutlined /> Location
+                        </a-menu-item>
+                        <a-menu-item key="equipment" @click="openAddEquipment(node.location.id)">
+                          <DeploymentUnitOutlined /> Equipment
+                        </a-menu-item>
+                        <a-menu-item key="controller" @click="openAddDevice(node.location.id)">
+                          <ApiOutlined /> Controller
+                        </a-menu-item>
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
                 </a-space>
               </div>
 
@@ -746,14 +831,14 @@ onUnmounted(() => {
                    Create Simulated Copy, Remove from Project) are allowed;
                    source mutations (BACnet writes, simulation config) never
                    are, enforced backend-side regardless of this UI. -->
-              <div v-else-if="node.device.source_type === 'external-bacnet'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
+              <div v-else-if="node.kind === 'device' && node.device.source_type === 'external-bacnet'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
                 <a-tooltip :title="node.device.equipment_type ? (equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type) : 'Unclassified device'">
-                  <component :is="getEquipmentIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
+                  <component :is="getControllerIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
                 </a-tooltip>
                 <div style="flex:1;min-width:0">
                   <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
                   <div style="font-size:11px;color:var(--text-secondary)">
-                    ID {{ node.device.device_instance }}<template v-if="node.device.external_host"> · {{ node.device.external_host }}</template>
+                    ID {{ node.device.device_instance }}
                   </div>
                 </div>
                 <a-tag color="default" style="font-size:10px;margin:0;line-height:16px">External</a-tag>
@@ -780,10 +865,28 @@ onUnmounted(() => {
                 </a-space>
               </div>
 
+              <!-- Equipment row -->
+              <div v-else-if="node.kind === 'equipment'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
+                <a-tooltip :title="node.equipment.equipment_type ? (equipmentTypeLabel[node.equipment.equipment_type] ?? node.equipment.equipment_type) : 'Unclassified equipment'">
+                  <component :is="getEquipmentIcon(node.equipment.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
+                </a-tooltip>
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.equipment.name }}</div>
+                  <div style="font-size:11px;color:var(--text-secondary)">
+                    {{ node.equipment.equipment_type ? (equipmentTypeLabel[node.equipment.equipment_type] ?? node.equipment.equipment_type) : 'Unclassified' }}
+                  </div>
+                </div>
+                <a-space :size="2" @click.stop>
+                  <a-button type="text" size="small" title="Edit" @click="openEditEquipment(node.equipment)">
+                    <template #icon><EditOutlined /></template>
+                  </a-button>
+                </a-space>
+              </div>
+
               <!-- Device row -->
               <div v-else style="display:flex;align-items:center;gap:8px;padding:2px 0">
                 <a-tooltip :title="node.device.equipment_type ? (equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type) : 'Unclassified device'">
-                  <component :is="getEquipmentIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
+                  <component :is="getControllerIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
                 </a-tooltip>
                 <div style="flex:1;min-width:0">
                   <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
@@ -854,19 +957,29 @@ onUnmounted(() => {
         <a-layout-content style="display:flex;flex-direction:column;overflow:hidden">
         <div style="flex:1;overflow:auto;padding:20px">
 
-          <div v-if="!selectedDevice" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px">
-            <ApiOutlined style="font-size:48px;color:var(--icon-disabled)" />
-            <span style="font-size:15px;color:var(--text-placeholder)">Select a device to manage its objects</span>
-          </div>
+          <EquipmentPanel
+            v-if="selectedEquipment"
+            :equipment="selectedEquipment"
+            :devices="devices"
+            :locations="locations"
+            :meta="meta"
+            @edit="openEditEquipment"
+            @select-controller="onSelectController"
+          />
 
           <ObjectsPanel
-            v-else
+            v-else-if="selectedDevice"
             ref="objectsPanelRef"
             :device="selectedDevice"
             :meta="meta"
             :live-values="liveValues"
             @device-updated="loadDevices"
           />
+
+          <div v-else style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px">
+            <ApiOutlined style="font-size:48px;color:var(--icon-disabled)" />
+            <span style="font-size:15px;color:var(--text-placeholder)">Select a device or equipment to get started</span>
+          </div>
 
         </div>
         <DeviceLogPanel />
@@ -880,7 +993,9 @@ onUnmounted(() => {
       :device="editingDevice"
       :meta="meta"
       :locations="locations"
+      :equipment="equipment"
       :existing-instances="devices.map(d => d.device_instance)"
+      :default-location-id="addContextLocationId"
       @saved="onDeviceSaved"
     />
 
@@ -890,7 +1005,18 @@ onUnmounted(() => {
       :location="editingLocation"
       :locations="locations"
       :meta="meta"
+      :default-parent-location-id="addContextLocationId"
       @saved="loadLocations"
+    />
+
+    <!-- Equipment drawer -->
+    <EquipmentDrawer
+      v-model:open="equipmentDrawerOpen"
+      :equipment="editingEquipment"
+      :locations="locations"
+      :meta="meta"
+      :default-location-id="addContextLocationId"
+      @saved="loadEquipment"
     />
 
     <!-- Create Simulated Copy modal -->

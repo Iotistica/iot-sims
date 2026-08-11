@@ -428,6 +428,7 @@ const discoveryColumns = [
               :columns="recentRequestColumns"
               :data-source="filteredRequests.slice().reverse()"
               :pagination="{ pageSize: 10 }"
+              :show-sorter-tooltip="false"
               row-key="ts"
               size="small"
             >
@@ -448,7 +449,7 @@ const discoveryColumns = [
         <section>
           <h3>Device Analytics</h3>
           <a-card size="small">
-            <a-table :columns="deviceColumns" :data-source="filteredDevices" :pagination="{ pageSize: 10 }" row-key="id" size="small">
+            <a-table :columns="deviceColumns" :data-source="filteredDevices" :pagination="{ pageSize: 10 }" :show-sorter-tooltip="false" row-key="id" size="small">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'enabled'">
                   <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? 'Online' : 'Offline' }}</a-tag>
@@ -468,7 +469,7 @@ const discoveryColumns = [
             <a-card size="small"><a-statistic title="Total Writes" :value="snapshot.objects.writes_total" /></a-card>
           </div>
           <a-card size="small" title="Most Accessed Objects">
-            <a-table :columns="topObjectColumns" :data-source="snapshot.objects.top_accessed" :pagination="{ pageSize: 10 }" row-key="object" size="small" />
+            <a-table :columns="topObjectColumns" :data-source="snapshot.objects.top_accessed" :pagination="{ pageSize: 10 }" :show-sorter-tooltip="false" row-key="object" size="small" />
           </a-card>
         </section>
 
@@ -507,7 +508,7 @@ const discoveryColumns = [
             </a-card>
           </div>
           <a-card size="small" title="Recent Errors">
-            <a-table :columns="recentErrorColumns" :data-source="filteredErrors.slice().reverse()" :pagination="{ pageSize: 10 }" row-key="ts" size="small">
+            <a-table :columns="recentErrorColumns" :data-source="filteredErrors.slice().reverse()" :pagination="{ pageSize: 10 }" :show-sorter-tooltip="false" row-key="ts" size="small">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'ts'">{{ fmtTime(record.ts) }}</template>
               </template>
@@ -523,7 +524,7 @@ const discoveryColumns = [
             <a-card size="small"><a-statistic title="Devices Seen" :value="snapshot.discovery.devices_seen" /></a-card>
           </div>
           <a-card size="small" title="New Devices Discovered">
-            <a-table :columns="discoveryColumns" :data-source="snapshot.discovery.new_devices_timeline.slice().reverse()" :pagination="{ pageSize: 10 }" row-key="ts" size="small">
+            <a-table :columns="discoveryColumns" :data-source="snapshot.discovery.new_devices_timeline.slice().reverse()" :pagination="{ pageSize: 10 }" :show-sorter-tooltip="false" row-key="ts" size="small">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'ts'">{{ fmtTime(record.ts) }}</template>
               </template>

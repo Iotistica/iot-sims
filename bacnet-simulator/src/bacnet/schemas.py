@@ -72,6 +72,21 @@ class LocationUpdate(LocationCreate):
     pass
 
 
+class EquipmentCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+    location_id: Optional[int] = None
+    equipment_type: Optional[str] = None
+
+    def validate_semantic(self) -> None:
+        if self.equipment_type is not None and self.equipment_type not in EQUIPMENT_TYPES:
+            raise HTTPException(400, f"equipment_type must be one of: {sorted(EQUIPMENT_TYPES)}")
+
+
+class EquipmentUpdate(EquipmentCreate):
+    pass
+
+
 class ObjectCreate(BaseModel):
     object_type: str
     object_instance: int = Field(..., ge=0, le=4194302)
@@ -116,6 +131,7 @@ class SemanticEntityCreate(BaseModel):
     device_id: Optional[int] = None
     object_id: Optional[int] = None
     location_id: Optional[int] = None
+    equipment_id: Optional[int] = None
 
     def validate_semantic(self) -> None:
         # No semantic_key field on this model at all -- it's always
@@ -128,6 +144,7 @@ class SemanticEntityCreate(BaseModel):
                 device_id=self.device_id,
                 object_id=self.object_id,
                 location_id=self.location_id,
+                equipment_id=self.equipment_id,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))

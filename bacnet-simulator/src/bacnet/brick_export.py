@@ -39,7 +39,7 @@ from typing import Optional
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS, XSD
 
-from ..core.config import EQUIPMENT_TYPES, LOCATION_KINDS, POINT_TYPES
+from ..core.config import CONTROLLER_TYPES, EQUIPMENT_TYPES, LOCATION_KINDS, POINT_TYPES
 
 BRICK = Namespace("https://brickschema.org/schema/Brick#")
 REF = Namespace("https://brickschema.org/schema/Brick/ref#")
@@ -79,11 +79,24 @@ UNIT_TO_QUDT = {
 # Brick predicate pairs. All four verified against the pinned v1.4.4
 # bricksrc/relationships.py, same "confirm against the real source" rule as
 # EQUIPMENT_TYPES/POINT_TYPES above -- see src/core/config.py.
+#
+# controls/isHostedBy are a narrow, isolated exception to the v1.4.4 rule
+# above -- verified against the real (release-candidate, not yet stable)
+# tag v1.5.0-rc1's bricksrc/relationships.py specifically, since neither
+# predicate exists yet at the pinned v1.4.4. Not a project-wide version
+# bump -- see src/core/config.py's SEMANTIC_PREDICATES comment for the
+# full rationale and the storage-direction rule these two follow (store
+# whichever entity matches the *named* predicate's real rdfs:domain):
+# "controls" (domain=Controller) stores Controller-as-source; "isHostedBy"
+# (domain=Point -- it's the inverse of "hosts", whose domain is
+# Controller) stores Point-as-source.
 PREDICATE_TO_BRICK = {
     "isPointOf": (BRICK.isPointOf, BRICK.hasPoint),
     "isPartOf": (BRICK.isPartOf, BRICK.hasPart),
     "feeds": (BRICK.feeds, BRICK.isFedBy),
     "hasLocation": (BRICK.hasLocation, BRICK.isLocationOf),
+    "controls": (BRICK.controls, BRICK.isControlledBy),
+    "isHostedBy": (BRICK.isHostedBy, BRICK.hosts),
 }
 
 
@@ -103,6 +116,12 @@ def _location_uri(location_id: int, project_id: Optional[int]) -> URIRef:
     if project_id is not None:
         return URIRef(f"urn:iotistica:project:{project_id}:location:{location_id}")
     return URIRef(f"urn:iotistica:sim:location:{location_id}")
+
+
+def _equipment_uri(equipment_id: int, project_id: Optional[int]) -> URIRef:
+    if project_id is not None:
+        return URIRef(f"urn:iotistica:project:{project_id}:equipment:{equipment_id}")
+    return URIRef(f"urn:iotistica:sim:equipment:{equipment_id}")
 
 
 def _entity_uri(entity_id: int, project_id: Optional[int]) -> URIRef:
@@ -220,7 +239,12 @@ def build_brick_graph(
         graph.add((uri, RDFS.label, Literal(ent["name"])))
 
         brick_class = ent["brick_class"]
-        if brick_class in EQUIPMENT_TYPES or brick_class in POINT_TYPES or brick_class in LOCATION_KINDS:
+        if (
+            brick_class in EQUIPMENT_TYPES
+            or brick_class in POINT_TYPES
+            or brick_class in LOCATION_KINDS
+            or brick_class in CONTROLLER_TYPES
+        ):
             graph.add((uri, RDF.type, BRICK[brick_class]))
         else:
             warnings.append(f"semantic entity {ent['name']!r}: brick_class {brick_class!r} is not canonical, skipping RDF.type")
@@ -243,7 +267,51 @@ def build_brick_graph(
         graph.add((source_uri, forward, target_uri))
         graph.add((target_uri, inverse, source_uri))
 
+    _add_controller_hosting_triples(graph, devices, entities, project_id)
+
     return graph, warnings
+
+
+def _add_controller_hosting_triples(
+    graph: Graph,
+    devices: list[dict],
+    entities: list[dict],
+    project_id: Optional[int],
+) -> None:
+    """Derived (never persisted) Controller -> Point hosting: one
+    isHostedBy/hosts triple pair per BACnet object owned by an explicitly-
+    marked Controller device. Same objects.device_id join the Semantic
+    Graph UI performs client-side at render time (see admin/src/components/
+    SemanticPanel.vue's derivedHostingEdges) -- kept here as the backend's
+    single source of truth for this derivation so graph and export can't
+    disagree, even though the two can't literally share code across the
+    Python/TypeScript boundary.
+
+    Gated on an actual entity_kind='controller' semantic entity existing
+    for that device -- never inferred or bulk-applied; a device merely
+    having objects doesn't imply it has been explicitly marked a Controller
+    (see sync_controller_entity()'s docstring in src/semantics/mirror.py).
+
+    Reuses the device's own URI (see _resolve_entity_uri's controller
+    branch: Controller is a semantic ROLE of the device, not a separate
+    node) and covers every object regardless of point_type classification
+    -- every object already got an object_uri + RDF.type triple in the
+    per-device loop above (classified brick_class or generic brick:Point),
+    matching the Semantic Graph UI's own "unclassified points still count
+    as hosted" behavior.
+    """
+    controller_device_ids = {
+        ent["device_id"] for ent in entities
+        if ent["entity_kind"] == "controller" and ent.get("device_id") is not None
+    }
+    for dev in devices:
+        if dev["id"] not in controller_device_ids:
+            continue
+        controller_uri = _device_uri(dev["id"], project_id)
+        for obj in dev.get("objects", []):
+            point_uri = _object_uri(obj["id"], project_id)
+            graph.add((point_uri, BRICK.isHostedBy, controller_uri))
+            graph.add((controller_uri, BRICK.hosts, point_uri))
 
 
 def _resolve_entity_uri(
@@ -263,6 +331,16 @@ def _resolve_entity_uri(
         sub-equipment (not a source of an isPartOf edge) -> the device's
         URI -- this is "the device's own equipment", already typed by the
         per-device loop.
+      - equipment entity with equipment_id set -> a dedicated equipment
+        URI (there's no per-equipment-row loop like the per-device one
+        above, so this mints -- deterministically, from the stable
+        `equipment` row id -- rather than falling through to the generic
+        entity-id URI below).
+      - controller entity (always has device_id set, enforced by
+        validate_semantic_entity) -> the device's URI -- Controller is a
+        semantic ROLE of an existing device, not a separate node; reusing
+        the device URI is what makes `brick:Controller` land on the same
+        node already typed bacnet:BACnetDevice by the per-device loop.
     Everything else -- sub-equipment (Supply_Fan/Return_Fan) and virtual,
     device-hosted locations (Lighting_Zone with location_id IS NULL) --
     mints a fresh entity URI, since there's no existing device/object/
@@ -276,11 +354,17 @@ def _resolve_entity_uri(
     if entity_kind == "location" and entity.get("location_id") is not None:
         return _location_uri(entity["location_id"], project_id)
 
+    if entity_kind == "equipment" and entity.get("equipment_id") is not None:
+        return _equipment_uri(entity["equipment_id"], project_id)
+
     if (
         entity_kind == "equipment"
         and entity.get("device_id") is not None
         and entity["id"] not in sub_equipment_ids
     ):
+        return _device_uri(entity["device_id"], project_id)
+
+    if entity_kind == "controller" and entity.get("device_id") is not None:
         return _device_uri(entity["device_id"], project_id)
 
     return _entity_uri(entity["id"], project_id)

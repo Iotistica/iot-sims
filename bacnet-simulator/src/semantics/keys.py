@@ -28,19 +28,21 @@ def derive_semantic_key(
     device_id: Optional[int] = None,
     object_id: Optional[int] = None,
     location_id: Optional[int] = None,
+    equipment_id: Optional[int] = None,
     local_slug: Optional[str] = None,
 ) -> Optional[str]:
     """Pure function of (kind, class, current live ids, local_slug).
 
-    Returns None when none of device_id/object_id/location_id is set —
-    there's nothing to key off, so the entity gets no semantic_key (fine:
-    ad hoc/manually-created entities don't need deterministic identity).
+    Returns None when none of device_id/object_id/location_id/equipment_id
+    is set — there's nothing to key off, so the entity gets no semantic_key
+    (fine: ad hoc/manually-created entities don't need deterministic
+    identity).
     """
-    if device_id is None and object_id is None and location_id is None:
+    if device_id is None and object_id is None and location_id is None and equipment_id is None:
         return None
 
     return (
         f"{entity_kind}:{brick_class}:"
         f"device={device_id}:object={object_id}:location={location_id}:"
-        f"slug={local_slug}"
+        f"equipment={equipment_id}:slug={local_slug}"
     )

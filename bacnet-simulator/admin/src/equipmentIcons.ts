@@ -13,6 +13,7 @@ import {
   CloudServerOutlined,
   DashboardFilled,
   FireFilled,
+  GatewayOutlined,
   ReloadOutlined,
   SwapOutlined,
   SyncOutlined,
@@ -38,4 +39,14 @@ const EQUIPMENT_ICON_MAP: Record<string, Component> = {
 export function getEquipmentIcon(equipmentType: string | null | undefined): Component {
   if (!equipmentType) return ApiFilled
   return EQUIPMENT_ICON_MAP[equipmentType] ?? ApiFilled
+}
+
+/** Same lookup as getEquipmentIcon(), but for a devices-tree row now
+ * labeled "Controller" -- a legacy/mixed device that still carries a
+ * classified equipment_type keeps its existing equipment icon (unchanged
+ * visual behavior), while an unclassified Controller gets a dedicated
+ * controller/network icon instead of the generic ApiFilled fallback. */
+export function getControllerIcon(equipmentType: string | null | undefined): Component {
+  if (equipmentType && EQUIPMENT_ICON_MAP[equipmentType]) return EQUIPMENT_ICON_MAP[equipmentType]
+  return GatewayOutlined
 }

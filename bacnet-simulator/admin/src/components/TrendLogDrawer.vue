@@ -406,6 +406,7 @@ function chartFormatValue(v: number): string {
           :columns="recordColumns"
           :data-source="records"
           :loading="recordsLoading"
+          :show-sorter-tooltip="false"
           row-key="id"
           size="small"
           :pagination="{ pageSize: 20 }"

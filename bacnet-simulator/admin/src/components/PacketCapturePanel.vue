@@ -1156,6 +1156,7 @@ onUnmounted(() => {
       :columns="columns"
       :data-source="packets"
       :loading="loading"
+      :show-sorter-tooltip="false"
       row-key="packet_id"
       size="small"
       :scroll="{ x: 1250 }"

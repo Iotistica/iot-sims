@@ -66,6 +66,7 @@ async def list_semantic_entities(
     device_id: Optional[int] = Query(None),
     object_id: Optional[int] = Query(None),
     location_id: Optional[int] = Query(None),
+    equipment_id: Optional[int] = Query(None),
     entity_kind: Optional[str] = Query(None),
     brick_class: Optional[str] = Query(None),
 ):
@@ -76,6 +77,7 @@ async def list_semantic_entities(
         device_id=device_id,
         object_id=object_id,
         location_id=location_id,
+        equipment_id=equipment_id,
         entity_kind=entity_kind,
         brick_class=brick_class,
     )
@@ -102,6 +104,7 @@ async def create_semantic_entity(
             device_id=body.device_id,
             object_id=body.object_id,
             location_id=body.location_id,
+            equipment_id=body.equipment_id,
             local_slug=body.local_slug,
         )
     except ValueError as e:
@@ -170,6 +173,7 @@ async def update_semantic_entity(
             device_id=body.device_id,
             object_id=body.object_id,
             location_id=body.location_id,
+            equipment_id=body.equipment_id,
             local_slug=body.local_slug,
         )
     except ValueError as e:

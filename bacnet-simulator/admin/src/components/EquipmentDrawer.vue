@@ -3,17 +3,17 @@ import { ref, reactive, computed, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { api } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
-import type { Location, Meta } from '../types'
+import type { Equipment, Location, Meta } from '../types'
 
 const props = defineProps<{
   open: boolean
-  location: Location | null
+  equipment: Equipment | null
   locations: Location[]
   meta: Meta
-  /** Preselects Parent Location when opening for a fresh Add (e.g. invoked
-   * from a location row's contextual "+" action) -- ignored when editing an
-   * existing location. */
-  defaultParentLocationId?: number | null
+  /** Preselects Location when opening for a fresh Add (e.g. invoked from a
+   * location row's contextual "+" action) -- ignored when editing existing
+   * equipment. */
+  defaultLocationId?: number | null
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
@@ -25,40 +25,37 @@ const deleting = ref(false)
 const form = reactive({
   name: '',
   description: '',
-  parent_location_id: null as number | null,
-  kind: null as string | null,
+  location_id: null as number | null,
+  equipment_type: null as string | null,
 })
 
 watch(() => props.open, (v) => {
   if (!v) return
-  if (props.location) {
+  if (props.equipment) {
     Object.assign(form, {
-      name: props.location.name,
-      description: props.location.description ?? '',
-      parent_location_id: props.location.parent_location_id,
-      kind: props.location.kind ?? null,
+      name: props.equipment.name,
+      description: props.equipment.description ?? '',
+      location_id: props.equipment.location_id ?? null,
+      equipment_type: props.equipment.equipment_type ?? null,
     })
   } else {
-    Object.assign(form, { name: '', description: '', parent_location_id: props.defaultParentLocationId ?? null, kind: null })
+    Object.assign(form, { name: '', description: '', location_id: props.defaultLocationId ?? null, equipment_type: null })
   }
 })
 
-// Editing an existing location must not offer itself or its own descendants
-// as a parent — that would create a cycle (the backend refuses it too, but
-// there's no reason to let the picker offer an option it knows is invalid).
-const treeOptions = computed(() => buildLocationTreeOptions(props.locations, props.location?.id ?? null))
+const treeOptions = computed(() => buildLocationTreeOptions(props.locations, null))
 
 async function save() {
   if (!form.name.trim()) { message.error('Name is required'); return }
   loading.value = true
-  const body = { name: form.name, description: form.description, parent_location_id: form.parent_location_id, kind: form.kind }
+  const body = { name: form.name, description: form.description, location_id: form.location_id, equipment_type: form.equipment_type }
   try {
-    if (props.location) {
-      await api.locations.update(props.location.id, body)
-      message.success('Location updated')
+    if (props.equipment) {
+      await api.equipment.update(props.equipment.id, body)
+      message.success('Equipment updated')
     } else {
-      await api.locations.create(body)
-      message.success('Location created')
+      await api.equipment.create(body)
+      message.success('Equipment created')
     }
     emit('update:open', false)
     emit('saved')
@@ -70,21 +67,21 @@ async function save() {
 }
 
 function doDelete() {
-  if (!props.location) return
-  const loc = props.location
+  if (!props.equipment) return
+  const eq = props.equipment
   Modal.confirm({
-    title: `Delete "${loc.name}"?`,
+    title: `Delete "${eq.name}"?`,
     okType: 'danger',
     okText: 'Delete',
     onOk: async () => {
       deleting.value = true
       try {
-        await api.locations.del(loc.id)
-        message.success('Location deleted')
+        await api.equipment.del(eq.id)
+        message.success('Equipment deleted')
         emit('update:open', false)
         emit('saved')
       } catch (e: unknown) {
-        message.error((e as Error).message ?? 'Failed to delete location')
+        message.error((e as Error).message ?? 'Failed to delete equipment')
       } finally {
         deleting.value = false
       }
@@ -95,50 +92,50 @@ function doDelete() {
 
 <template>
   <a-drawer
-    :title="location ? 'Edit Location' : 'Add Location'"
+    :title="equipment ? 'Edit Equipment' : 'Add Equipment'"
     :open="open"
     width="440"
     @close="emit('update:open', false)"
   >
     <a-form layout="vertical" :colon="false">
       <a-form-item label="Name" required>
-        <a-input v-model:value="form.name" placeholder="Building A" />
+        <a-input v-model:value="form.name" placeholder="Boiler 1" />
       </a-form-item>
 
       <a-form-item label="Description">
         <a-input v-model:value="form.description" placeholder="Optional" />
       </a-form-item>
 
-      <a-form-item label="Parent Location">
+      <a-form-item label="Location">
         <a-tree-select
-          v-model:value="form.parent_location_id"
+          v-model:value="form.location_id"
           :tree-data="treeOptions"
           allow-clear
           tree-default-expand-all
-          placeholder="Top level"
+          placeholder="Unassigned"
           style="width: 100%"
         />
       </a-form-item>
 
-      <a-form-item label="Semantic Type" help="Describes what this location represents in the building.">
+      <a-form-item label="Semantic Type" help="Describes what this equipment represents in the building.">
         <a-select
-          v-model:value="form.kind"
+          v-model:value="form.equipment_type"
           show-search
           allow-clear
           placeholder="Not classified"
-          :options="meta.location_kinds"
+          :options="meta.equipment_types"
         />
       </a-form-item>
     </a-form>
 
     <template #footer>
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <a-button v-if="location" danger :loading="deleting" @click="doDelete">Delete</a-button>
+        <a-button v-if="equipment" danger :loading="deleting" @click="doDelete">Delete</a-button>
         <div v-else />
         <a-space>
           <a-button @click="emit('update:open', false)">Cancel</a-button>
           <a-button type="primary" :loading="loading" @click="save">
-            {{ location ? 'Save' : 'Create' }}
+            {{ equipment ? 'Save' : 'Create' }}
           </a-button>
         </a-space>
       </div>

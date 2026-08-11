@@ -393,6 +393,7 @@ function onSuggestionsApplied() {
       :data-source="filteredObjects"
       :columns="columns"
       :pagination="false"
+      :show-sorter-tooltip="false"
       size="small"
       row-key="id"
     >

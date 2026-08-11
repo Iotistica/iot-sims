@@ -41,7 +41,7 @@ from .bacnet import ede
 from .bacnet import schedule as bacnet_schedule
 from .bacnet import calendar as bacnet_calendar
 from .core.config import (
-    BACNET_PORT, BACNET_UNITS, BINARY_TYPES, BRICK_VERSION, COMMANDABLE_TYPES, DATA_DIR, DB_PATH,
+    BACNET_PORT, BACNET_UNITS, BINARY_TYPES, BRICK_VERSION, COMMANDABLE_TYPES, CONTROLLER_TYPES, DATA_DIR, DB_PATH,
     EQUIPMENT_TYPES, JWT_ALGORITHM, JWT_EXPIRE_HOURS, LOCATION_KINDS, MULTISTATE_TYPES,
     POINT_TYPES, SEMANTIC_PREDICATES, SIM_API_PORT, VALID_BEHAVIORS, VALID_OBJECT_TYPES,
     VALID_POLARITY, VALID_RELIABILITY, VALID_SEGMENTATION, _get_jwt_secret,
@@ -65,7 +65,7 @@ from .semantics.backfill import (
     upsert_semantic_relationship,
 )
 from .semantics.keys import derive_semantic_key
-from .semantics.mirror import sync_entity_from_flat_field, sync_flat_field_from_entity, sync_device_location_relationship
+from .semantics.mirror import sync_entity_from_flat_field, sync_flat_field_from_entity, sync_device_location_relationship, sync_controller_entity
 from .semantics.validation import validate_semantic_entity
 
 from bacpypes3.local.device import DeviceObject
@@ -124,6 +124,10 @@ from .api.routers.backups import (
 
 from .api.routers.locations import (
     router as locations_router,
+)
+
+from .api.routers.equipment import (
+    router as equipment_router,
 )
 
 from .api.routers.semantic import (
@@ -319,6 +323,22 @@ class Database:
                     name TEXT NOT NULL,
                     parent_location_id INTEGER REFERENCES locations(id),
                     description TEXT NOT NULL DEFAULT ''
+                );
+
+                -- Physical/logical building equipment (Boiler, AHU, VAV, Pump,
+                -- ...) -- distinct from `devices` (the BACnet/runtime
+                -- communication abstraction, a.k.a. Controller). Mirrors
+                -- `locations`' own minimal shape deliberately: no
+                -- parent_equipment_id (sub-equipment hierarchy is expressed
+                -- via the existing isPartOf semantic relationship between two
+                -- equipment-kind semantic_entities rows, not a second,
+                -- competing FK-based hierarchy), no local_slug/timestamps.
+                CREATE TABLE IF NOT EXISTS equipment (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    location_id INTEGER REFERENCES locations(id),
+                    equipment_type TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS devices (
@@ -704,6 +724,108 @@ class Database:
             existing_loc_cols = {row[1] for row in conn.execute("PRAGMA table_info(locations)")}
             if "kind" not in existing_loc_cols:
                 conn.execute("ALTER TABLE locations ADD COLUMN kind TEXT")
+
+            # Schema migration: semantic_entities gains an equipment_id FK
+            # (physical equipment, see the new `equipment` table above) and
+            # entity_kind gains 'controller' (the BACnet/runtime device's own
+            # Brick Controller identity, distinct from 'equipment' -- see
+            # src/semantics/mirror.py's sync_controller_entity). SQLite can't
+            # ALTER a CHECK constraint or add a REFERENCES column with a new
+            # target table in place, so this follows the exact same safe
+            # rebuild procedure as the devices/source_type migration above:
+            # semantic_relationships holds FK REFERENCES pointing INTO
+            # semantic_entities, so the ORIGINAL table is dropped (never
+            # renamed away first) and the _new table renamed into its place,
+            # preserving every row's original id (and therefore every
+            # semantic_relationships row's source_entity_id/target_entity_id
+            # still resolving correctly) -- verified via PRAGMA
+            # foreign_key_check before committing. Both this table and
+            # semantic_relationships (predicate gains 'controls'/'isHostedBy')
+            # are migrated together, gated on the same detection check, since
+            # they always ship together.
+            existing_se_cols = {row[1] for row in conn.execute("PRAGMA table_info(semantic_entities)")}
+            if "equipment_id" not in existing_se_cols:
+                conn.commit()  # flush any pending transaction -- foreign_keys can't be toggled mid-transaction
+                conn.execute("PRAGMA foreign_keys = OFF")
+
+                conn.execute("BEGIN")
+                conn.execute("""
+                    CREATE TABLE semantic_entities_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        local_slug TEXT,
+                        semantic_key TEXT,
+                        brick_class TEXT NOT NULL,
+                        entity_kind TEXT NOT NULL CHECK(entity_kind IN ('equipment', 'point', 'location', 'controller')),
+                        device_id INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+                        object_id INTEGER REFERENCES objects(id) ON DELETE CASCADE,
+                        location_id INTEGER REFERENCES locations(id),
+                        equipment_id INTEGER REFERENCES equipment(id) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO semantic_entities_new (
+                        id, name, local_slug, semantic_key, brick_class,
+                        entity_kind, device_id, object_id, location_id
+                    )
+                    SELECT
+                        id, name, local_slug, semantic_key, brick_class,
+                        entity_kind, device_id, object_id, location_id
+                    FROM semantic_entities
+                """)
+                conn.execute("DROP TABLE semantic_entities")
+                conn.execute("ALTER TABLE semantic_entities_new RENAME TO semantic_entities")
+                fk_problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if fk_problems:
+                    conn.rollback()
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    raise RuntimeError(f"semantic_entities migration broke FK integrity: {fk_problems}")
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.executescript("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_semantic_key
+                        ON semantic_entities(semantic_key) WHERE semantic_key IS NOT NULL;
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_object_unique
+                        ON semantic_entities(object_id) WHERE entity_kind = 'point' AND object_id IS NOT NULL;
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_location_unique
+                        ON semantic_entities(location_id) WHERE entity_kind = 'location' AND location_id IS NOT NULL;
+                    CREATE INDEX IF NOT EXISTS idx_semantic_entities_device ON semantic_entities(device_id);
+                    CREATE INDEX IF NOT EXISTS idx_semantic_entities_brick_class ON semantic_entities(brick_class);
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_equipment_unique
+                        ON semantic_entities(equipment_id) WHERE entity_kind = 'equipment' AND equipment_id IS NOT NULL;
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_entities_controller_unique
+                        ON semantic_entities(device_id) WHERE entity_kind = 'controller';
+                """)
+
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = OFF")
+                conn.execute("BEGIN")
+                conn.execute("""
+                    CREATE TABLE semantic_relationships_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_entity_id INTEGER NOT NULL REFERENCES semantic_entities(id) ON DELETE CASCADE,
+                        predicate TEXT NOT NULL CHECK(predicate IN ('isPointOf', 'isPartOf', 'feeds', 'hasLocation', 'controls', 'isHostedBy')),
+                        target_entity_id INTEGER NOT NULL REFERENCES semantic_entities(id) ON DELETE CASCADE,
+                        UNIQUE(source_entity_id, predicate, target_entity_id)
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO semantic_relationships_new (id, source_entity_id, predicate, target_entity_id)
+                    SELECT id, source_entity_id, predicate, target_entity_id FROM semantic_relationships
+                """)
+                conn.execute("DROP TABLE semantic_relationships")
+                conn.execute("ALTER TABLE semantic_relationships_new RENAME TO semantic_relationships")
+                fk_problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if fk_problems:
+                    conn.rollback()
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    raise RuntimeError(f"semantic_relationships migration broke FK integrity: {fk_problems}")
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_semantic_relationships_target "
+                    "ON semantic_relationships(target_entity_id, predicate)"
+                )
 
             existing_energy_cols = {
                 row[1]
@@ -1194,14 +1316,139 @@ class Database:
             has_devices = conn.execute(
                 "SELECT 1 FROM devices WHERE location_id=?", (location_id,)
             ).fetchone()
+            has_equipment = conn.execute(
+                "SELECT 1 FROM equipment WHERE location_id=?", (location_id,)
+            ).fetchone()
             has_semantic_entities = conn.execute(
                 "SELECT 1 FROM semantic_entities WHERE location_id=?", (location_id,)
             ).fetchone()
-            if has_sublocations or has_devices or has_semantic_entities:
+            if has_sublocations or has_devices or has_equipment or has_semantic_entities:
                 return False
             cur = conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    # ── Equipment ─────────────────────────────────────────────────────────────
+    # A real, standalone piece of building equipment -- distinct from a
+    # `devices` row (the runtime/BACnet controller that hosts points). See
+    # src/semantics/mirror.py's module docstring and sync_controller_entity()
+    # for the full Device/Equipment/Controller split rationale. Mirrors the
+    # Locations CRUD above exactly.
+
+    def get_equipment_list(self) -> list[dict]:
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM equipment ORDER BY name")]
+
+    def get_equipment(self, equipment_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM equipment WHERE id=?", (equipment_id,)).fetchone()
+            return dict(r) if r else None
+
+    def create_equipment(self, name: str, description: str, location_id: Optional[int], equipment_type: Optional[str] = None) -> dict:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO equipment (name, description, location_id, equipment_type) VALUES (?,?,?,?)",
+                (name, description, location_id, equipment_type),
+            )
+            sync_entity_from_flat_field(
+                conn, entity_kind="equipment", name=name, brick_class=equipment_type, equipment_id=cur.lastrowid,
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM equipment WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def update_equipment(self, equipment_id: int, name: str, description: str, location_id: Optional[int], equipment_type: Optional[str] = None) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE equipment SET name=?, description=?, location_id=?, equipment_type=? WHERE id=?",
+                (name, description, location_id, equipment_type, equipment_id),
+            )
+            sync_entity_from_flat_field(
+                conn, entity_kind="equipment", name=name, brick_class=equipment_type, equipment_id=equipment_id,
+            )
+            conn.commit()
+            r = conn.execute("SELECT * FROM equipment WHERE id=?", (equipment_id,)).fetchone()
+            return dict(r) if r else None
+
+    def delete_equipment(self, equipment_id: int) -> bool:
+        """No non-empty guard needed (unlike delete_location): equipment
+        has no children of its own in the tree (no sub-equipment table row,
+        no devices point at it via a required FK) and its semantic entity/
+        relationships cascade via ON DELETE CASCADE."""
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM equipment WHERE id=?", (equipment_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_assignable_points_for_equipment(self, equipment_id: int) -> list[dict]:
+        """Candidate objects for the Equipment panel's "Assign Points"
+        action: every object belonging to a Controller that `controls`
+        this equipment, plus (via a single query, not a per-object N+1)
+        whether each object already has a point semantic entity and, if
+        so, what it's currently isPointOf -- so the UI can warn before
+        silently reassigning a point that's already semantically owned by
+        something else. Returns [] if this equipment has no semantic
+        entity yet (unclassified -- see sync_entity_from_flat_field) or no
+        controlling Controller."""
+        with self._conn() as conn:
+            equipment_entity = conn.execute(
+                "SELECT id FROM semantic_entities WHERE entity_kind='equipment' AND equipment_id=?",
+                (equipment_id,),
+            ).fetchone()
+            if equipment_entity is None:
+                return []
+
+            controllers = self.get_related_entities(equipment_entity["id"], "controls", direction="in")
+            controller_device_ids = [c["device_id"] for c in controllers if c.get("device_id") is not None]
+            if not controller_device_ids:
+                return []
+
+            placeholders = ",".join("?" for _ in controller_device_ids)
+            rows = conn.execute(
+                f"""
+                SELECT
+                    o.id AS object_id, o.object_type, o.object_instance, o.name, o.point_type,
+                    o.device_id, d.name AS device_name,
+                    pe.id AS point_entity_id,
+                    target.id AS current_target_entity_id, target.name AS current_target_name
+                FROM objects o
+                JOIN devices d ON d.id = o.device_id
+                LEFT JOIN semantic_entities pe ON pe.entity_kind='point' AND pe.object_id = o.id
+                LEFT JOIN semantic_relationships rel ON rel.source_entity_id = pe.id AND rel.predicate='isPointOf'
+                LEFT JOIN semantic_entities target ON target.id = rel.target_entity_id
+                WHERE o.device_id IN ({placeholders})
+                ORDER BY o.device_id, o.object_type, o.object_instance
+                """,
+                controller_device_ids,
+            ).fetchall()
+
+            # A point entity could in principle have more than one isPointOf
+            # edge (the graph doesn't forbid it) -- the LEFT JOIN would then
+            # produce multiple rows for the same object. Collapse to one
+            # candidate per object, keeping the first current assignment
+            # found; a second/third simultaneous assignment is an edge case
+            # this summary view doesn't need to enumerate exhaustively.
+            candidates: dict[int, dict] = {}
+            for r in rows:
+                row = dict(r)
+                obj_id = row["object_id"]
+                if obj_id in candidates:
+                    continue
+                candidates[obj_id] = {
+                    "object_id": obj_id,
+                    "object_type": row["object_type"],
+                    "object_instance": row["object_instance"],
+                    "name": row["name"],
+                    "point_type": row["point_type"],
+                    "device_id": row["device_id"],
+                    "device_name": row["device_name"],
+                    "point_entity_id": row["point_entity_id"],
+                    "current_assignment": (
+                        {"entity_id": row["current_target_entity_id"], "name": row["current_target_name"]}
+                        if row["current_target_entity_id"] is not None
+                        else None
+                    ),
+                }
+            return list(candidates.values())
 
     # ── Semantic entities/relationships (Brick Core) ────────────────────────
     # Thin CRUD/traversal methods matching the shape of the locations
@@ -1214,6 +1461,7 @@ class Database:
         device_id: Optional[int] = None,
         object_id: Optional[int] = None,
         location_id: Optional[int] = None,
+        equipment_id: Optional[int] = None,
         entity_kind: Optional[str] = None,
         brick_class: Optional[str] = None,
     ) -> list[dict]:
@@ -1223,6 +1471,7 @@ class Database:
             ("device_id", device_id),
             ("object_id", object_id),
             ("location_id", location_id),
+            ("equipment_id", equipment_id),
             ("entity_kind", entity_kind),
             ("brick_class", brick_class),
         ):
@@ -1254,34 +1503,37 @@ class Database:
         device_id: Optional[int] = None,
         object_id: Optional[int] = None,
         location_id: Optional[int] = None,
+        equipment_id: Optional[int] = None,
         local_slug: Optional[str] = None,
     ) -> dict:
         validate_semantic_entity(
             entity_kind, brick_class,
-            device_id=device_id, object_id=object_id, location_id=location_id,
+            device_id=device_id, object_id=object_id, location_id=location_id, equipment_id=equipment_id,
         )
         semantic_key = derive_semantic_key(
             entity_kind, brick_class,
-            device_id=device_id, object_id=object_id, location_id=location_id,
+            device_id=device_id, object_id=object_id, location_id=location_id, equipment_id=equipment_id,
             local_slug=local_slug,
         )
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO semantic_entities "
-                "(name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id),
+                "(name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id, equipment_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id, equipment_id),
             )
-            # Direction 2 (Semantic Model panel -> flat field): point/location
-            # entities are unambiguous (DB-enforced 1:1 with object_id/
-            # location_id), so a point/location entity created here keeps
-            # objects.point_type/locations.kind in lockstep too -- a user
-            # who classifies a point through this panel instead of the
-            # Object drawer still sees it reflected there. Deliberately not
-            # done for entity_kind='equipment' -- see src/semantics/mirror.py.
+            # Direction 2 (Semantic Model panel -> flat field): point/
+            # location/equipment(equipment_id) entities are unambiguous
+            # (DB-enforced 1:1 via their own partial unique indexes), so an
+            # entity created here keeps objects.point_type/locations.kind/
+            # equipment.equipment_type in lockstep too -- a user who
+            # classifies through this panel instead of the Object/Location/
+            # Equipment drawer still sees it reflected there. Deliberately
+            # not done for device_id-rooted equipment or controller -- see
+            # src/semantics/mirror.py.
             sync_flat_field_from_entity(
                 conn, entity_kind=entity_kind, brick_class=brick_class,
-                object_id=object_id, location_id=location_id,
+                object_id=object_id, location_id=location_id, equipment_id=equipment_id,
             )
             conn.commit()
             return dict(
@@ -1300,15 +1552,16 @@ class Database:
         device_id: Optional[int] = None,
         object_id: Optional[int] = None,
         location_id: Optional[int] = None,
+        equipment_id: Optional[int] = None,
         local_slug: Optional[str] = None,
     ) -> Optional[dict]:
         validate_semantic_entity(
             entity_kind, brick_class,
-            device_id=device_id, object_id=object_id, location_id=location_id,
+            device_id=device_id, object_id=object_id, location_id=location_id, equipment_id=equipment_id,
         )
         semantic_key = derive_semantic_key(
             entity_kind, brick_class,
-            device_id=device_id, object_id=object_id, location_id=location_id,
+            device_id=device_id, object_id=object_id, location_id=location_id, equipment_id=equipment_id,
             local_slug=local_slug,
         )
         with self._conn() as conn:
@@ -1319,17 +1572,17 @@ class Database:
 
             conn.execute(
                 "UPDATE semantic_entities SET name=?, local_slug=?, semantic_key=?, "
-                "brick_class=?, entity_kind=?, device_id=?, object_id=?, location_id=? "
+                "brick_class=?, entity_kind=?, device_id=?, object_id=?, location_id=?, equipment_id=? "
                 "WHERE id=?",
                 (name, local_slug, semantic_key, brick_class, entity_kind,
-                 device_id, object_id, location_id, entity_id),
+                 device_id, object_id, location_id, equipment_id, entity_id),
             )
 
             # Direction 2, same as create_semantic_entity() above -- plus,
             # if this entity was re-linked away from a different object/
-            # location (unusual, but the API allows it), clear THAT row's
-            # flat field first so it doesn't keep pointing at a class this
-            # entity no longer represents.
+            # location/equipment (unusual, but the API allows it), clear
+            # THAT row's flat field first so it doesn't keep pointing at a
+            # class this entity no longer represents.
             if old is not None:
                 if (old["entity_kind"] == "point" and old.get("object_id") is not None
                         and old["object_id"] != object_id):
@@ -1341,9 +1594,14 @@ class Database:
                     sync_flat_field_from_entity(
                         conn, entity_kind="location", brick_class=None, location_id=old["location_id"],
                     )
+                if (old["entity_kind"] == "equipment" and old.get("equipment_id") is not None
+                        and old["equipment_id"] != equipment_id):
+                    sync_flat_field_from_entity(
+                        conn, entity_kind="equipment", brick_class=None, equipment_id=old["equipment_id"],
+                    )
             sync_flat_field_from_entity(
                 conn, entity_kind=entity_kind, brick_class=brick_class,
-                object_id=object_id, location_id=location_id,
+                object_id=object_id, location_id=location_id, equipment_id=equipment_id,
             )
 
             conn.commit()
@@ -1357,9 +1615,10 @@ class Database:
         the ON DELETE CASCADE FK) — a relationship pointing at a deleted
         entity has no independent meaning to protect, unlike locations'
         refuse-and-409 pattern. Direction 2 (see src/semantics/mirror.py):
-        if this was a point/location entity, its flat field is cleared too
-        -- deleting the Brick classification un-classifies the row
-        everywhere, rather than leaving objects.point_type/locations.kind
+        if this was a point/location/equipment(equipment_id) entity, its
+        flat field is cleared too -- deleting the Brick classification
+        un-classifies the row everywhere, rather than leaving
+        objects.point_type/locations.kind/equipment.equipment_type
         pointing at a class with no backing entity."""
         with self._conn() as conn:
             existing = conn.execute(
@@ -1371,6 +1630,7 @@ class Database:
                 sync_flat_field_from_entity(
                     conn, entity_kind=existing["entity_kind"], brick_class=None,
                     object_id=existing.get("object_id"), location_id=existing.get("location_id"),
+                    equipment_id=existing.get("equipment_id"),
                 )
             conn.commit()
             return cur.rowcount > 0
@@ -1541,13 +1801,26 @@ class Database:
                 params.append(brick_class)
             return [dict(r) for r in conn.execute(query, params)]
 
+    # has_controller_entity is computed at query time (never a stored
+    # column) -- it's how the frontend's DeviceDrawer distinguishes "this
+    # device already has a Controller semantic role, keep it in sync on
+    # edit" from "this is a legacy device, never touch its semantics on
+    # edit" (see sync_controller_entity()'s docstring for why that
+    # distinction matters).
+    _DEVICES_SELECT = (
+        "SELECT devices.*, EXISTS("
+        "  SELECT 1 FROM semantic_entities "
+        "  WHERE entity_kind='controller' AND device_id=devices.id"
+        ") AS has_controller_entity FROM devices"
+    )
+
     def get_devices(self) -> list[dict]:
         with self._conn() as conn:
-            return [dict(r) for r in conn.execute("SELECT * FROM devices ORDER BY device_instance")]
+            return [dict(r) for r in conn.execute(f"{self._DEVICES_SELECT} ORDER BY device_instance")]
 
     def get_device(self, device_id: int) -> Optional[dict]:
         with self._conn() as conn:
-            r = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+            r = conn.execute(f"{self._DEVICES_SELECT} WHERE devices.id=?", (device_id,)).fetchone()
             return dict(r) if r else None
 
     def sync_external_devices(self, discovered: list[dict]) -> list[dict]:
@@ -1661,6 +1934,20 @@ class Database:
             cur = conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    def ensure_controller_entity(self, device_id: int) -> Optional[dict]:
+        """Thin wrapper around sync_controller_entity() -- looks up the
+        device's current name and upserts its entity_kind='controller'
+        semantic entity. Returns None if the device doesn't exist. This is
+        called from exactly one place: POST /devices/{id}/controller (see
+        that endpoint's docstring for why nothing else may call it)."""
+        with self._conn() as conn:
+            device = conn.execute("SELECT name FROM devices WHERE id=?", (device_id,)).fetchone()
+            if device is None:
+                return None
+            entity = sync_controller_entity(conn, device_id=device_id, name=device["name"])
+            conn.commit()
+            return entity
 
     def get_objects(self, device_id: int) -> list[dict]:
         with self._conn() as conn:
@@ -2845,6 +3132,7 @@ class Database:
     ) -> dict:
         with self._conn() as conn:
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
+            equipment = [dict(r) for r in conn.execute("SELECT * FROM equipment")]
             devices = [dict(r) for r in conn.execute(
                 "SELECT * FROM devices ORDER BY device_instance"
             )]
@@ -2875,6 +3163,7 @@ class Database:
             functional_tests = [dict(r) for r in conn.execute("SELECT * FROM functional_tests")]
             data = json.dumps({
                 "locations": locations,
+                "equipment": equipment,
                 "devices": devices,
                 "semantic_entities": semantic_entities,
                 "semantic_relationships": semantic_relationships,
@@ -2909,6 +3198,7 @@ class Database:
             connection_config = existing_payload.get("connection_config")
 
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
+            equipment = [dict(r) for r in conn.execute("SELECT * FROM equipment")]
             devices = [dict(r) for r in conn.execute(
                 "SELECT * FROM devices ORDER BY device_instance"
             )]
@@ -2926,6 +3216,7 @@ class Database:
             functional_tests = [dict(r) for r in conn.execute("SELECT * FROM functional_tests")]
             data = json.dumps({
                 "locations": locations,
+                "equipment": equipment,
                 "devices": devices,
                 "semantic_entities": semantic_entities,
                 "semantic_relationships": semantic_relationships,
@@ -2955,6 +3246,7 @@ class Database:
             conn.execute("DELETE FROM semantic_relationships")
             conn.execute("DELETE FROM semantic_entities")
             conn.execute("DELETE FROM devices")
+            conn.execute("DELETE FROM equipment")
             conn.execute("DELETE FROM locations")
             conn.execute("DELETE FROM functional_tests")
             conn.commit()
@@ -2977,6 +3269,7 @@ class Database:
             conn.execute("DELETE FROM semantic_relationships")
             conn.execute("DELETE FROM semantic_entities")
             conn.execute("DELETE FROM devices")
+            conn.execute("DELETE FROM equipment")
             conn.execute("DELETE FROM locations")
             conn.execute("DELETE FROM functional_tests")
             conn.commit()
@@ -3163,6 +3456,24 @@ class Database:
                         },
                     )
 
+            # Equipment references a location only -- location_id_map is
+            # already fully populated by the locations restore above.
+            equipment_id_map: dict[int, int] = {}
+            for eq in payload.get("equipment", []):
+                old_equipment_id = eq.pop("id", None)
+                old_location_id = eq.get("location_id")
+                eq_cur = conn.execute(
+                    "INSERT INTO equipment (name, description, location_id, equipment_type) VALUES (?,?,?,?)",
+                    (
+                        eq["name"],
+                        eq.get("description", ""),
+                        location_id_map.get(old_location_id) if old_location_id is not None else None,
+                        eq.get("equipment_type"),
+                    ),
+                )
+                if old_equipment_id is not None:
+                    equipment_id_map[old_equipment_id] = eq_cur.lastrowid
+
             # Energy model configs reference a device only (no objects/
             # locations involved), so they just need dev_id_map, already
             # fully populated by the devices loop above. Skip silently if
@@ -3226,18 +3537,23 @@ class Database:
                     location_id_map.get(ent.get("location_id"))
                     if ent.get("location_id") is not None else None
                 )
+                new_equipment_id = (
+                    equipment_id_map.get(ent.get("equipment_id"))
+                    if ent.get("equipment_id") is not None else None
+                )
                 computed_key = derive_semantic_key(
                     ent["entity_kind"], ent["brick_class"],
                     device_id=new_device_id, object_id=new_object_id, location_id=new_location_id,
+                    equipment_id=new_equipment_id,
                     local_slug=ent.get("local_slug"),
                 )
                 ent_cur = conn.execute(
                     "INSERT INTO semantic_entities "
-                    "(name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "(name, local_slug, semantic_key, brick_class, entity_kind, device_id, object_id, location_id, equipment_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         ent["name"], ent.get("local_slug"), computed_key, ent["brick_class"], ent["entity_kind"],
-                        new_device_id, new_object_id, new_location_id,
+                        new_device_id, new_object_id, new_location_id, new_equipment_id,
                     ),
                 )
                 entity_id_map[old_entity_id] = ent_cur.lastrowid
@@ -5967,6 +6283,7 @@ api = FastAPI(title="BACnet Simulator", lifespan=lifespan)
 api.include_router(packet_capture_router)
 api.include_router(backups_router)
 api.include_router(locations_router)
+api.include_router(equipment_router)
 api.include_router(semantic_router)
 api.include_router(calendars_router)
 api.include_router(alarms_router)
@@ -6057,6 +6374,7 @@ async def meta():
         "segmentation_options": sorted(VALID_SEGMENTATION),
         "brick_version": BRICK_VERSION,
         "equipment_types": [{"value": k, "label": v} for k, v in sorted(EQUIPMENT_TYPES.items())],
+        "controller_types": [{"value": k, "label": v} for k, v in sorted(CONTROLLER_TYPES.items())],
         "point_types": [{"value": k, "label": v} for k, v in sorted(POINT_TYPES.items())],
         "location_kinds": [{"value": k, "label": v} for k, v in sorted(LOCATION_KINDS.items())],
         "semantic_predicates": [{"value": k, "label": v} for k, v in sorted(SEMANTIC_PREDICATES.items())],

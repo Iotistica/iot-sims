@@ -396,6 +396,35 @@ async def delete_device(
     return Response(status_code=204)
 
 
+# ─── Controller (explicit semantic role) ────────────────────────────────────
+
+@router.post("/{device_id}/controller")
+async def mark_device_as_controller(
+    device_id: int,
+    request: Request,
+):
+    """The ONLY code path in the backend that ever creates/updates an
+    entity_kind='controller' semantic entity -- deliberately not folded
+    into create_device()/update_device() (see Database.ensure_controller_entity
+    and sync_controller_entity()'s docstrings). Idempotent: calling this
+    again on a device that already has a controller entity just keeps its
+    name in sync, never creates a second one."""
+    database = get_database(request)
+
+    entity = await asyncio.to_thread(
+        database.ensure_controller_entity,
+        device_id,
+    )
+
+    if entity is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Device not found",
+        )
+
+    return entity
+
+
 # ─── Energy model configs ───────────────────────────────────────────────────
 
 @router.get("/{device_id}/energy-models")

@@ -195,6 +195,7 @@ async function apply() {
         :data-source="pointRows"
         :columns="columns"
         :pagination="false"
+        :show-sorter-tooltip="false"
         size="small"
         row-key="suggestion.source_id"
       >

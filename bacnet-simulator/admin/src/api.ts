@@ -25,6 +25,8 @@ import type {
   PriorityArrayInfo,
   Calendar,
   Location,
+  Equipment,
+  AssignablePoint,
   SemanticEntity,
   SemanticRelationship,
   PacketCaptureStatus,
@@ -78,6 +80,7 @@ const NON_CONFIG_MUTATION = [
 const CONFIG_PATH_PREFIXES = [
   /^\/devices(\/|$)/,
   /^\/locations(\/|$)/,
+  /^\/equipment(\/|$)/,
   /^\/semantic-entities(\/|$)/,
   /^\/semantic-relationships(\/|$)/,
   /^\/notification-classes(\/|$)/,
@@ -196,6 +199,7 @@ export const api = {
     importEde: (id: number, file: File)    =>
       uploadFile<{ ok: boolean; objects_imported: number }>(`/devices/${id}/import/ede`, file, {}, true),
     exportBrick: (id: number, name: string) => downloadFile(`/devices/${id}/export/brick`, `${name}.ttl`),
+    markAsController: (id: number) => req<SemanticEntity>(`/devices/${id}/controller`, { method: 'POST' }),
   },
 
   locations: {
@@ -205,8 +209,31 @@ export const api = {
     del:    (id: number)                          => req<null>(`/locations/${id}`, { method: 'DELETE' }),
   },
 
+  equipment: {
+    list:   ()                                     => req<Equipment[]>('/equipment'),
+    create: (b: Omit<Equipment, 'id'>)             => req<Equipment>('/equipment', { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: Omit<Equipment, 'id'>) => req<Equipment>(`/equipment/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)                           => req<null>(`/equipment/${id}`, { method: 'DELETE' }),
+    assignablePoints: (id: number)                 => req<AssignablePoint[]>(`/equipment/${id}/assignable-points`),
+  },
+
   semanticEntities: {
-    list:   ()                                            => req<SemanticEntity[]>('/semantic-entities'),
+    list: (filters?: {
+      entity_kind?: string
+      device_id?: number
+      object_id?: number
+      location_id?: number
+      equipment_id?: number
+      brick_class?: string
+    }) => {
+      const qs = filters
+        ? Object.entries(filters)
+            .filter(([, v]) => v !== undefined && v !== null)
+            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+            .join('&')
+        : ''
+      return req<SemanticEntity[]>(`/semantic-entities${qs ? `?${qs}` : ''}`)
+    },
     create: (b: Omit<SemanticEntity, 'id' | 'semantic_key'>) =>
       req<SemanticEntity>('/semantic-entities', { method: 'POST', body: JSON.stringify(b) }),
     update: (id: number, b: Omit<SemanticEntity, 'id' | 'semantic_key'>) =>
@@ -219,7 +246,15 @@ export const api = {
   },
 
   semanticRelationships: {
-    list:   ()                                                    => req<SemanticRelationship[]>('/semantic-relationships'),
+    list: (filters?: { source_entity_id?: number; target_entity_id?: number; predicate?: string }) => {
+      const qs = filters
+        ? Object.entries(filters)
+            .filter(([, v]) => v !== undefined && v !== null)
+            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+            .join('&')
+        : ''
+      return req<SemanticRelationship[]>(`/semantic-relationships${qs ? `?${qs}` : ''}`)
+    },
     create: (b: Omit<SemanticRelationship, 'id'>)                 =>
       req<SemanticRelationship>('/semantic-relationships', { method: 'POST', body: JSON.stringify(b) }),
     del:    (id: number)                                          => req<null>(`/semantic-relationships/${id}`, { method: 'DELETE' }),

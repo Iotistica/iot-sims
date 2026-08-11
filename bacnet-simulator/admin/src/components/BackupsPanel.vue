@@ -137,6 +137,7 @@ onMounted(load)
       :columns="columns"
       :data-source="backups"
       :pagination="false"
+      :show-sorter-tooltip="false"
       size="small"
       row-key="file_name"
       :locale="{ emptyText: 'No backups yet — click Create Backup to take a snapshot of the current database.' }"

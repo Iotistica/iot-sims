@@ -89,6 +89,7 @@ onMounted(load)
         :columns="columns"
         :data-source="tests"
         :loading="loading"
+        :show-sorter-tooltip="false"
         row-key="id"
         size="small"
         :pagination="{ pageSize: 25 }"

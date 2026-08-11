@@ -115,17 +115,50 @@ LOCATION_KINDS = {
     "Lighting_Zone": "Lighting Zone",
 }
 
+# Brick Core (verified against bricksrc/equipment.py at v1.4.4 -- already
+# present at the currently-pinned BRICK_VERSION, no version change needed
+# for the class itself): Controller -> ICT_Equipment -> Equipment. This is
+# the semantic role a `devices` row may explicitly be given (see
+# src/semantics/mirror.py's sync_controller_entity and the dedicated
+# POST /devices/{id}/controller endpoint) -- deliberately NOT merged into
+# EQUIPMENT_TYPES, since Equipment (the new `equipment` table) and
+# Controller (the `devices` table) are now separate concepts with separate
+# pickers. Only the generic class is listed; its real Brick subclasses
+# (BACnet_Controller, Modbus_Controller) aren't needed at this vocabulary's
+# current scope.
+CONTROLLER_TYPES = {
+    "Controller": "Controller",
+}
+
 # Brick Core semantic relationship predicates (see semantic_entities/
 # semantic_relationships in src/legacy.py's Database.setup() and
 # src/semantics/). Verified against the pinned v1.4.4 relationships.py:
 # isPointOf/hasPoint, isPartOf/hasPart, feeds/isFedBy, hasLocation/
 # isLocationOf are all real inverse-predicate pairs. Only the forward
 # direction is stored; brick_export.py emits both directions on export.
+#
+# Storage-direction rule (apply this to any future predicate addition):
+# always store whichever named predicate's real Brick rdfs:domain matches
+# the entity being stored as source_entity_id -- isPointOf stores Point
+# first because Point IS isPointOf's real domain; hasLocation stores
+# Equipment first because Equipment IS hasLocation's real domain.
+#
+# controls/isHostedBy: verified against bricksrc/relationships.py at the
+# real tag v1.5.0-rc1 specifically -- NOT present at the pinned
+# BRICK_VERSION=1.4.4 (checked both tags directly). This is a narrow,
+# isolated addition for Controller modeling only, not a project-wide Brick
+# version bump -- EQUIPMENT_TYPES/POINT_TYPES/LOCATION_KINDS and the four
+# predicates above remain verified only against 1.4.4. Re-verify/consolidate
+# into BRICK_VERSION once Brick 1.5 has a stable (non-RC) tagged release.
+#   controls:    domain=Controller,            range=Equipment,  inverse=isControlledBy
+#   isHostedBy:  domain=Point,                 range=Controller (ICT_Equipment), inverse of hosts (domain=Controller)
 SEMANTIC_PREDICATES = {
     "isPointOf": "Is Point Of",
     "isPartOf": "Is Part Of",
     "feeds": "Feeds",
     "hasLocation": "Has Location",
+    "controls": "Controls",
+    "isHostedBy": "Is Hosted By",
 }
 
 POINT_TYPES = {

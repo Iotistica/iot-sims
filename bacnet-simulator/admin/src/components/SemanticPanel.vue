@@ -23,6 +23,56 @@ const locationById = computed(() => new Map(locations.value.map(l => [l.id, l]))
 const objectById = computed(() => new Map(objects.value.map(o => [o.id, o])))
 const entityById = computed(() => new Map(entities.value.map(e => [e.id, e])))
 
+// Derived (never persisted) Controller -> Point hosting, one entry per
+// BACnet object owned by an explicitly-marked Controller device -- see
+// objects.device_id. This is a runtime fact, not user semantics, so it is
+// computed here at render/traversal time rather than requiring a manually
+// created isHostedBy/hosts semantic_relationships row (see brick_export.py's
+// _derive_controller_hosting_triples() for the same join reused on export).
+// targetId is the real point entity id when one exists, or a synthetic
+// negative id (-object.id) for a BACnet object with no semantic Point
+// entity yet -- negative so it can share the same `Set<number>`/graph-node
+// id space as real entities without colliding (entity ids are always >= 1).
+interface DerivedHostingEdge {
+  controllerEntityId: number
+  targetId: number
+  targetName: string
+  targetBrickClass: string | null
+  isUnclassified: boolean
+}
+const derivedHostingEdges = computed<DerivedHostingEdge[]>(() => {
+  const pointEntityByObjectId = new Map<number, SemanticEntity>()
+  for (const e of entities.value) {
+    if (e.entity_kind === 'point' && e.object_id != null) pointEntityByObjectId.set(e.object_id, e)
+  }
+  const edges: DerivedHostingEdge[] = []
+  for (const controller of entities.value) {
+    if (controller.entity_kind !== 'controller' || controller.device_id == null) continue
+    for (const obj of objects.value) {
+      if (obj.device_id !== controller.device_id) continue
+      const pointEntity = pointEntityByObjectId.get(obj.id)
+      if (pointEntity) {
+        edges.push({
+          controllerEntityId: controller.id,
+          targetId: pointEntity.id,
+          targetName: pointEntity.name,
+          targetBrickClass: pointEntity.brick_class,
+          isUnclassified: false,
+        })
+      } else {
+        edges.push({
+          controllerEntityId: controller.id,
+          targetId: -obj.id,
+          targetName: obj.name,
+          targetBrickClass: null,
+          isUnclassified: true,
+        })
+      }
+    }
+  }
+  return edges
+})
+
 async function load() {
   loading.value = true
   try {
@@ -126,7 +176,13 @@ function openEditEntity(e: SemanticEntity) {
   editingEntity.value = e
   entityForm.value = {
     name: e.name,
-    entity_kind: e.entity_kind,
+    // This modal only ever offers equipment/point/location as choices
+    // (see the entity_kind <a-select> options below) -- 'controller'
+    // entities are managed exclusively through the dedicated Controller
+    // drawer flow (see DeviceDrawer.vue / POST /devices/{id}/controller),
+    // never through this generic panel, so the cast here doesn't grant a
+    // capability that didn't already exist.
+    entity_kind: e.entity_kind as 'equipment' | 'point' | 'location',
     brick_class: e.brick_class,
     local_slug: e.local_slug ?? '',
     device_id: e.device_id ?? null,
@@ -364,15 +420,30 @@ function graphEntityIds(): Set<number> {
       }
     }
 
+    // Derived Controller -> Point hosting participates in traversal exactly
+    // like a persisted relationship (e.g. focusing on Equipment can reach
+    // its Controller via `controls`, then the Controller's hosted Points
+    // via this derived edge, within the same depth budget).
+    for (const e of derivedHostingEdges.value) {
+      if (frontier.has(e.controllerEntityId) && !included.has(e.targetId)) {
+        next.add(e.targetId)
+      }
+      if (frontier.has(e.targetId) && !included.has(e.controllerEntityId)) {
+        next.add(e.controllerEntityId)
+      }
+    }
+
     for (const id of next) included.add(id)
     frontier = next
     if (frontier.size === 0) break
   }
 
-  // Keep the focus even when it is a point, but optionally hide other point nodes.
+  // Keep the focus even when it is a point, but optionally hide other point
+  // nodes -- including synthetic unclassified-point ids (always negative).
   if (!graphShowPoints.value) {
     for (const id of [...included]) {
       if (id === focusId) continue
+      if (id < 0) { included.delete(id); continue }
       if (entityById.value.get(id)?.entity_kind === 'point') included.delete(id)
     }
   }
@@ -430,6 +501,12 @@ function renderGraph() {
   const visibleRelationships = relationships.value.filter(
     r => ids.has(r.source_entity_id) && ids.has(r.target_entity_id),
   )
+  // Derived Controller-hosted Point edges/nodes -- never persisted, computed
+  // fresh from objects.device_id every render (see derivedHostingEdges).
+  const visibleHostingEdges = derivedHostingEdges.value.filter(
+    e => ids.has(e.controllerEntityId) && ids.has(e.targetId),
+  )
+  const visibleUnclassifiedPoints = visibleHostingEdges.filter(e => e.isUnclassified)
 
   const elements: ElementDefinition[] = [
     ...visibleEntities.map(e => ({
@@ -437,13 +514,29 @@ function renderGraph() {
       data: {
         id: `entity-${e.id}`,
         entityId: e.id,
-        label: `${e.name}\n${e.brick_class}`,
+        // Point nodes show just the point name -- the Brick class (often a
+        // long Condenser_Water_Temperature_Sensor-style name) is already
+        // shown in the inspector panel on click, and doesn't fit
+        // meaningfully in the small ellipse without crowding out the name.
+        label: e.entity_kind === 'point' ? e.name : `${e.name}\n${e.brick_class}`,
         kind: e.entity_kind,
       },
       classes: [
         `kind-${e.entity_kind}`,
         e.id === graphFocusEntityId.value ? 'graph-focus' : '',
       ].filter(Boolean).join(' '),
+    })),
+    ...visibleUnclassifiedPoints.map(e => ({
+      group: 'nodes' as const,
+      data: {
+        id: `entity-${e.targetId}`,
+        entityId: e.targetId,
+        // Name only, same as classified point nodes above -- the dashed
+        // border is what signals "unclassified", not a second text line.
+        label: e.targetName,
+        kind: 'point-unclassified',
+      },
+      classes: 'kind-point-unclassified',
     })),
     ...visibleRelationships.map(r => {
       const edge = displayEdge(r)
@@ -458,6 +551,16 @@ function renderGraph() {
         },
       }
     }),
+    ...visibleHostingEdges.map(e => ({
+      group: 'edges' as const,
+      data: {
+        id: `hosts-${e.controllerEntityId}-${e.targetId}`,
+        source: `entity-${e.controllerEntityId}`,
+        target: `entity-${e.targetId}`,
+        label: 'hosts',
+        predicate: 'hosts',
+      },
+    })),
   ]
 
   cy?.destroy()
@@ -517,6 +620,31 @@ function renderGraph() {
     'border-width': 2,
   },
 },
+{
+  selector: '.kind-controller',
+  style: {
+    'shape': 'round-rectangle',
+    'background-color': '#4d2b0a',
+    'border-color': '#d46b08',
+    'border-width': 2,
+  },
+},
+{
+  // Derived, unclassified BACnet object (no semantic Point entity yet) --
+  // dashed/muted variant of the ordinary point node so it visually reads
+  // as "known to exist, not yet semantically described".
+  selector: '.kind-point-unclassified',
+  style: {
+    'shape': 'ellipse',
+    'background-color': '#262626',
+    'border-color': '#595959',
+    'border-style': 'dashed',
+    'width': 118,
+    'height': 48,
+    'font-size': 10,
+    'color': cssColor('--text-muted', '#8c8c8c'),
+  },
+},
       {
         selector: '.graph-focus',
         style: {
@@ -540,6 +668,16 @@ function renderGraph() {
           'text-background-opacity': 0.9,
           'text-background-padding': '3px',
           'text-rotation': 'autorotate',
+        },
+      },
+      {
+        // Derived (not persisted) edges -- dashed to visually distinguish
+        // "known from objects.device_id" from user-created relationships.
+        selector: 'edge[predicate = "hosts"]',
+        style: {
+          'line-style': 'dashed',
+          'line-color': '#d46b08',
+          'target-arrow-color': '#d46b08',
         },
       },
       {
@@ -678,6 +816,7 @@ const relationshipColumns: TableColumnsType<SemanticRelationship> = [
           :columns="entityColumns"
           :data-source="filteredEntities"
           :loading="loading"
+          :show-sorter-tooltip="false"
           row-key="id"
           size="small"
           :pagination="{ pageSize: 25 }"
@@ -732,6 +871,7 @@ const relationshipColumns: TableColumnsType<SemanticRelationship> = [
           :columns="relationshipColumns"
           :data-source="filteredRelationships"
           :loading="loading"
+          :show-sorter-tooltip="false"
           row-key="id"
           size="small"
           :pagination="{ pageSize: 25 }"

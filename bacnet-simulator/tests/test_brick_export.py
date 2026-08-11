@@ -119,6 +119,69 @@ def test_feeds_and_haslocation_emitted_with_inverses(database):
     assert (room_uri, brick_export.BRICK.isLocationOf, ahu_uri) in graph
 
 
+def test_controller_hosts_derived_for_all_objects_without_persisted_relationships(database):
+    """Controller -> Point hosting must be derivable from objects.device_id
+    alone -- no isHostedBy/hosts row in semantic_relationships required,
+    and it must cover objects regardless of whether they have a point
+    semantic entity yet (matching the Semantic Graph UI's "unclassified
+    points still show as hosted" behavior)."""
+    with database._conn() as conn:
+        conn.execute("INSERT INTO devices (device_instance, name) VALUES (701, 'Chiller Controller')")
+        device_id = conn.execute("SELECT id FROM devices WHERE device_instance=701").fetchone()[0]
+        conn.execute("INSERT INTO objects (device_id, object_type, object_instance, name) VALUES (?,?,?,?)",
+                     (device_id, "analog-input", 1, "CH-1-kW"))
+        conn.execute("INSERT INTO objects (device_id, object_type, object_instance, name) VALUES (?,?,?,?)",
+                     (device_id, "analog-input", 2, "CW-Flow"))
+        conn.commit()
+
+    database.ensure_controller_entity(device_id)
+
+    device_data = dict(database.get_device(device_id))
+    device_data["objects"] = database.get_objects(device_id)
+    kw_object = next(o for o in device_data["objects"] if o["name"] == "CH-1-kW")
+
+    # Classify only CH-1-kW with a point semantic entity -- CW-Flow stays
+    # unclassified, same split as the acceptance example.
+    point_entity = database.create_semantic_entity(
+        "CH-1-kW", "Power_Sensor", "point", object_id=kw_object["id"],
+    )
+
+    entities = database.get_semantic_entities(device_id=device_id, entity_kind="controller") + [point_entity]
+
+    graph, warnings = brick_export.build_brick_graph(
+        [device_data], entities=entities, relationships=[],
+    )
+
+    controller_uri = brick_export._device_uri(device_id, None)
+    for obj in device_data["objects"]:
+        object_uri = brick_export._object_uri(obj["id"], None)
+        assert (object_uri, brick_export.BRICK.isHostedBy, controller_uri) in graph
+        assert (controller_uri, brick_export.BRICK.hosts, object_uri) in graph
+
+
+def test_no_hosting_derived_without_controller_entity(database):
+    """A device with objects but no entity_kind='controller' semantic
+    entity (never explicitly marked a Controller) must not get any
+    derived isHostedBy/hosts triples -- hosting is never inferred/bulk-
+    applied, only ever gated on the explicit Controller role."""
+    with database._conn() as conn:
+        conn.execute("INSERT INTO devices (device_instance, name) VALUES (702, 'Legacy Device')")
+        device_id = conn.execute("SELECT id FROM devices WHERE device_instance=702").fetchone()[0]
+        conn.execute("INSERT INTO objects (device_id, object_type, object_instance, name) VALUES (?,?,?,?)",
+                     (device_id, "analog-input", 1, "AI-1"))
+        conn.commit()
+
+    device_data = dict(database.get_device(device_id))
+    device_data["objects"] = database.get_objects(device_id)
+
+    graph, warnings = brick_export.build_brick_graph([device_data], entities=[], relationships=[])
+
+    object_uri = brick_export._object_uri(device_data["objects"][0]["id"], None)
+    controller_uri = brick_export._device_uri(device_id, None)
+    assert (object_uri, brick_export.BRICK.isHostedBy, controller_uri) not in graph
+    assert (controller_uri, brick_export.BRICK.hosts, object_uri) not in graph
+
+
 def test_existing_per_device_output_unchanged_without_entities(seeded_database):
     """Regression guard: entities/relationships default to empty -- zero
     behavior change for callers that don't pass them (e.g. before phase 8
