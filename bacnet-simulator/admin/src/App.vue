@@ -689,13 +689,13 @@ onUnmounted(() => {
         </div>
 
         <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
-          <a-radio-button value="devices"><ApartmentOutlined /> Devices</a-radio-button>
+          <a-radio-button value="devices"><ApartmentOutlined /> Browse</a-radio-button>
           <a-radio-button value="bacnet"><ApiOutlined  /> BACnet</a-radio-button>
           <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
           <a-radio-button value="packet-capture"><ClusterOutlined /> Network</a-radio-button>
           <a-radio-button value="utility"><DashboardOutlined /> Utilities</a-radio-button>
-          <a-radio-button value="semantic"><PartitionOutlined /> Semantic</a-radio-button>
+          <a-radio-button value="semantic"><PartitionOutlined /> Graph</a-radio-button>
           <a-radio-button value="tests"><ExperimentOutlined /> Tests</a-radio-button>
         </a-radio-group>
 
@@ -759,7 +759,7 @@ onUnmounted(() => {
                 </template>
               </a-dropdown>
               <a-button size="small" :title="hasExternalDevices ? 'Rediscover' : 'Discover Devices'" :loading="externalSyncLoading" @click="runDiscovery">
-                <template #icon><ApiOutlined /></template>
+                Discover
               </a-button>
             </a-space>
           </div>
