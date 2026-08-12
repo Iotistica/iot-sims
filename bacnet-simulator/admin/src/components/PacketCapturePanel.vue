@@ -222,6 +222,40 @@ async function loadPackets(): Promise<void> {
   }
 }
 
+// Merges a REST-authoritative packet list into packets.value by packet_id
+// instead of replacing it wholesale. Unlike loadPackets() (a full replace --
+// correct when the user explicitly changes filters or clicks Refresh), this
+// is used for automatic reconciliation that can race against handleLivePacket()
+// unshifting new packets onto packets.value concurrently: a blind replace at
+// the wrong moment could silently drop a just-arrived live packet (overwritten
+// by a REST snapshot taken before it existed) or duplicate one. Every packet
+// has a unique packet_id, so merging is always safe/idempotent.
+function mergePacketsById(incoming: ProtocolPacket[]): void {
+  const byId = new Map<string, ProtocolPacket>()
+  for (const p of packets.value) byId.set(p.packet_id, p)
+  for (const p of incoming) byId.set(p.packet_id, p)
+  const merged = Array.from(byId.values()).sort((a, b) => b.timestamp - a.timestamp)
+  packets.value = merged.length > LIVE_BUFFER_LIMIT ? merged.slice(0, LIVE_BUFFER_LIMIT) : merged
+}
+
+// Closes the gap between the backend starting capture (immediate, on the
+// /start response) and this client's WebSocket being fully accepted --
+// /packet-capture/stream deliberately performs no replay (see its own
+// docstring), so anything captured in that window would otherwise never
+// reach this session's live view until the next full remount. Called once
+// when the stream opens (see wsConnect()) and once when capture stops.
+async function reconcilePackets(): Promise<void> {
+  try {
+    const result = await api.packetCapture.list(filters)
+    mergePacketsById(result.items as ProtocolPacket[])
+    total.value = result.total
+  } catch (e: unknown) {
+    message.error(
+      (e as Error).message ?? 'Failed to reconcile packets',
+    )
+  }
+}
+
 async function load(): Promise<void> {
   await Promise.all([
     loadStatus(),
@@ -267,6 +301,10 @@ function wsConnect(): void {
   ws = new WebSocket(
     `${proto}//${location.host}/packet-capture/stream?token=${encodeURIComponent(authToken.value ?? '')}`,
   )
+  // Reconcile once the stream is actually accepted -- /packet-capture/stream
+  // has no replay, so this picks up anything captured between backend Start
+  // and this handshake completing (see reconcilePackets()'s own comment).
+  ws.onopen = () => { void reconcilePackets() }
   ws.onmessage = (e) => handleLivePacket(JSON.parse(e.data) as ProtocolPacket)
   ws.onclose = () => {
     ws = null
@@ -979,7 +1017,7 @@ watch(isRunning, (running, wasRunning) => {
     wsConnect()
   } else {
     wsDisconnect()
-    if (wasRunning) void loadPackets() // one authoritative resync when capture stops (any tab)
+    if (wasRunning) void reconcilePackets() // one authoritative resync when capture stops (any tab)
   }
 }, { immediate: true })
 

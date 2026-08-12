@@ -24,6 +24,10 @@ export interface Device {
   external_last_seen_at?: string | null
   /** Server-computed: whether this device already has an entity_kind='controller' semantic entity. */
   has_controller_entity?: boolean
+  /** 'simulation' (default) | 'mirror' | 'replay' — Mirror drives values from the external source. */
+  simulation_mode?: 'simulation' | 'mirror' | 'replay'
+  /** ID of the external source device for Mirror/Replay modes; null for ordinary simulated devices. */
+  source_device_id?: number | null
 }
 
 export interface Location {
@@ -32,6 +36,8 @@ export interface Location {
   parent_location_id: number | null
   description: string
   kind?: string | null
+  /** Server-managed: explicit sibling ordering for auto-generated Building/Level hierarchies. */
+  sort_order?: number | null
 }
 
 export interface Equipment {
@@ -355,8 +361,6 @@ export interface SemanticSuggestionsResponse {
   points: SemanticSuggestionEntry[]
 }
 
-export type ProjectSourceType = 'simulated' | 'external-bacnet'
-
 export interface BACnetConnectionConfig {
   discovery_target: string | null
   device_instance_low: number
@@ -370,7 +374,6 @@ export interface Project {
   description: string
   created_at: string
   device_count: number
-  source_type?: ProjectSourceType
   connection_config?: BACnetConnectionConfig | null
 }
 

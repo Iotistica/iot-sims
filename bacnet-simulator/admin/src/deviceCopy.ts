@@ -26,7 +26,7 @@ import { coerceValueForObjectType } from './objectValue'
 export async function copyDeviceAndObjects(
   source: Device,
   srcObjects: SimObject[],
-  opts: { name: string; deviceInstance: number; presentValues?: Record<number, unknown> },
+  opts: { name: string; deviceInstance: number; presentValues?: Record<number, unknown>; simulationMode?: 'simulation' | 'mirror' | 'replay'; sourceDeviceId?: number | null },
 ): Promise<{ device: Device; objectCount: number }> {
   const created = await api.devices.create({
     device_instance: opts.deviceInstance,
@@ -41,6 +41,8 @@ export async function copyDeviceAndObjects(
     segmentation_supported:   source.segmentation_supported,
     location_id:              source.location_id,
     equipment_type:           source.equipment_type ?? null,
+    simulation_mode:          opts.simulationMode ?? 'simulation',
+    source_device_id:         opts.sourceDeviceId ?? null,
   })
 
   for (const obj of srcObjects) {

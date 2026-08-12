@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import { EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined, BulbOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
@@ -29,6 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{ 'device-updated': [] }>()
 
 const isExternal = computed(() => props.device.source_type === 'external-bacnet')
+const isMirror = computed(() => props.device.simulation_mode === 'mirror')
 const canConfigureSimulation = computed(() => !isExternal.value)
 
 // ─── Object list ──────────────────────────────────────────────────────────
@@ -316,6 +317,29 @@ function onSuggestionsApplied() {
   loadObjects()
   emit('device-updated')
 }
+
+async function mirrorBehaviorGuard(): Promise<boolean> {
+  return new Promise((resolve) => {
+    Modal.confirm({
+      title: 'Switch to Simulation mode?',
+      content: 'This device uses Mirror mode. Changing a point behavior will switch the device to Simulation mode and activate its point behaviors.',
+      okText: 'Switch to Simulation',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        try {
+          const { id, ...rest } = props.device as any
+          await api.devices.update(id, { ...rest, simulation_mode: 'simulation' })
+          emit('device-updated')
+          resolve(true)
+        } catch (e: unknown) {
+          message.error((e as Error).message ?? 'Failed to switch to Simulation mode')
+          resolve(false)
+        }
+      },
+      onCancel: () => resolve(false),
+    })
+  })
+}
 </script>
 
 <template>
@@ -323,6 +347,7 @@ function onSuggestionsApplied() {
     <div style="font-size:18px;font-weight:600">
       {{ device.name }}
       <a-tag v-if="isExternal" color="default" style="margin-left:8px;font-weight:normal">Read Only</a-tag>
+      <a-tag v-if="isMirror" color="blue" style="margin-left:8px;font-weight:normal">Mirror</a-tag>
     </div>
     <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
       <template v-if="isExternal">
@@ -364,6 +389,9 @@ function onSuggestionsApplied() {
 
       <template #actions>
         <template v-if="canConfigureSimulation">
+          <template v-if="isMirror">
+            <span style="font-size:11px;color:var(--text-placeholder);margin-right:4px">Mirror mode · values driven by source</span>
+          </template>
           <a-button :disabled="!objects.length" @click="saveTemplateOpen = true">Save as Template</a-button>
           <a-button @click="templateModalOpen = true">From Template</a-button>
           <a-button :disabled="!objects.length" @click="suggestModalOpen = true">
@@ -411,7 +439,7 @@ function onSuggestionsApplied() {
           <a-tag style="font-family:monospace;font-size:11px">{{ (record as SimObject).object_type }}</a-tag>
         </template>
         <template v-else-if="column.key === 'behavior'">
-          <a-tag v-if="canConfigureSimulation" :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
+          <a-tag v-if="canConfigureSimulation && !isMirror" :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
           <span v-else style="color:var(--text-disabled)">—</span>
         </template>
         <template v-else-if="column.key === 'point_type'">
@@ -465,6 +493,8 @@ function onSuggestionsApplied() {
     :device-id="device.id"
     :meta="meta"
     :existing-objects="objects"
+    :mirror-mode="isMirror"
+    :on-before-save-behavior-change="isMirror ? mirrorBehaviorGuard : undefined"
     @saved="onObjectSaved"
   />
 

@@ -581,7 +581,7 @@ function doDelete() {
     <template #footer>
       <div style="display:flex;justify-content:space-between;align-items:center">
         <a-button v-if="device && !draftMode" danger :loading="deleting" @click="doDelete">
-          {{ isExternal ? 'Remove from Project' : 'Delete' }}
+          {{ isExternal ? 'Remove' : 'Delete' }}
         </a-button>
         <div v-else />
         <a-space>

@@ -33,7 +33,6 @@ import type {
   CapturedPacket,
   CapturedPacketPage,
   PacketCaptureFilters,
-  ProjectSourceType,
   BACnetConnectionConfig,
   DiscoveredDevice,
   ExternalObjectRow,
@@ -304,11 +303,12 @@ export const api = {
   // frontend-facing naming here was renamed to "project" to match the UI.
   projects: {
     list:    ()                                              => req<Project[]>('/profiles'),
-    save:    (name: string, description: string, sourceType?: ProjectSourceType, connectionConfig?: BACnetConnectionConfig | null) =>
-      req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description, source_type: sourceType, connection_config: connectionConfig }) }),
-    update:  (id: number, name: string, description: string) => req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description }) }),
+    save:    (name: string, description: string, connectionConfig?: BACnetConnectionConfig | null, aboveGroundLevels?: number, belowGroundLevels?: number) =>
+      req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description, connection_config: connectionConfig, above_ground_levels: aboveGroundLevels ?? 0, below_ground_levels: belowGroundLevels ?? 0 }) }),
+    update:  (id: number, name: string, description: string, connectionConfig?: BACnetConnectionConfig | null) =>
+      req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description, connection_config: connectionConfig }) }),
     del:     (id: number)                                   => req<null>(`/profiles/${id}`, { method: 'DELETE' }),
-    load:    (id: number)                                   => req<{ ok: boolean; source_type: ProjectSourceType; connection_config: BACnetConnectionConfig | null }>(`/profiles/${id}/load`, { method: 'POST' }),
+    load:    (id: number)                                   => req<{ ok: boolean; connection_config: BACnetConnectionConfig | null }>(`/profiles/${id}/load`, { method: 'POST' }),
     // Wipes live project state back to blank (devices/locations/semantic
     // data) for "New Project" — reuses the server's own load_project()
     // wipe sequence rather than looping individual per-row deletes, which

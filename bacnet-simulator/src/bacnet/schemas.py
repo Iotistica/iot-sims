@@ -8,7 +8,7 @@ that coupling to FastAPI and to bacnet_calendar already existed in the
 original file; this is a move, not a redesign.
 """
 import json
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -43,6 +43,8 @@ class DeviceCreate(BaseModel):
     location_id: Optional[int] = None
     equipment_type: Optional[str] = None
     can_receive_event_notifications: Optional[bool] = None
+    simulation_mode: str = Field("simulation")
+    source_device_id: Optional[int] = None
 
     def validate_device_info(self) -> None:
         if self.segmentation_supported not in VALID_SEGMENTATION:
@@ -54,7 +56,9 @@ class DeviceCreate(BaseModel):
 
 
 class DeviceUpdate(DeviceCreate):
-    pass
+    # None means "caller didn't send this field" -- update_device() reads the
+    # existing row and preserves the value rather than resetting to 'simulation'.
+    simulation_mode: Optional[str] = None
 
 
 class LocationCreate(BaseModel):
@@ -294,13 +298,22 @@ class CalendarUpdate(CalendarCreate):
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
-    source_type: Literal["simulated", "external-bacnet"] = "simulated"
     connection_config: Optional[dict] = None
+    # Auto-generates a Building root + N/M Level locations at creation time
+    # (see Database.generate_building_levels). 0/0 (the default) generates
+    # nothing -- existing behavior for any caller that doesn't send these.
+    above_ground_levels: int = Field(0, ge=0, le=200)
+    below_ground_levels: int = Field(0, ge=0, le=100)
 
 
 class ProjectUpdate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
+    # None means "leave the project's remembered discovery connection
+    # untouched" -- update_project() preserves the existing stored value
+    # when this is omitted, and overwrites it when a value is given (used
+    # by the Discover modal's "Remember connection" option).
+    connection_config: Optional[dict] = None
 
 
 class ProjectImport(BaseModel):

@@ -19,6 +19,7 @@ const emit = defineEmits<{
 const loading = ref(false)
 const fetchingSource = ref(false)
 const sourceObjects = ref<ExternalObjectRow[]>([])
+const simulationMode = ref<'mirror' | 'replay'>('mirror')
 const form = reactive({
   name: '',
   device_instance: 1001,
@@ -33,6 +34,7 @@ watch(() => props.open, async (v) => {
   form.name = `${source.name} Copy`
   form.device_instance = nextFreeInstance(props.existingInstances)
   sourceObjects.value = []
+  simulationMode.value = 'mirror'
   fetchingSource.value = true
   try {
     const result = await api.externalObjects.refresh(source.id)
@@ -58,6 +60,8 @@ async function create() {
       name: form.name.trim(),
       deviceInstance: form.device_instance,
       presentValues,
+      simulationMode: simulationMode.value,
+      sourceDeviceId: props.sourceDevice.id,
     })
     message.success(`Created "${device.name}" with ${objectCount} object${objectCount !== 1 ? 's' : ''}`)
     emit('update:open', false)
@@ -73,7 +77,7 @@ async function create() {
 <template>
   <a-modal
     :open="open"
-    title="Create Simulated Copy"
+    title="Create Simulation"
     ok-text="Create"
     :confirm-loading="loading"
     :ok-button-props="{ disabled: !form.name.trim() || instanceTaken || fetchingSource }"
@@ -86,6 +90,22 @@ async function create() {
         <div style="margin-top:2px">
           Creates an independent simulated device seeded with the current reading of each object. The external device is untouched and keeps reading the real network.
         </div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Mode</div>
+        <a-radio-group v-model:value="simulationMode" style="display:flex;flex-direction:column;gap:8px">
+          <a-radio value="mirror">
+            <span style="font-weight:500">Mirror</span>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;margin-left:24px">Follow values from the external device in real time.</div>
+          </a-radio>
+          <a-tooltip title="Replay mode is not yet available.">
+            <a-radio value="replay" :disabled="true">
+              <span style="font-weight:500;color:var(--text-disabled)">Replay</span>
+              <div style="font-size:12px;color:var(--text-disabled);margin-top:2px;margin-left:24px">Record live values and replay them independently.</div>
+            </a-radio>
+          </a-tooltip>
+        </a-radio-group>
       </div>
 
       <a-form layout="vertical" :colon="false">

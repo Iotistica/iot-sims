@@ -80,11 +80,18 @@ async def create_project(
 ):
     database = get_database(request)
 
+    if body.above_ground_levels > 0 or body.below_ground_levels > 0:
+        await asyncio.to_thread(
+            database.generate_building_levels,
+            body.name,
+            body.above_ground_levels,
+            body.below_ground_levels,
+        )
+
     return await asyncio.to_thread(
         database.save_project,
         body.name,
         body.description,
-        body.source_type,
         body.connection_config,
     )
 
@@ -102,6 +109,7 @@ async def update_project(
         project_id,
         body.name,
         body.description,
+        body.connection_config,
     )
 
     if not updated:
@@ -168,7 +176,6 @@ async def load_project(
 
     return {
         "ok": True,
-        "source_type": loaded["source_type"],
         "connection_config": loaded["connection_config"],
     }
 

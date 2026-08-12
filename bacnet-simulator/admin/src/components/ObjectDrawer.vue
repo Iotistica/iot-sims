@@ -14,6 +14,8 @@ const props = defineProps<{
   draftMode?: boolean
   draftObject?: Record<string, any> | null
   existingObjects?: { object_type: string; object_instance: number }[]
+  mirrorMode?: boolean
+  onBeforeSaveBehaviorChange?: () => Promise<boolean>
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
@@ -301,6 +303,12 @@ async function save() {
     return
   }
   if (!props.deviceId) return
+  if (props.mirrorMode && props.object && form.behavior !== props.object.behavior) {
+    if (props.onBeforeSaveBehaviorChange) {
+      const proceed = await props.onBeforeSaveBehaviorChange()
+      if (!proceed) return
+    }
+  }
   loading.value = true
   const body = { ...form, enabled: form.enabled ? 1 : 0, behavior_params: JSON.stringify(params.value) }
   try {

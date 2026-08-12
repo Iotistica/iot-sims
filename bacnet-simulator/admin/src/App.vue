@@ -7,6 +7,7 @@ import EquipmentDrawer from './components/EquipmentDrawer.vue'
 import EquipmentPanel from './components/EquipmentPanel.vue'
 import ProjectsDrawer from './components/ProjectsDrawer.vue'
 import NewProjectModal from './components/NewProjectModal.vue'
+import DiscoverModal from './components/DiscoverModal.vue'
 import ObjectsPanel from './components/ObjectsPanel.vue'
 import CreateSimulatedCopyModal from './components/CreateSimulatedCopyModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
@@ -26,14 +27,15 @@ import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
 import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
 
-import type { Device, Meta, Health, Location, Equipment, Project, ProjectSourceType, BACnetConnectionConfig } from './types'
+import type { Device, Meta, Health, Location, Equipment, Project, BACnetConnectionConfig } from './types'
 import { api, projectDirty } from './api'
+import { buildLocationTreeOptions, flattenLocationTree } from './locationTree'
 import { authToken, currentUser, logout } from './auth'
 import { isDark, toggleDark, themeConfig } from './theme'
 import { copyDeviceAndObjects } from './deviceCopy'
 import { getLocationIcon } from './locationIcons'
 import { getEquipmentIcon, getControllerIcon } from './equipmentIcons'
-import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, DeploymentUnitOutlined } from '@ant-design/icons-vue'
+import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, DeploymentUnitOutlined, FolderOutlined } from '@ant-design/icons-vue'
 
 const activeView = ref<
   'devices' |
@@ -66,37 +68,56 @@ const filteredDevices = computed(() => {
   )
 })
 
-// External-BACnet projects: "Discover Devices"/"Rediscover" persists
-// results as real Device rows (source_type='external-bacnet') via
-// api.discovery.sync(), so they flow through the exact same
-// devices/filteredDevices/sidebarTree path simulated devices already use —
-// no separate tree structure needed. These two refs are just local button
-// UI state (loading spinner, last-run error), not a device list.
-const externalSyncLoading = ref(false)
-const externalSyncError = ref<string | null>(null)
+// External-BACnet projects: the Discover modal persists results as real
+// Device rows (source_type='external-bacnet') via api.discovery.sync(), so
+// they flow through the exact same devices/filteredDevices/sidebarTree path
+// simulated devices already use — no separate tree structure needed.
+const discoverModalOpen = ref(false)
+const quickDiscoverLoading = ref(false)
+// Once a project has a remembered connection, clicking Discover runs
+// discovery immediately with it instead of reopening the modal each time —
+// the modal is still reachable via the "Edit connection" button to change
+// or clear it.
+const hasRememberedConnection = computed(() => activeProjectConnectionConfig.value !== null)
 
-async function runDiscovery() {
-  externalSyncLoading.value = true
-  externalSyncError.value = null
+async function onDiscovered(rememberedConfig: BACnetConnectionConfig | null) {
+  // Only overwrite the cached connection when this discovery actually
+  // remembered one — an unchecked/failed "Remember connection" must leave
+  // the project's previously remembered connection untouched.
+  if (rememberedConfig) activeProjectConnectionConfig.value = rememberedConfig
+  await loadDevices()
+  await loadHealth()
+}
+
+function onDiscoverClick() {
+  if (hasRememberedConnection.value) {
+    void quickDiscover()
+  } else {
+    discoverModalOpen.value = true
+  }
+}
+
+async function quickDiscover() {
+  const config = activeProjectConnectionConfig.value
+  if (!config) return
+  quickDiscoverLoading.value = true
   try {
-    const result = await api.discovery.sync(activeProjectConnectionConfig.value ?? {
-      discovery_target: null, device_instance_low: 0, device_instance_high: 4194303, timeout_ms: 5000,
-    })
+    const result = await api.discovery.sync(config)
     message.success(result.devices.length
       ? `Discovered ${result.devices.length} device${result.devices.length !== 1 ? 's' : ''}`
       : 'No devices found')
     await loadDevices()
     await loadHealth()
   } catch (e: unknown) {
-    externalSyncError.value = (e as Error).message ?? 'Discovery failed'
+    message.error((e as Error).message ?? 'Discovery failed')
   } finally {
-    externalSyncLoading.value = false
+    quickDiscoverLoading.value = false
   }
 }
 
 interface SidebarTreeNode {
   key: string
-  kind: 'location' | 'device' | 'equipment'
+  kind: 'location' | 'device' | 'equipment' | 'discovered-group'
   location?: Location
   device?: Device
   equipment?: Equipment
@@ -121,7 +142,14 @@ const sidebarTree = computed<SidebarTreeNode[]>(() => {
     if (parent) parent.children!.push(node)
     else roots.push(node)
   }
+  // Unassigned external devices are grouped into a frontend-only
+  // "Discovered" node so they don't clutter the top-level root list.
+  const unassignedExternal = filteredDevices.value.filter(d => d.source_type === 'external-bacnet' && (d.location_id == null))
+  const unassignedIds = new Set(unassignedExternal.map(d => d.id))
+
+  // Attach devices to their location nodes (skip discovered ones above)
   for (const d of filteredDevices.value) {
+    if (unassignedIds.has(d.id)) continue
     const node: SidebarTreeNode = { key: `device-${d.id}`, kind: 'device', device: d }
     const parent = d.location_id != null ? locationNodes.get(d.location_id) : undefined
     if (parent) parent.children!.push(node)
@@ -132,6 +160,19 @@ const sidebarTree = computed<SidebarTreeNode[]>(() => {
     const parent = e.location_id != null ? locationNodes.get(e.location_id) : undefined
     if (parent) parent.children!.push(node)
     else roots.push(node)
+  }
+
+  if (unassignedExternal.length > 0) {
+    const discoveredChildren: SidebarTreeNode[] = unassignedExternal.map(d => ({ key: `device-${d.id}`, kind: 'device', device: d }))
+    const discoveredNode: SidebarTreeNode = { key: 'discovered-group', kind: 'discovered-group', children: discoveredChildren }
+    // If there's exactly one top-level Building location, nest Discovered under it; otherwise show it at root.
+    const topLevelBuildings = roots.filter(r => r.kind === 'location' && r.location?.kind === 'Building')
+    if (topLevelBuildings.length === 1) {
+      topLevelBuildings[0].children = topLevelBuildings[0].children ?? []
+      topLevelBuildings[0].children.unshift(discoveredNode)
+    } else {
+      roots.unshift(discoveredNode)
+    }
   }
   return roots
 })
@@ -150,7 +191,20 @@ const sidebarFilteredCount = computed(() =>
 const hasExternalDevices = computed(() => devices.value.some(d => d.source_type === 'external-bacnet'))
 
 const expandedKeys = ref<string[]>([])
-watch(locations, () => { expandedKeys.value = locations.value.map(l => `location-${l.id}`) }, { immediate: true })
+watch(locations, () => { expandedKeys.value = [...locations.value.map(l => `location-${l.id}`), 'discovered-group'] }, { immediate: true })
+
+const moveToOptions = computed(() => flattenLocationTree(buildLocationTreeOptions(locations.value)))
+
+async function assignDeviceToLocation(device: Device, locationId: number) {
+  const { id, ...rest } = device as any
+  try {
+    await api.devices.update(id, { ...rest, location_id: locationId })
+    await loadDevices()
+    message.success('Device assigned')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to assign device')
+  }
+}
 
 function onTreeSelect(_keys: unknown, info: { node: { dataRef?: SidebarTreeNode } & Partial<SidebarTreeNode> }) {
   const data = info.node.dataRef ?? (info.node as SidebarTreeNode)
@@ -186,30 +240,28 @@ const ACTIVE_PROJECT_KEY = 'bacnet-sim-active-project'
 const activeProjectId   = ref<number | null>(null)
 const activeProjectName = ref<string | null>(null)
 const activeProjectDesc = ref<string>('')
-const activeProjectSourceType = ref<ProjectSourceType>('simulated')
+// The project's remembered BACnet discovery connection. Deliberately NOT
+// persisted to localStorage (unlike id/name/desc below) — it must always
+// come from an authoritative backend response (project load/create/save-as,
+// or a just-completed "remember" write), never from a browser cache, so
+// switching projects or refreshing the page can never leak a stale or
+// wrong-project value into the Discover modal.
 const activeProjectConnectionConfig = ref<BACnetConnectionConfig | null>(null)
 
 function loadActiveProjectFromStorage() {
   try {
     const raw = localStorage.getItem(ACTIVE_PROJECT_KEY)
     if (!raw) return
-    const saved = JSON.parse(raw) as {
-      id: number; name: string; desc: string
-      sourceType?: ProjectSourceType; connectionConfig?: BACnetConnectionConfig | null
-    }
+    const saved = JSON.parse(raw) as { id: number; name: string; desc: string }
     activeProjectId.value = saved.id
     activeProjectName.value = saved.name
     activeProjectDesc.value = saved.desc
-    // Older stored entries (pre-source_type) have neither field — default to
-    // 'simulated' so existing projects keep behaving exactly as before.
-    activeProjectSourceType.value = saved.sourceType ?? 'simulated'
-    activeProjectConnectionConfig.value = saved.connectionConfig ?? null
   } catch {
     // Malformed/stale storage — ignore and fall back to "no active project"
   }
 }
 
-watch([activeProjectId, activeProjectName, activeProjectDesc, activeProjectSourceType, activeProjectConnectionConfig], () => {
+watch([activeProjectId, activeProjectName, activeProjectDesc], () => {
   if (activeProjectId.value === null) {
     localStorage.removeItem(ACTIVE_PROJECT_KEY)
   } else {
@@ -217,8 +269,6 @@ watch([activeProjectId, activeProjectName, activeProjectDesc, activeProjectSourc
       id: activeProjectId.value,
       name: activeProjectName.value,
       desc: activeProjectDesc.value,
-      sourceType: activeProjectSourceType.value,
-      connectionConfig: activeProjectConnectionConfig.value,
     }))
   }
 }, { deep: true })
@@ -474,7 +524,6 @@ async function resetToNewProject(silent = false) {
   activeProjectId.value = null
   activeProjectName.value = null
   activeProjectDesc.value = ''
-  activeProjectSourceType.value = 'simulated'
   activeProjectConnectionConfig.value = null
   projectDirty.value = false
   await loadDevices()
@@ -508,7 +557,6 @@ function onNewProjectCreated(project: Project) {
   activeProjectId.value = project.id
   activeProjectName.value = project.name
   activeProjectDesc.value = project.description
-  activeProjectSourceType.value = project.source_type ?? 'simulated'
   activeProjectConnectionConfig.value = project.connection_config ?? null
 }
 
@@ -539,19 +587,16 @@ async function doSave() {
   if (!saveModalName.value.trim()) return
   saveModalLoading.value = true
   try {
-    // Save As duplicates the current project's identity too — an External
-    // BACnet project's copy should still be External BACnet with the same
-    // connection config, not silently downgrade to a blank Simulated one.
+    // Save As carries over the current project's remembered discovery
+    // connection too, so a copy doesn't silently lose it.
     const project = await api.projects.save(
       saveModalName.value.trim(),
       saveModalDesc.value.trim(),
-      activeProjectSourceType.value,
       activeProjectConnectionConfig.value,
     )
     activeProjectId.value = project.id
     activeProjectName.value = project.name
     activeProjectDesc.value = project.description
-    activeProjectSourceType.value = project.source_type ?? 'simulated'
     activeProjectConnectionConfig.value = project.connection_config ?? null
     saveModalOpen.value = false
     projectDirty.value = false
@@ -565,12 +610,11 @@ async function doSave() {
 
 async function onProjectLoaded(
   id: number, name: string, desc: string,
-  sourceType: ProjectSourceType, connectionConfig: BACnetConnectionConfig | null,
+  connectionConfig: BACnetConnectionConfig | null,
 ) {
   activeProjectId.value = id
   activeProjectName.value = name
   activeProjectDesc.value = desc
-  activeProjectSourceType.value = sourceType
   activeProjectConnectionConfig.value = connectionConfig
   projectDirty.value = false
   await loadDevices()
@@ -758,8 +802,21 @@ onUnmounted(() => {
                   </a-menu>
                 </template>
               </a-dropdown>
-              <a-button size="small" :title="hasExternalDevices ? 'Rediscover' : 'Discover Devices'" :loading="externalSyncLoading" @click="runDiscovery">
+              <a-button
+                size="small"
+                :title="hasExternalDevices ? 'Rediscover' : 'Discover Devices'"
+                :loading="quickDiscoverLoading"
+                @click="onDiscoverClick"
+              >
                 Discover
+              </a-button>
+              <a-button
+                v-if="hasRememberedConnection"
+                size="small"
+                title="Edit discovery connection"
+                @click="discoverModalOpen = true"
+              >
+                <template #icon><EditOutlined /></template>
               </a-button>
             </a-space>
           </div>
@@ -776,8 +833,7 @@ onUnmounted(() => {
           </div>
 
           <div v-if="!sidebarRawCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
-            <span v-if="externalSyncError" style="color:var(--error, #ff4d4f)">{{ externalSyncError }}</span>
-            <span v-else>Nothing here yet — use "+ Add" to create a Location, Equipment, or Controller</span>
+            Nothing here yet — use "+ Add" to create a Location, Equipment, or Controller
           </div>
           <div v-else-if="!sidebarFilteredCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
             No devices match "{{ deviceSearch }}"
@@ -828,10 +884,10 @@ onUnmounted(() => {
               </div>
 
               <!-- External BACnet device row — project-local mutations (Edit,
-                   Create Simulated Copy, Remove from Project) are allowed;
+                   Create Simulation, Remove from Project) are allowed;
                    source mutations (BACnet writes, simulation config) never
                    are, enforced backend-side regardless of this UI. -->
-              <div v-else-if="node.kind === 'device' && node.device.source_type === 'external-bacnet'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
+                  <div v-else-if="node.kind === 'device' && node.device.source_type === 'external-bacnet'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
                 <a-tooltip :title="node.device.equipment_type ? (equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type) : 'Unclassified device'">
                   <component :is="getControllerIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
                 </a-tooltip>
@@ -849,20 +905,31 @@ onUnmounted(() => {
                     </a-button>
                     <template #overlay>
                       <a-menu @click.stop>
+                        <a-menu-item-group key="move-to" title="Move to">
+                          <a-menu-item v-for="opt in moveToOptions" :key="`move-${opt.id}`" @click.stop.prevent="assignDeviceToLocation(node.device, opt.id)">
+                            <span :style="{ paddingLeft: (8 * opt.depth) + 'px' }">{{ opt.label }}</span>
+                          </a-menu-item>
+                        </a-menu-item-group>
                         <a-menu-item key="edit" @click="openEditDevice(node.device)">
                           <EditOutlined /> Edit
                         </a-menu-item>
                         <a-menu-item key="create-simulated-copy" @click="openCreateSimulatedCopy(node.device)">
-                          <CopyOutlined /> Create Simulated Copy
+                          <CopyOutlined /> Create Simulation
                         </a-menu-item>
                         <a-menu-divider />
                         <a-menu-item key="remove" danger @click="removeExternalDevice(node.device)">
-                          <DeleteOutlined /> Remove from Project
+                          <DeleteOutlined /> Remove
                         </a-menu-item>
                       </a-menu>
                     </template>
                   </a-dropdown>
                 </a-space>
+              </div>
+
+              <!-- Discovered group (frontend-only synthetic node) -->
+              <div v-else-if="node.kind === 'discovered-group'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
+                <FolderOutlined :style="[TREE_ICON_SLOT_STYLE, { color: '#faad14' }]" />
+                <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:12.5px">Unassigned ({{ node.children?.length ?? 0 }})</span>
               </div>
 
               <!-- Equipment row -->
@@ -889,7 +956,10 @@ onUnmounted(() => {
                   <component :is="getControllerIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
                 </a-tooltip>
                 <div style="flex:1;min-width:0">
-                  <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
+                  <div style="display:flex;align-items:center;gap:4px;overflow:hidden">
+                    <span style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</span>
+                    <a-tag v-if="node.device.simulation_mode === 'mirror'" color="blue" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Mirror</a-tag>
+                  </div>
                   <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-secondary)">
                     <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
                       ID {{ node.device.device_instance }}<template v-if="node.device.equipment_type"> · {{ equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type }}</template>
@@ -1019,7 +1089,7 @@ onUnmounted(() => {
       @saved="loadEquipment"
     />
 
-    <!-- Create Simulated Copy modal -->
+    <!-- Create Simulation modal -->
     <CreateSimulatedCopyModal
       v-model:open="createCopyModalOpen"
       :source-device="createCopySource"
@@ -1038,6 +1108,16 @@ onUnmounted(() => {
       v-model:open="newProjectModalOpen"
       :reset-project="resetToNewProject"
       @created="onNewProjectCreated"
+    />
+
+    <!-- Discover BACnet devices modal -->
+    <DiscoverModal
+      v-model:open="discoverModalOpen"
+      :connection-config="activeProjectConnectionConfig"
+      :active-project-id="activeProjectId"
+      :active-project-name="activeProjectName"
+      :active-project-desc="activeProjectDesc"
+      @discovered="onDiscovered"
     />
 
     <!-- Notification classes drawer -->

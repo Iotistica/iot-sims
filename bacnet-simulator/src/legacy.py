@@ -724,6 +724,22 @@ class Database:
             existing_loc_cols = {row[1] for row in conn.execute("PRAGMA table_info(locations)")}
             if "kind" not in existing_loc_cols:
                 conn.execute("ALTER TABLE locations ADD COLUMN kind TEXT")
+            # Additive migration: sort_order, used only by auto-generated
+            # Building/Level hierarchies (see generate_building_levels) so
+            # sibling display order survives a rename. NULL for every
+            # existing/manually-created location -- those keep sorting by
+            # name exactly as before (see get_locations()).
+            if "sort_order" not in existing_loc_cols:
+                conn.execute("ALTER TABLE locations ADD COLUMN sort_order INTEGER")
+            if "simulation_mode" not in existing_dev_cols:
+                conn.execute(
+                    "ALTER TABLE devices ADD COLUMN simulation_mode TEXT NOT NULL DEFAULT 'simulation' "
+                    "CHECK(simulation_mode IN ('simulation','mirror','replay'))"
+                )
+            if "source_device_id" not in existing_dev_cols:
+                conn.execute(
+                    "ALTER TABLE devices ADD COLUMN source_device_id INTEGER REFERENCES devices(id)"
+                )
 
             # Schema migration: semantic_entities gains an equipment_id FK
             # (physical equipment, see the new `equipment` table above) and
@@ -1270,7 +1286,13 @@ class Database:
 
     def get_locations(self) -> list[dict]:
         with self._conn() as conn:
-            return [dict(r) for r in conn.execute("SELECT * FROM locations ORDER BY name")]
+            # Locations with an explicit sort_order (auto-generated Building/
+            # Level hierarchies) sort by that value first; everything else
+            # (sort_order IS NULL) falls back to alphabetical-by-name, exactly
+            # as before this column existed.
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM locations ORDER BY (sort_order IS NULL), sort_order, name"
+            )]
 
     def get_location(self, location_id: int) -> Optional[dict]:
         with self._conn() as conn:
@@ -1291,6 +1313,58 @@ class Database:
             )
             conn.commit()
             return dict(conn.execute("SELECT * FROM locations WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def generate_building_levels(
+        self, building_name: str, above_ground_levels: int, below_ground_levels: int,
+    ) -> None:
+        """Called once, only from project creation (POST /profiles), when
+        the caller asked for an auto-generated Building + Level hierarchy.
+        Never called for update_project/"Save As" -- existing projects are
+        never retroactively given levels.
+
+        Everything below runs inside one connection/one commit rather than
+        looping create_location() (which opens and commits its own
+        connection per call) -- this must be all-or-nothing, not N
+        independent transactions. sync_entity_from_flat_field() and
+        everything it calls only ever operate on the connection passed to
+        them (see src/semantics/mirror.py) -- no nested connection/commit --
+        so this is genuinely one atomic transaction, not just shaped like one.
+        """
+        if above_ground_levels <= 0 and below_ground_levels <= 0:
+            return
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO locations (name, parent_location_id, description, kind) VALUES (?,?,?,?)",
+                (building_name, None, "", "Building"),
+            )
+            building_id = cur.lastrowid
+            sync_entity_from_flat_field(
+                conn, entity_kind="location", name=building_name, brick_class="Building", location_id=building_id,
+            )
+
+            # Deepest basement first, then up to L1 -- see sort_order's own
+            # comment for why this can't just be alphabetical-by-name.
+            for i in range(below_ground_levels, 0, -1):
+                level_name = f"B{i}"
+                cur = conn.execute(
+                    "INSERT INTO locations (name, parent_location_id, description, kind, sort_order) VALUES (?,?,?,?,?)",
+                    (level_name, building_id, "", "Floor", -i),
+                )
+                sync_entity_from_flat_field(
+                    conn, entity_kind="location", name=level_name, brick_class="Floor", location_id=cur.lastrowid,
+                )
+
+            for i in range(1, above_ground_levels + 1):
+                level_name = f"L{i}"
+                cur = conn.execute(
+                    "INSERT INTO locations (name, parent_location_id, description, kind, sort_order) VALUES (?,?,?,?,?)",
+                    (level_name, building_id, "", "Floor", i),
+                )
+                sync_entity_from_flat_field(
+                    conn, entity_kind="location", name=level_name, brick_class="Floor", location_id=cur.lastrowid,
+                )
+
+            conn.commit()
 
     def update_location(self, location_id: int, name: str, parent_location_id: Optional[int], description: str, kind: Optional[str] = None) -> Optional[dict]:
         with self._conn() as conn:
@@ -1879,15 +1953,19 @@ class Database:
             cur = conn.execute(
                 "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
                 "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, "
-                "location_id, equipment_type, can_receive_event_notifications) "
+                "location_id, equipment_type, can_receive_event_notifications, "
+                "simulation_mode, source_device_id) "
                 "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
                 ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, "
-                ":location_id, :equipment_type, :can_receive_event_notifications)",
+                ":location_id, :equipment_type, :can_receive_event_notifications, "
+                ":simulation_mode, :source_device_id)",
                 {
                     **data,
                     "location_id": data.get("location_id"),
                     "equipment_type": data.get("equipment_type"),
                     "can_receive_event_notifications": data.get("can_receive_event_notifications"),
+                    "simulation_mode": data.get("simulation_mode", "simulation"),
+                    "source_device_id": data.get("source_device_id"),
                 },
             )
             sync_entity_from_flat_field(
@@ -1902,6 +1980,16 @@ class Database:
 
     def update_device(self, device_id: int, data: dict) -> Optional[dict]:
         with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT simulation_mode, source_device_id FROM devices WHERE id=?", (device_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            # None from DeviceUpdate means "caller did not send this field" -- preserve
+            # the stored value rather than resetting to a schema default.
+            sim_mode = data.get("simulation_mode") if data.get("simulation_mode") is not None else existing["simulation_mode"]
+            # source_device_id is provenance set at creation; always preserve existing.
+            src_dev_id = existing["source_device_id"]
             conn.execute(
                 "UPDATE devices SET device_instance=:device_instance, name=:name, "
                 "description=:description, vendor_name=:vendor_name, model_name=:model_name, "
@@ -1909,12 +1997,15 @@ class Database:
                 "max_apdu_length_accepted=:max_apdu_length_accepted, "
                 "segmentation_supported=:segmentation_supported, location_id=:location_id, "
                 "equipment_type=:equipment_type, "
-                "can_receive_event_notifications=:can_receive_event_notifications WHERE id=:id",
+                "can_receive_event_notifications=:can_receive_event_notifications, "
+                "simulation_mode=:simulation_mode, source_device_id=:source_device_id WHERE id=:id",
                 {
                     **data,
                     "location_id": data.get("location_id"),
                     "equipment_type": data.get("equipment_type"),
                     "can_receive_event_notifications": data.get("can_receive_event_notifications"),
+                    "simulation_mode": sim_mode,
+                    "source_device_id": src_dev_id,
                     "id": device_id,
                 },
             )
@@ -3127,7 +3218,6 @@ class Database:
         self,
         name: str,
         description: str,
-        source_type: str = "simulated",
         connection_config: Optional[dict] = None,
     ) -> dict:
         with self._conn() as conn:
@@ -3169,7 +3259,6 @@ class Database:
                 "semantic_relationships": semantic_relationships,
                 "energy_model_configs": energy_model_configs,
                 "functional_tests": functional_tests,
-                "source_type": source_type,
                 "connection_config": connection_config,
             })
             cur = conn.execute(
@@ -3181,21 +3270,28 @@ class Database:
                 "SELECT id, name, description, created_at, device_count FROM profiles WHERE id=?",
                 (cur.lastrowid,),
             ).fetchone())
-            row["source_type"] = source_type
             row["connection_config"] = connection_config
             return row
 
-    def update_project(self, project_id: int, name: str, description: str) -> bool:
+    def update_project(
+        self,
+        project_id: int,
+        name: str,
+        description: str,
+        connection_config: Optional[dict] = None,
+    ) -> bool:
         with self._conn() as conn:
-            # source_type/connection_config aren't part of live device/location
-            # state -- they only exist in this row's own stored data blob, so
-            # they must be read back and re-embedded rather than dropped.
+            # connection_config isn't part of live device/location state --
+            # it only exists in this row's own stored data blob. A None here
+            # means "leave it as-is", so fall back to whatever is already
+            # stored rather than dropping it; a given value overwrites it
+            # (used by the Discover modal's "Remember connection" option).
             existing = conn.execute(
                 "SELECT data FROM profiles WHERE id=?", (project_id,)
             ).fetchone()
             existing_payload = json.loads(existing["data"]) if existing else {}
-            source_type = existing_payload.get("source_type", "simulated")
-            connection_config = existing_payload.get("connection_config")
+            if connection_config is None:
+                connection_config = existing_payload.get("connection_config")
 
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             equipment = [dict(r) for r in conn.execute("SELECT * FROM equipment")]
@@ -3222,7 +3318,6 @@ class Database:
                 "semantic_relationships": semantic_relationships,
                 "energy_model_configs": energy_model_configs,
                 "functional_tests": functional_tests,
-                "source_type": source_type,
                 "connection_config": connection_config,
             })
             cur = conn.execute(
@@ -3288,8 +3383,8 @@ class Database:
                     old_parent = loc.get("parent_location_id")
                     if old_parent is None or old_parent in location_id_map:
                         cur = conn.execute(
-                            "INSERT INTO locations (name, parent_location_id, description, kind) VALUES (?,?,?,?)",
-                            (loc["name"], location_id_map.get(old_parent) if old_parent is not None else None, loc.get("description", ""), loc.get("kind")),
+                            "INSERT INTO locations (name, parent_location_id, description, kind, sort_order) VALUES (?,?,?,?,?)",
+                            (loc["name"], location_id_map.get(old_parent) if old_parent is not None else None, loc.get("description", ""), loc.get("kind"), loc.get("sort_order")),
                         )
                         location_id_map[old_id] = cur.lastrowid
                         progressed = True
@@ -3312,6 +3407,8 @@ class Database:
             # belong to.
             dev_id_map: dict[int, int] = {}
             global_obj_id_map: dict[int, int] = {}
+            # Deferred remap: source_device_id FK references IDs that change on load.
+            source_device_remap: dict[int, list[int]] = {}
 
             for dev in payload.get("devices", []):
                 objects = dev.pop("objects", [])
@@ -3324,11 +3421,11 @@ class Database:
                     "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
                     "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, "
                     "location_id, equipment_type, source_type, external_host, external_port, "
-                    "external_vendor_id, external_last_seen_at) "
+                    "external_vendor_id, external_last_seen_at, simulation_mode) "
                     "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
                     ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, "
                     ":location_id, :equipment_type, :source_type, :external_host, :external_port, "
-                    ":external_vendor_id, :external_last_seen_at)",
+                    ":external_vendor_id, :external_last_seen_at, :simulation_mode)",
                     {
                         **dev,
                         "firmware_revision": dev.get("firmware_revision") or "N/A",
@@ -3348,11 +3445,15 @@ class Database:
                         "external_port": dev.get("external_port"),
                         "external_vendor_id": dev.get("external_vendor_id"),
                         "external_last_seen_at": dev.get("external_last_seen_at"),
+                        "simulation_mode": dev.get("simulation_mode") or "simulation",
                     },
                 )
                 dev_id = cur.lastrowid
                 if old_dev_id is not None:
                     dev_id_map[old_dev_id] = dev_id
+                old_src_dev_id = dev.get("source_device_id")
+                if old_src_dev_id is not None:
+                    source_device_remap.setdefault(old_src_dev_id, []).append(dev_id)
                 obj_lookup: dict[tuple[str, int], int] = {}
                 for obj in objects:
                     old_obj_id = obj.pop("id", None)
@@ -3455,6 +3556,16 @@ class Database:
                             "enabled": cal.get("enabled", 1),
                         },
                     )
+
+            # Remap source_device_id now that all devices have new IDs.
+            for old_src_id, new_mirror_ids in source_device_remap.items():
+                new_src_id = dev_id_map.get(old_src_id)
+                if new_src_id is not None:
+                    for mid in new_mirror_ids:
+                        conn.execute(
+                            "UPDATE devices SET source_device_id=? WHERE id=?",
+                            (new_src_id, mid),
+                        )
 
             # Equipment references a location only -- location_id_map is
             # already fully populated by the locations restore above.
@@ -3573,7 +3684,6 @@ class Database:
 
             conn.commit()
             return {
-                "source_type": payload.get("source_type", "simulated"),
                 "connection_config": payload.get("connection_config"),
             }
 
@@ -3745,6 +3855,7 @@ def _is_public_path(path: str) -> bool:
 # ─── Behaviors ────────────────────────────────────────────────────────────────
 
 TICK_SECONDS = 5.0  # cadence of the engine tick loop; see tick_loop()/tick()
+MIRROR_POLL_SECONDS = 3.0  # cadence of mirror_sync_loop; matches frontend 3 s external-device poll
 OBJECT_HISTORY_MAXLEN = 720  # per-object value-history ring buffer length; see tick()
 
 @dataclass
@@ -4621,6 +4732,8 @@ class SimEngine:
         # event_enrollment DB id → algorithmic-reporting runtime state (same
         # not-persisted simplification as _alarm_runtime above)
         self._enrollment_runtime: dict[int, alarms.AlarmRuntime] = {}
+        # Mirror propagation: obj DB id -> last normalized value injected by mirror_sync_loop
+        self._mirror_values: dict[int, Any] = {}
         # trend_log DB id → last value actually recorded, for COV-triggered
         # logging (not persisted — same simplification as the above)
         self._trend_log_last_value: dict[int, Any] = {}
@@ -5132,6 +5245,23 @@ class SimEngine:
             dev = dev_map.get(obj_row["device_id"])
             if not dev:
                 continue
+            if dev.get("simulation_mode", "simulation") == "mirror":
+                # Behaviors stay stored but inactive; mirror_sync_loop drives the value.
+                mirror_val = self._mirror_values.get(obj_id)
+                if mirror_val is not None:
+                    did = dev["device_instance"]
+                    if did not in snapshot:
+                        snapshot[did] = {"device_instance": did, "name": dev["name"], "objects": []}
+                    snapshot[did]["objects"].append({
+                        "id": obj_id,
+                        "name": obj_row["name"],
+                        "object_type": obj_row["object_type"],
+                        "object_instance": obj_row["object_instance"],
+                        "value": mirror_val,
+                        "units": obj_row.get("units", ""),
+                        "behavior": obj_row["behavior"],
+                    })
+                continue
             # Rebuild behavior if it changed, carrying stateful internals across ticks
             new_b = make_behavior(obj_row["behavior"], obj_row["behavior_params"], obj_row.get("manual_value"))
             if isinstance(new_b, ManualBehavior) and isinstance(behavior, ManualBehavior):
@@ -5199,6 +5329,30 @@ class SimEngine:
                 cal_bacnet_obj.presentValue = Boolean(bacnet_calendar.today_in_date_list(entries))
             except Exception:
                 log.exception("Failed to refresh calendar %r presentValue", cal_row.get("name"))
+
+    async def inject_mirror_values(
+        self,
+        device_id: int,
+        values: dict[tuple[str, int], Any],
+        objects: list[dict],
+    ) -> None:
+        """Propagate external present-values into a Mirror simulated device.
+        Called only by mirror_sync_loop -- never from the HTTP layer."""
+        for obj in objects:
+            key = (obj["object_type"], obj["object_instance"])
+            if key not in values:
+                continue
+            val = values[key]
+            if val is None:
+                continue  # BACnet read failed for this object
+            obj_id = obj["id"]
+            entry = self._objects.get(obj_id)
+            if not entry:
+                continue
+            bacnet_obj, _ = entry
+            normalized = normalize_present_value(obj["object_type"], val)
+            self._update_value(bacnet_obj, obj["object_type"], normalized)
+            self._mirror_values[obj_id] = normalized
 
     async def _evaluate_alarm(
         self, obj_id: int, obj_row: dict, dev: dict, val: Any, cfg: dict, notification_classes: dict[int, dict],
@@ -6174,6 +6328,77 @@ async def tick_loop(fault_detection_engine: FaultDetectionEngine | None,
             log.error("Tick error: %s", e)
 
 
+async def mirror_sync_loop() -> None:
+    """Reads present-values from source external devices and propagates them
+    into all linked Mirror simulated devices every MIRROR_POLL_SECONDS.
+    Groups reads by source device so each physical device is polled once per
+    cycle regardless of how many Mirror copies reference it."""
+    # Deferred to avoid circular import: routers import from legacy.py at
+    # module level; legacy.py must not import from routers at module level.
+    from .api.routers.discovery import _discovery_session  # noqa: PLC0415
+    while True:
+        await asyncio.sleep(MIRROR_POLL_SECONDS)
+        try:
+            await _mirror_sync_once(engine, _discovery_session)
+        except Exception as exc:
+            log.error("Mirror sync error: %s", exc)
+
+
+async def _mirror_sync_once(sim_engine: SimEngine, discovery_session_ctx: Any) -> None:
+    devices = await asyncio.to_thread(sim_engine.db.get_devices)
+    dev_map = {d["id"]: d for d in devices}
+    mirror_devices = [
+        d for d in devices
+        if d.get("simulation_mode") == "mirror"
+        and d.get("source_device_id") is not None
+        and d.get("source_type", "simulated") == "simulated"
+        and d.get("enabled")
+    ]
+    if not mirror_devices:
+        return
+
+    # Group by source device to issue one BACnet read per unique source.
+    from collections import defaultdict  # noqa: PLC0415
+    source_to_mirrors: dict[int, list[dict]] = defaultdict(list)
+    for m in mirror_devices:
+        source_to_mirrors[m["source_device_id"]].append(m)
+
+    for src_dev_id, linked_mirrors in source_to_mirrors.items():
+        src_dev = dev_map.get(src_dev_id)
+        if not src_dev or src_dev.get("source_type") != "external-bacnet":
+            continue
+        host = src_dev.get("external_host")
+        if not host:
+            continue
+
+        # Collect the union of all object (type, instance) pairs across
+        # all linked mirrors; they should be identical (all are copies of
+        # the same source) but reading the union is safe and defensive.
+        mirrors_with_objects: list[tuple[dict, list[dict]]] = []
+        all_points: set[tuple[str, int]] = set()
+        for mirror_dev in linked_mirrors:
+            objs = await asyncio.to_thread(sim_engine.db.get_objects, mirror_dev["id"])
+            if objs:
+                mirrors_with_objects.append((mirror_dev, objs))
+                all_points.update((o["object_type"], o["object_instance"]) for o in objs)
+        if not all_points:
+            continue
+
+        try:
+            async with discovery_session_ctx() as discovery:
+                values = await discovery.read_present_values(
+                    host,
+                    src_dev["device_instance"],
+                    list(all_points),
+                )
+        except Exception:
+            # Source unavailable -- retain last _mirror_values; no behaviors start.
+            continue
+
+        for mirror_dev, mirror_objects in mirrors_with_objects:
+            await sim_engine.inject_mirror_values(mirror_dev["id"], values, mirror_objects)
+
+
 async def metrics_loop() -> None:
     # Deliberately independent of TICK_SECONDS/tick_loop — device-value
     # simulation and analytics refresh are different concerns with different
@@ -6263,11 +6488,13 @@ async def lifespan(app: FastAPI):
     _apply_settings_live(await asyncio.to_thread(db.get_settings))
     await engine.start()
     tick_task = asyncio.create_task(tick_loop(fault_detection_engine,energy_engine))
+    mirror_task = asyncio.create_task(mirror_sync_loop())
     metrics_task = asyncio.create_task(metrics_loop())
     log.info("BACnet Simulator API ready on port %d", SIM_API_PORT)
     yield
     log.info("Shutting down")
     tick_task.cancel()
+    mirror_task.cancel()
     metrics_task.cancel()
     try:
         await tick_task

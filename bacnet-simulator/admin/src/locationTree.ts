@@ -32,3 +32,13 @@ export function buildLocationTreeOptions(locations: Location[], excludeSubtreeOf
     }))
   return build(null)
 }
+
+export interface FlattenedLocation { id: number; label: string; depth: number }
+
+export function flattenLocationTree(nodes: LocationTreeNode[], out: FlattenedLocation[] = [], depth = 0): FlattenedLocation[] {
+  for (const n of nodes) {
+    out.push({ id: n.value, label: n.title, depth })
+    if (n.children && n.children.length) flattenLocationTree(n.children, out, depth + 1)
+  }
+  return out
+}
