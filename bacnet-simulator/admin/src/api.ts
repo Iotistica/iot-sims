@@ -74,6 +74,8 @@ const NON_CONFIG_MUTATION = [
   // Selected step, which goes through the ordinary device/object PUT
   // routes above, actually changes anything.
   /\/semantic-suggestions(\/points\/\d+\/ai)?$/,
+  /\/simulation\/models\/\d+\/reload$/,
+  /\/simulation\/models\/reconcile$/,
 ]
 
 const CONFIG_PATH_PREFIXES = [
@@ -87,6 +89,7 @@ const CONFIG_PATH_PREFIXES = [
   /^\/schedules(\/|$)/,
   /^\/calendars(\/|$)/,
   /^\/event-enrollments(\/|$)/,
+  /^\/simulation\/models(\/|$)/,
 ]
 
 function markDirtyIfConfigMutation(path: string, method: string | undefined): void {
@@ -154,6 +157,97 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+
+export type SimulationProviderType =
+  | 'builtin'
+  | 'system'
+  | 'fmu'
+  | 'learned'
+
+export interface SimulationProviderCatalogEntry {
+  provider_type: SimulationProviderType
+  label: string
+  available: boolean
+  persistent_model_required: boolean
+  description: string
+}
+
+export interface SimulationModelParameterDefinition {
+  name: string
+  label: string
+  type: string
+  default?: unknown
+  unit?: string | null
+  required?: boolean
+  advanced?: boolean
+  minimum?: number | null
+  maximum?: number | null
+}
+
+export interface SimulationModelVariableDefinition {
+  name: string
+  label: string
+  direction: 'input' | 'output'
+  unit?: string | null
+  required?: boolean
+  suggested_point_types?: string[]
+}
+
+export interface SimulationModelCatalogEntry {
+  model_type: string
+  label: string
+  provider_type: Exclude<SimulationProviderType, 'builtin'>
+  description: string
+  parameters: SimulationModelParameterDefinition[]
+  inputs: SimulationModelVariableDefinition[]
+  outputs: SimulationModelVariableDefinition[]
+}
+
+export interface SimulationModelMapping {
+  id?: number
+  model_config_id?: number
+  variable: string
+  direction: 'input' | 'output'
+  point_id: number
+  device_id?: number
+  device_name?: string
+  point_name?: string
+  object_type?: string
+  object_instance?: number
+  units?: string
+  point_type?: string | null
+}
+
+export interface SimulationModelConfig {
+  id: number
+  name: string
+  provider_type: Exclude<SimulationProviderType, 'builtin'>
+  model_type: string
+  enabled: boolean
+  parameters: Record<string, unknown>
+  created_from_device_id: number | null
+  mappings: SimulationModelMapping[]
+  runtime_id?: string
+  runtime?: unknown
+}
+
+export interface SimulationModelPayload {
+  name: string
+  provider_type: Exclude<SimulationProviderType, 'builtin'>
+  model_type: string
+  enabled: boolean
+  parameters: Record<string, unknown>
+  created_from_device_id?: number | null
+  mappings: Array<Pick<SimulationModelMapping, 'variable' | 'direction' | 'point_id'>>
+}
+
+export interface SimulationModelPointOption {
+  id: number
+  name: string
+  device_id: number
+  device_name?: string
+}
+
 export const api = {
   health: () => req<Health>('/health'),
   meta:   () => req<Meta>('/meta'),
@@ -181,6 +275,34 @@ export const api = {
     start: () => req<{ sim_state: Health['sim_state'] }>('/sim/start', { method: 'POST' }),
     pause: () => req<{ sim_state: Health['sim_state'] }>('/sim/pause', { method: 'POST' }),
     stop:  () => req<{ sim_state: Health['sim_state']; elapsed_seconds: number }>('/sim/stop', { method: 'POST' }),
+  },
+
+  simulationProviders: {
+    catalog: () =>
+      req<SimulationProviderCatalogEntry[]>('/simulation/providers/catalog'),
+
+    runtime: () =>
+      req<Record<string, unknown>>('/simulation/providers/runtime'),
+  },
+
+  simulationModels: {
+    catalog: () => req<SimulationModelCatalogEntry[]>('/simulation/models/catalog'),
+    list: (createdFromDeviceId?: number) => {
+      const q = createdFromDeviceId != null
+        ? `?created_from_device_id=${encodeURIComponent(createdFromDeviceId)}`
+        : ''
+      return req<SimulationModelConfig[]>(`/simulation/models${q}`)
+    },
+    create: (body: SimulationModelPayload) => req<SimulationModelConfig>('/simulation/models', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+    update: (id: number, body: SimulationModelPayload) => req<SimulationModelConfig>(`/simulation/models/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+    del: (id: number) => req<{ ok: boolean; model_id: number; runtime_id: string }>(`/simulation/models/${id}`, { method: 'DELETE' }),
+    pointOptions: () => req<SimulationModelPointOption[]>('/simulation/points/options'),
   },
 
   settings: {

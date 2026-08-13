@@ -221,8 +221,9 @@ function addScheduleBlock() {
   if (!Array.isArray(params.value.blocks)) params.value.blocks = []
   params.value = { ...params.value, blocks: [...params.value.blocks, { start: '12:00', value: 0 }] }
 }
-function removeScheduleBlock(i: number) {
-  params.value = { ...params.value, blocks: params.value.blocks.filter((_: any, idx: number) => idx !== i) }
+function removeScheduleBlock(i: number | string) {
+  const removeIndex = Number(i)
+  params.value = { ...params.value, blocks: params.value.blocks.filter((_: any, idx: number) => idx !== removeIndex) }
 }
 function onFaultBaseChange() {
   const defaults: Record<string, any> = {
@@ -504,7 +505,7 @@ function doDelete() {
           >
             <a-input v-model:value="block.start" placeholder="HH:MM" style="width:86px;font-family:monospace" />
             <a-input-number v-model:value="block.value" :step="0.5" style="flex:1" placeholder="Value" />
-            <a-button type="text" size="small" danger @click="removeScheduleBlock(i)">
+            <a-button type="text" size="small" danger @click="removeScheduleBlock(Number(i))">
               <template #icon><MinusCircleOutlined /></template>
             </a-button>
           </div>

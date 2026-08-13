@@ -3,6 +3,7 @@ import { ref, reactive, computed, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
+import type { SimulationProviderCatalogEntry, SimulationProviderType } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
 import { nextFreeInstance } from '../deviceInstance'
 import type { Device, Meta, Location, Equipment } from '../types'
@@ -72,6 +73,121 @@ const equipmentOptionGroups = computed(() => {
   if (elsewhere.length) groups.push({ label: 'Other equipment', options: elsewhere.map(toOption) })
   return groups
 })
+
+
+// ── Simulation provider -------------------------------------------------------
+// Built-in is the fallback/default provider. A controller does not persist a
+// single provider field because explicit System/FMU/Learned models may map
+// points across multiple controllers. This selector exposes the available
+// provider families and reflects enabled models created from this controller.
+// Choosing a non-built-in provider is the starting context for Add Model; point
+// ownership does not change until a model is actually configured/mapped.
+const simulationProviders = ref<SimulationProviderCatalogEntry[]>([])
+const simulationProvidersLoading = ref(false)
+const simulationProviderType = ref<SimulationProviderType>('builtin')
+const activeProviderTypesForController = ref<SimulationProviderType[]>([])
+
+const simulationProviderOptions = computed(() =>
+  simulationProviders.value.map(provider => ({
+    value: provider.provider_type,
+    label: provider.label,
+    disabled: !provider.available || (
+      provider.provider_type !== 'builtin'
+      && provider.persistent_model_required
+      && !activeProviderTypesForController.value.includes(provider.provider_type)
+    ),
+  }))
+)
+
+const selectedSimulationProvider = computed(() =>
+  simulationProviders.value.find(
+    provider => provider.provider_type === simulationProviderType.value,
+  )
+)
+
+async function loadSimulationProviderState() {
+  simulationProvidersLoading.value = true
+
+  try {
+    const catalog = await api.simulationProviders.catalog()
+
+    // Defensive fallback keeps the Controller drawer usable against an older
+    // backend while the API/router rollout is being completed.
+    simulationProviders.value = catalog.length
+      ? catalog
+      : [{
+          provider_type: 'builtin',
+          label: 'Built-in',
+          available: true,
+          persistent_model_required: false,
+          description: 'Default per-point behavior provider.',
+        }]
+
+    simulationProviderType.value = 'builtin'
+    activeProviderTypesForController.value = []
+
+    if (!props.draftMode && props.device) {
+      const models = await api.simulationModels.list(props.device.id)
+
+      const activeProviderTypes = [
+        ...new Set(
+          models
+            .filter(model => model.enabled)
+            .map(model => model.provider_type),
+        ),
+      ]
+
+          activeProviderTypesForController.value = activeProviderTypes
+
+      // Today Add Model normally creates one provider family from the
+      // controller context. If several exist, leave the selector on Built-in
+      // rather than pretending the controller itself has one owner.
+      if (activeProviderTypes.length === 1) {
+        simulationProviderType.value = activeProviderTypes[0]
+      }
+    }
+  } catch {
+    simulationProviders.value = [{
+      provider_type: 'builtin',
+      label: 'Built-in',
+      available: true,
+      persistent_model_required: false,
+      description: 'Default per-point behavior provider.',
+    }]
+    simulationProviderType.value = 'builtin'
+  } finally {
+    simulationProvidersLoading.value = false
+  }
+}
+
+function onSimulationProviderChange(value: SimulationProviderType) {
+  const selected = simulationProviders.value.find(
+    item => item.provider_type === value,
+  )
+  if (
+    !selected
+    || !selected.available
+    || (
+      selected.provider_type !== 'builtin'
+      && selected.persistent_model_required
+      && !activeProviderTypesForController.value.includes(selected.provider_type)
+    )
+  ) {
+    return
+  }
+
+  simulationProviderType.value = value
+
+  if (value !== 'builtin') {
+    const provider = selected
+
+    if (provider?.available) {
+      message.info(
+        `${provider.label} selected. Add/configure a model to map points and activate this provider.`,
+      )
+    }
+  }
+}
 
 // External devices: "read-only toward the physical device" means
 // device_instance/vendor/model/BACnet-info/Enabled stay locked (they mirror
@@ -239,6 +355,7 @@ watch(() => props.open, (v) => {
   if (!v) return
   loadVendors()
   loadControls()
+  loadSimulationProviderState()
   edeFile.value = null
   edeFileName.value = ''
   const src = props.draftMode ? props.draftDevice : props.device
@@ -453,6 +570,32 @@ function doDelete() {
         />
       </a-form-item>
 
+
+      <a-form-item
+        v-if="!isExternal"
+        label="Simulation Provider"
+      >
+        <a-select
+          :value="simulationProviderType"
+          :loading="simulationProvidersLoading"
+          :options="simulationProviderOptions"
+          placeholder="Built-in"
+          @change="onSimulationProviderChange"
+        />
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+          {{
+            selectedSimulationProvider?.description
+            ?? 'Built-in point behaviors are used unless an explicit model owns a point.'
+          }}
+        </div>
+        <div
+          v-if="simulationProviderType !== 'builtin'"
+          style="font-size:11px;color:var(--text-muted);margin-top:2px"
+        >
+          Configure an Add Model mapping to activate it.
+        </div>
+      </a-form-item>
+
       <a-form-item label="Event Notification Reception">
         <a-select
           v-model:value="form.can_receive_event_notifications"
@@ -583,7 +726,7 @@ function doDelete() {
         <a-button v-if="device && !draftMode" danger :loading="deleting" @click="doDelete">
           {{ isExternal ? 'Remove' : 'Delete' }}
         </a-button>
-        <div v-else />
+        <div v-else></div>
         <a-space>
           <a-button @click="emit('update:open', false)">Cancel</a-button>
           <a-button type="primary" :loading="loading" @click="save">

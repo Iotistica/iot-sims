@@ -11,6 +11,7 @@ import DiscoverModal from './components/DiscoverModal.vue'
 import ObjectsPanel from './components/ObjectsPanel.vue'
 import CreateSimulatedCopyModal from './components/CreateSimulatedCopyModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
+import LeftSideView from './components/LeftSideView.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
 import LoginView from './components/LoginView.vue'
 import AnalyticsDashboard from './components/AnalyticsDashboard.vue'
@@ -26,6 +27,7 @@ import TrendLogDrawer from './components/TrendLogDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
 import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
+import SimulationModelModal from './components/SimulationModelDrawer.vue'
 
 import type { Device, Meta, Health, Location, Equipment, Project, BACnetConnectionConfig } from './types'
 import { api, projectDirty } from './api'
@@ -478,6 +480,13 @@ function openEnergyModel(d: Device) {
   energyModelDrawerOpen.value = true
 }
 
+const simulationModelModalOpen = ref(false)
+const simulationModelDevice = ref<Device | null>(null)
+function openSimulationModel(d: Device) {
+  simulationModelDevice.value = d
+  simulationModelModalOpen.value = true
+}
+
 const packetCaptureDeviceFilter = ref<number | null>(null)
 function viewTraffic(d: Device) {
   packetCaptureDeviceFilter.value = d.id
@@ -700,7 +709,6 @@ onUnmounted(() => {
         <IotisticaLogo :size="24" />
         <span style="color:rgba(255,255,255,0.85);font-size:15px;font-weight:600;letter-spacing:.3px">Iotistica</span>
         <span style="color:rgba(255,255,255,0.25);font-size:13px;font-weight:400">BACnet Simulator</span>
-        
 
         <div style="display:flex;align-items:center;gap:2px;margin-left:12px;padding-left:12px;padding-right:12px; border-left:1px solid rgba(255,255,255,0.08);border-right:1px solid rgba(255,255,255,0.08)">
           <a-tooltip title="Start simulation clock">
@@ -743,7 +751,7 @@ onUnmounted(() => {
           <a-radio-button value="tests"><ExperimentOutlined /> Tests</a-radio-button>
         </a-radio-group>
 
-        <div style="flex:1" />
+        <div style="flex:1"></div>
         <a-tag v-if="activeProjectName" color="blue" style="margin:0;font-size:11px;cursor:default">{{ activeProjectName }}</a-tag>
         <a-button size="small" @click="onNewProjectClick">
           <template #icon><FileAddOutlined /></template>
@@ -777,250 +785,45 @@ onUnmounted(() => {
       <UtilitiesDashboard v-else-if="activeView === 'utility'" />
       <SemanticPanel v-else-if="activeView === 'semantic'" />
       <FunctionalTestsView v-else-if="activeView === 'tests'" />
-
-
       <a-layout v-else>
-
-        <!-- Sidebar: devices -->
-        <a-layout-sider :width="320" style="background:var(--surface);border-right:1px solid var(--border);overflow:auto">
-          <div style="padding:10px 12px 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-            <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Items ({{ sidebarRawCount }})</span>
-            <a-space :size="4">
-              <a-dropdown :trigger="['click']">
-                <a-button size="small" type="primary">+ Add</a-button>
-                <template #overlay>
-                  <a-menu>
-                    <a-menu-item key="location" @click="openAddLocation()">
-                      <FolderAddOutlined /> Location
-                    </a-menu-item>
-                    <a-menu-item key="equipment" @click="openAddEquipment()">
-                      <DeploymentUnitOutlined /> Equipment
-                    </a-menu-item>
-                    <a-menu-item key="controller" @click="openAddDevice()">
-                      <ApiOutlined /> Controller
-                    </a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
-              <a-button
-                size="small"
-                :title="hasExternalDevices ? 'Rediscover' : 'Discover Devices'"
-                :loading="quickDiscoverLoading"
-                @click="onDiscoverClick"
-              >
-                Discover
-              </a-button>
-              <a-button
-                v-if="hasRememberedConnection"
-                size="small"
-                title="Edit discovery connection"
-                @click="discoverModalOpen = true"
-              >
-                <template #icon><EditOutlined /></template>
-              </a-button>
-            </a-space>
-          </div>
-
-          <div v-if="sidebarRawCount" style="padding:8px 12px;border-bottom:1px solid var(--border)">
-            <a-input
-              v-model:value="deviceSearch"
-              size="small"
-              allow-clear
-              placeholder="Search…"
-            >
-              <template #prefix><SearchOutlined style="color:var(--text-placeholder)" /></template>
-            </a-input>
-          </div>
-
-          <div v-if="!sidebarRawCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
-            Nothing here yet — use "+ Add" to create a Location, Equipment, or Controller
-          </div>
-          <div v-else-if="!sidebarFilteredCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
-            No devices match "{{ deviceSearch }}"
-          </div>
-
-          <a-tree
-            v-else
-            v-model:expanded-keys="expandedKeys"
-            :tree-data="sidebarTree"
-            :selected-keys="selectedDevice ? [`device-${selectedDevice.id}`] : selectedEquipment ? [`equipment-${selectedEquipment.id}`] : []"
-            :field-names="{ children: 'children', title: 'key', key: 'key' }"
-            block-node
-            style="padding:6px 4px"
-            @select="onTreeSelect"
-          >
-            <template #title="node">
-              <!-- Location row -->
-              <div v-if="node.kind === 'location'" style="display:flex;align-items:center;gap:6px;padding:2px 0">
-                <a-tooltip :title="node.location.kind ? (locationKindLabel[node.location.kind] ?? node.location.kind) : 'Unclassified'">
-                  <component :is="getLocationIcon(node.location.kind)" :style="[TREE_ICON_SLOT_STYLE, { color: '#1890ff' }]" />
-                </a-tooltip>
-                <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:12.5px">
-                  {{ node.location.name }}
-                </span>
-                <a-space :size="0" @click.stop>
-                  <a-button type="text" size="small" title="Edit" @click="openEditLocation(node.location)">
-                    <template #icon><EditOutlined /></template>
-                  </a-button>
-                  <a-dropdown :trigger="['click']">
-                    <a-button type="text" size="small" title="Add">
-                      <template #icon><PlusOutlined /></template>
-                    </a-button>
-                    <template #overlay>
-                      <a-menu>
-                        <a-menu-item key="location" @click="openAddLocation(node.location.id)">
-                          <FolderAddOutlined /> Location
-                        </a-menu-item>
-                        <a-menu-item key="equipment" @click="openAddEquipment(node.location.id)">
-                          <DeploymentUnitOutlined /> Equipment
-                        </a-menu-item>
-                        <a-menu-item key="controller" @click="openAddDevice(node.location.id)">
-                          <ApiOutlined /> Controller
-                        </a-menu-item>
-                      </a-menu>
-                    </template>
-                  </a-dropdown>
-                </a-space>
-              </div>
-
-              <!-- External BACnet device row — project-local mutations (Edit,
-                   Create Simulation, Remove from Project) are allowed;
-                   source mutations (BACnet writes, simulation config) never
-                   are, enforced backend-side regardless of this UI. -->
-                  <div v-else-if="node.kind === 'device' && node.device.source_type === 'external-bacnet'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
-                <a-tooltip :title="node.device.equipment_type ? (equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type) : 'Unclassified device'">
-                  <component :is="getControllerIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
-                </a-tooltip>
-                <div style="flex:1;min-width:0">
-                  <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
-                  <div style="font-size:11px;color:var(--text-secondary)">
-                    ID {{ node.device.device_instance }}
-                  </div>
-                </div>
-                <a-tag color="default" style="font-size:10px;margin:0;line-height:16px">External</a-tag>
-                <a-space :size="2" @click.stop>
-                  <a-dropdown :trigger="['click']">
-                    <a-button type="text" size="small" title="More">
-                      <template #icon><EllipsisOutlined /></template>
-                    </a-button>
-                    <template #overlay>
-                      <a-menu @click.stop>
-                        <a-menu-item-group key="move-to" title="Move to">
-                          <a-menu-item v-for="opt in moveToOptions" :key="`move-${opt.id}`" @click.stop.prevent="assignDeviceToLocation(node.device, opt.id)">
-                            <span :style="{ paddingLeft: (8 * opt.depth) + 'px' }">{{ opt.label }}</span>
-                          </a-menu-item>
-                        </a-menu-item-group>
-                        <a-menu-item key="edit" @click="openEditDevice(node.device)">
-                          <EditOutlined /> Edit
-                        </a-menu-item>
-                        <a-menu-item key="create-simulated-copy" @click="openCreateSimulatedCopy(node.device)">
-                          <CopyOutlined /> Create Simulation
-                        </a-menu-item>
-                        <a-menu-divider />
-                        <a-menu-item key="remove" danger @click="removeExternalDevice(node.device)">
-                          <DeleteOutlined /> Remove
-                        </a-menu-item>
-                      </a-menu>
-                    </template>
-                  </a-dropdown>
-                </a-space>
-              </div>
-
-              <!-- Discovered group (frontend-only synthetic node) -->
-              <div v-else-if="node.kind === 'discovered-group'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
-                <FolderOutlined :style="[TREE_ICON_SLOT_STYLE, { color: '#faad14' }]" />
-                <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:12.5px">Unassigned ({{ node.children?.length ?? 0 }})</span>
-              </div>
-
-              <!-- Equipment row -->
-              <div v-else-if="node.kind === 'equipment'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
-                <a-tooltip :title="node.equipment.equipment_type ? (equipmentTypeLabel[node.equipment.equipment_type] ?? node.equipment.equipment_type) : 'Unclassified equipment'">
-                  <component :is="getEquipmentIcon(node.equipment.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
-                </a-tooltip>
-                <div style="flex:1;min-width:0">
-                  <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.equipment.name }}</div>
-                  <div style="font-size:11px;color:var(--text-secondary)">
-                    {{ node.equipment.equipment_type ? (equipmentTypeLabel[node.equipment.equipment_type] ?? node.equipment.equipment_type) : 'Unclassified' }}
-                  </div>
-                </div>
-                <a-space :size="2" @click.stop>
-                  <a-button type="text" size="small" title="Edit" @click="openEditEquipment(node.equipment)">
-                    <template #icon><EditOutlined /></template>
-                  </a-button>
-                </a-space>
-              </div>
-
-              <!-- Device row -->
-              <div v-else style="display:flex;align-items:center;gap:8px;padding:2px 0">
-                <a-tooltip :title="node.device.equipment_type ? (equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type) : 'Unclassified device'">
-                  <component :is="getControllerIcon(node.device.equipment_type)" :style="[TREE_ICON_SLOT_STYLE, { color: 'var(--text-primary)' }]" />
-                </a-tooltip>
-                <div style="flex:1;min-width:0">
-                  <div style="display:flex;align-items:center;gap:4px;overflow:hidden">
-                    <span style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</span>
-                    <a-tag v-if="node.device.simulation_mode === 'mirror'" color="blue" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Mirror</a-tag>
-                  </div>
-                  <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-secondary)">
-                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-                      ID {{ node.device.device_instance }}<template v-if="node.device.equipment_type"> · {{ equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type }}</template>
-                    </span>
-                    <a-badge :status="node.device.enabled ? 'success' : 'default'" style="flex-shrink:0" />
-                  </div>
-                </div>
-                <a-space :size="2" @click.stop>
-                  <a-dropdown :trigger="['click']">
-                    <a-button type="text" size="small" title="More">
-                      <template #icon><EllipsisOutlined /></template>
-                    </a-button>
-                    <template #overlay>
-                      <a-menu @click.stop>
-                        <a-menu-item key="edit" @click="openEditDevice(node.device)">
-                          <EditOutlined /> Edit
-                        </a-menu-item>
-                        <a-menu-item key="duplicate" @click="duplicateDevice(node.device)">
-                          <CopyOutlined /> Duplicate
-                        </a-menu-item>
-                        <a-menu-divider />
-                        <a-menu-item key="export-ede" @click="exportDeviceEde(node.device)">
-                          <DownloadOutlined /> Export EDE
-                        </a-menu-item>
-                        <a-menu-item key="import-ede" @click="importDeviceEde(node.device)">
-                          <UploadOutlined /> Import EDE
-                        </a-menu-item>
-                        <a-menu-item key="export-brick" @click="exportDeviceBrick(node.device)">
-                          <DownloadOutlined /> Export Brick Schema (.ttl)
-                        </a-menu-item>
-                        <a-menu-divider />
-                        <a-menu-item key="notification-classes" @click="openNotificationClasses(node.device)">
-                          <AlertOutlined /> Notification Classes
-                        </a-menu-item>
-                        <a-menu-item key="event-enrollments" @click="openEventEnrollments(node.device)">
-                          <AlertOutlined /> Event Enrollments
-                        </a-menu-item>
-                        <a-menu-item key="trend-logs" @click="openTrendLogs(node.device)">
-                          <LineChartOutlined /> Trend Logs
-                        </a-menu-item>
-                        <a-menu-item key="schedules" @click="openSchedules(node.device)">
-                          <CalendarOutlined /> Schedules
-                        </a-menu-item>
-                        <a-menu-item key="calendars" @click="openCalendars(node.device)">
-                          <ScheduleOutlined /> Calendars
-                        </a-menu-item>
-                        <a-menu-divider />
-                        <a-menu-item key="energy-model" @click="openEnergyModel(node.device)">
-                          <ThunderboltOutlined /> Energy Model
-                        </a-menu-item>
-                        <a-menu-item key="view-traffic" @click="viewTraffic(node.device)">
-                          <ClusterOutlined /> View Traffic
-                        </a-menu-item>
-                      </a-menu>
-                    </template>
-                  </a-dropdown>
-                </a-space>
-              </div>
-            </template>
-          </a-tree>
-        </a-layout-sider>
+        <!-- Sidebar: extracted tree / left panel -->
+        <LeftSideView
+          v-model:search="deviceSearch"
+          v-model:expanded-keys="expandedKeys"
+          :devices="devices"
+          :locations="locations"
+          :equipment="equipment"
+          :meta="meta"
+          :selected-device="selectedDevice"
+          :selected-equipment="selectedEquipment"
+          :quick-discover-loading="quickDiscoverLoading"
+          :has-remembered-connection="hasRememberedConnection"
+          @select-device="selectDevice"
+          @select-equipment="selectEquipment"
+          @add-location="openAddLocation"
+          @add-equipment="openAddEquipment"
+          @add-device="openAddDevice"
+          @edit-location="openEditLocation"
+          @edit-equipment="openEditEquipment"
+          @edit-device="openEditDevice"
+          @discover="onDiscoverClick"
+          @edit-discovery="discoverModalOpen = true"
+          @assign-device-location="assignDeviceToLocation"
+          @create-simulated-copy="openCreateSimulatedCopy"
+          @remove-external-device="removeExternalDevice"
+          @duplicate-device="duplicateDevice"
+          @export-ede="exportDeviceEde"
+          @import-ede="importDeviceEde"
+          @export-brick="exportDeviceBrick"
+          @notification-classes="openNotificationClasses"
+          @event-enrollments="openEventEnrollments"
+          @trend-logs="openTrendLogs"
+          @schedules="openSchedules"
+          @calendars="openCalendars"
+          @energy-model="openEnergyModel"
+          @simulation-model="openSimulationModel"
+          @view-traffic="viewTraffic"
+        />
         <input ref="edeImportInput" type="file" accept=".ede,.csv,text/csv" style="display:none" @change="onEdeImportFileChange" />
 
         <!-- Content: objects + log -->
@@ -1137,6 +940,13 @@ onUnmounted(() => {
 
     <!-- Energy model drawer -->
     <EnergyModelDrawer v-model:open="energyModelDrawerOpen" :device="energyModelDevice" :meta="meta" />
+
+    <!-- Simulation model modal -->
+    <SimulationModelModal
+      v-model:open="simulationModelModalOpen"
+      :device="simulationModelDevice"
+      @saved="loadDevices"
+    />
 
     <!-- Save project modal -->
     <a-modal

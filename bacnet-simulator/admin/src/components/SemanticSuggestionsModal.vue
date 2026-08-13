@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import { BulbOutlined, DownOutlined, RightOutlined } from '@ant-design/icons-vue'
@@ -30,6 +30,23 @@ interface PointRow {
 const pointRows = ref<PointRow[]>([])
 const unclassifiedRows = ref<PointRow[]>([])
 const showUnclassified = ref(false)
+
+const selectablePointRows = computed(() =>
+  pointRows.value.filter((row) => row.suggestion.existing_class === null && !!row.chosenClass),
+)
+
+const selectedPointRowsCount = computed(() =>
+  selectablePointRows.value.filter((row) => row.included).length,
+)
+
+const allPointRowsSelected = computed(() =>
+  selectablePointRows.value.length > 0
+  && selectedPointRowsCount.value === selectablePointRows.value.length,
+)
+
+function setAllPointRows(checked: boolean) {
+  for (const row of selectablePointRows.value) row.included = checked
+}
 
 // High/medium default checked; low defaults unchecked; an already-classified
 // record (existing_class set) always defaults unchecked -- existing
@@ -199,12 +216,29 @@ async function apply() {
         size="small"
         row-key="suggestion.source_id"
       >
+        <template #title>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <a-checkbox
+              :checked="allPointRowsSelected"
+              :disabled="selectablePointRows.length === 0"
+              @change="(e: { target: { checked: boolean } }) => setAllPointRows(e.target.checked)"
+            >
+              Select all
+            </a-checkbox>
+            <span style="font-size:12px;color:var(--text-secondary)">
+              {{ selectedPointRowsCount }}/{{ selectablePointRows.length }} selected
+            </span>
+          </div>
+        </template>
         <template #emptyText>
           <div style="padding:16px;color:var(--text-placeholder)">No classifiable points found</div>
         </template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'included'">
-            <a-checkbox v-model:checked="(record as PointRow).included" :disabled="!(record as PointRow).chosenClass" />
+            <a-checkbox
+              v-model:checked="(record as PointRow).included"
+              :disabled="(record as PointRow).suggestion.existing_class !== null || !(record as PointRow).chosenClass"
+            />
           </template>
           <template v-else-if="column.key === 'class'">
             <a-select

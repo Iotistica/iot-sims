@@ -19,7 +19,7 @@ const emit = defineEmits<{
 const loading = ref(false)
 const fetchingSource = ref(false)
 const sourceObjects = ref<ExternalObjectRow[]>([])
-const simulationMode = ref<'mirror' | 'replay'>('mirror')
+const simulationMode = ref<'simulation' | 'mirror' | 'replay'>('simulation')
 const form = reactive({
   name: '',
   device_instance: 1001,
@@ -34,7 +34,7 @@ watch(() => props.open, async (v) => {
   form.name = `${source.name} Copy`
   form.device_instance = nextFreeInstance(props.existingInstances)
   sourceObjects.value = []
-  simulationMode.value = 'mirror'
+  simulationMode.value = 'simulation'
   fetchingSource.value = true
   try {
     const result = await api.externalObjects.refresh(source.id)
@@ -61,7 +61,9 @@ async function create() {
       deviceInstance: form.device_instance,
       presentValues,
       simulationMode: simulationMode.value,
-      sourceDeviceId: props.sourceDevice.id,
+      sourceDeviceId: simulationMode.value === 'mirror' || simulationMode.value === 'replay'
+        ? props.sourceDevice.id
+        : null,
     })
     message.success(`Created "${device.name}" with ${objectCount} object${objectCount !== 1 ? 's' : ''}`)
     emit('update:open', false)
@@ -95,6 +97,10 @@ async function create() {
       <div style="margin-bottom:16px">
         <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Mode</div>
         <a-radio-group v-model:value="simulationMode" style="display:flex;flex-direction:column;gap:8px">
+          <a-radio value="simulation">
+            <span style="font-weight:500">Standard</span>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;margin-left:24px">Create a simple independent simulation seeded from current values.</div>
+          </a-radio>
           <a-radio value="mirror">
             <span style="font-weight:500">Mirror</span>
             <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;margin-left:24px">Follow values from the external device in real time.</div>
