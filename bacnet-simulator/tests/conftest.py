@@ -75,6 +75,12 @@ def _routers():
     except ImportError:
         pass
 
+    try:
+        from src.api.routers.simulation import router as simulation_router
+        routers.append(simulation_router)
+    except ImportError:
+        pass
+
     return routers
 
 

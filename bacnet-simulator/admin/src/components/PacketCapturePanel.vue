@@ -9,7 +9,6 @@ import {
 } from 'vue'
 import {
   message,
-  Modal,
 } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import {
@@ -37,6 +36,11 @@ interface ProtocolSection {
   [key: string]: unknown
 }
 
+interface ByteRange {
+  start: number
+  end: number
+}
+
 interface ProtocolPacket extends CapturedPacket {
   summary?: {
     operation?: string | null
@@ -60,6 +64,7 @@ interface ProtocolTreeNode {
   key: string
   title: string
   value?: string
+  byteRange?: ByteRange
   children?: ProtocolTreeNode[]
 }
 
@@ -75,6 +80,8 @@ const actionLoading = ref<
 const detailLoading = ref(false)
 const drawerOpen = ref(false)
 const total = ref(0)
+const activeHexRange = ref<ByteRange | null>(null)
+const selectedProtocolKeys = ref<string[]>([])
 
 const filters = reactive<PacketCaptureFilters>({
   direction: undefined,
@@ -133,6 +140,8 @@ let poll: ReturnType<typeof setInterval> | null = null
 let ws: WebSocket | null = null
 let wsTimer: ReturnType<typeof setTimeout> | null = null
 const LIVE_BUFFER_LIMIT = 1500 // UI-only cap; backend's 10,000-packet buffer is untouched
+const suppressLivePackets = ref(true)
+const stopInFlight = ref(false)
 
 const isRunning = computed(
   () => status.value?.state === 'running',
@@ -267,6 +276,7 @@ async function startCapture(): Promise<void> {
   actionLoading.value = 'start'
 
   try {
+    suppressLivePackets.value = false
     status.value = await api.packetCapture.start()
     packets.value = []
     total.value = 0
@@ -282,15 +292,20 @@ async function startCapture(): Promise<void> {
 
 async function stopCapture(): Promise<void> {
   actionLoading.value = 'stop'
+  stopInFlight.value = true
+  suppressLivePackets.value = true
+  wsDisconnect()
 
   try {
     status.value = await api.packetCapture.stop()
+    await reconcilePackets()
     message.success('Packet capture stopped')
   } catch (e: unknown) {
     message.error(
       (e as Error).message ?? 'Failed to stop packet capture',
     )
   } finally {
+    stopInFlight.value = false
     actionLoading.value = null
   }
 }
@@ -323,6 +338,8 @@ function wsDisconnect(): void {
 }
 
 function handleLivePacket(packet: ProtocolPacket): void {
+  if (suppressLivePackets.value) return
+
   // Live packets can't be reliably matched against a device filter -- only
   // I-Am/directed-Who-Is/device-object packets get simulator_device_*
   // resolved at all. Skip appending while one is active rather than
@@ -337,20 +354,6 @@ function handleLivePacket(packet: ProtocolPacket): void {
   packets.value.unshift(packet)
   if (packets.value.length > LIVE_BUFFER_LIMIT) packets.value.length = LIVE_BUFFER_LIMIT
   // total.value is intentionally left untouched -- stays REST-authoritative.
-}
-
-function confirmClear(): void {
-  Modal.confirm({
-    title: 'Clear captured packets?',
-    content:
-      'This removes all packets currently stored in memory. Export the PCAP first if you want to keep them.',
-    okText: 'Clear',
-    okType: 'danger',
-    cancelText: 'Cancel',
-    async onOk() {
-      await clearCapture()
-    },
-  })
 }
 
 async function clearCapture(): Promise<void> {
@@ -390,6 +393,8 @@ async function openPacket(packet: ProtocolPacket): Promise<void> {
   drawerOpen.value = true
   detailLoading.value = true
   selectedPacket.value = packet
+  activeHexRange.value = null
+  selectedProtocolKeys.value = []
 
   try {
     selectedPacket.value =
@@ -502,6 +507,39 @@ function formatHex(value?: string): string {
   return lines.join('\n')
 }
 
+function renderHexHtml(
+  value?: string,
+  highlight?: ByteRange | null,
+): string {
+  const bytes = rawBytes(value)
+  if (!bytes.length) return ''
+
+  const lines: string[] = []
+
+  for (let i = 0; i < bytes.length; i += 16) {
+    const offset = i.toString(16).padStart(4, '0')
+    const row: string[] = []
+
+    for (let j = 0; j < 16 && i + j < bytes.length; j += 1) {
+      const absolute = i + j
+      const hex = bytes[absolute].toString(16).padStart(2, '0')
+      const inRange = Boolean(
+        highlight &&
+        absolute >= highlight.start &&
+        absolute <= highlight.end,
+      )
+
+      row.push(
+        `<span class="hex-byte${inRange ? ' hex-byte--selected' : ''}">${hex}</span>`,
+      )
+    }
+
+    lines.push(`${offset}  ${row.join(' ')}`)
+  }
+
+  return lines.join('\n')
+}
+
 
 function rawBytes(value?: string): number[] {
   if (!value) return []
@@ -525,6 +563,7 @@ function hexByte(value: number | undefined): string {
 function sectionNodes(
   prefix: string,
   section?: ProtocolSection | null,
+  byteRange?: ByteRange,
 ): ProtocolTreeNode[] {
   if (!section) return []
 
@@ -539,6 +578,7 @@ function sectionNodes(
       title: key
         .replace(/_/g, ' ')
         .replace(/\b\w/g, char => char.toUpperCase()),
+      byteRange,
       value:
         typeof value === 'object'
           ? JSON.stringify(value)
@@ -739,6 +779,17 @@ function protocolTree(
   packet: ProtocolPacket,
 ): ProtocolTreeNode[] {
   const bytes = rawBytes(packet.raw_hex)
+  const lastByte = Math.max(0, bytes.length - 1)
+
+  const clampedRange = (
+    start: number,
+    end: number,
+  ): ByteRange | undefined => {
+    if (!bytes.length) return undefined
+    const s = Math.max(0, Math.min(start, lastByte))
+    const e = Math.max(s, Math.min(end, lastByte))
+    return { start: s, end: e }
+  }
 
   const bvlcLength =
     bytes.length >= 4
@@ -749,6 +800,7 @@ function protocolTree(
     {
       key: 'bvlc.type',
       title: 'Type',
+      byteRange: clampedRange(0, 0),
       value:
         bytes[0] === 0x81
           ? `BACnet/IP (${hexByte(bytes[0])})`
@@ -757,6 +809,7 @@ function protocolTree(
     {
       key: 'bvlc.function',
       title: 'Function',
+      byteRange: clampedRange(1, 1),
       value:
         packet.bvlc_function ??
         hexByte(bytes[1]),
@@ -764,9 +817,10 @@ function protocolTree(
     {
       key: 'bvlc.length',
       title: 'Declared Length',
+      byteRange: clampedRange(2, 3),
       value: `${bvlcLength} bytes`,
     },
-    ...sectionNodes('bvlc', packet.bvlc),
+    ...sectionNodes('bvlc', packet.bvlc, clampedRange(0, 3)),
   ]
 
   let npduOffset = 4
@@ -794,6 +848,7 @@ function protocolTree(
     {
       key: 'npdu.version',
       title: 'Version',
+      byteRange: clampedRange(npduOffset, npduOffset),
       value:
         npduVersion === undefined
           ? '—'
@@ -802,6 +857,7 @@ function protocolTree(
     {
       key: 'npdu.control',
       title: 'Control',
+      byteRange: clampedRange(npduOffset + 1, npduOffset + 1),
       value: hexByte(control),
     },
   ]
@@ -841,7 +897,11 @@ function protocolTree(
   }
 
   npduChildren.push(
-    ...sectionNodes('npdu', packet.npdu),
+    ...sectionNodes(
+      'npdu',
+      packet.npdu,
+      clampedRange(npduOffset, Math.max(npduOffset, apduOffset - 1)),
+    ),
   )
 
   const apduFirst = bytes[apduOffset]
@@ -852,6 +912,7 @@ function protocolTree(
     {
       key: 'apdu.type',
       title: 'Type',
+      byteRange: clampedRange(apduOffset, apduOffset),
       value:
         apduType === undefined
           ? packet.service_name ?? '—'
@@ -860,12 +921,13 @@ function protocolTree(
     {
       key: 'apdu.service',
       title: 'Operation',
+      byteRange: clampedRange(apduOffset + 1, apduOffset + 1),
       value:
         packet.summary?.operation ??
         packet.service_name ??
         'Unknown',
     },
-    ...sectionNodes('apdu', packet.apdu),
+    ...sectionNodes('apdu', packet.apdu, clampedRange(apduOffset, lastByte)),
   ]
 
   const serviceChildren = [
@@ -873,6 +935,7 @@ function protocolTree(
       ? [{
           key: 'service.object_identifier',
           title: 'Object Identifier',
+          byteRange: clampedRange(apduOffset + 1, lastByte),
           value: packet.summary.object_identifier,
         }]
       : []),
@@ -880,6 +943,7 @@ function protocolTree(
       ? [{
           key: 'service.property',
           title: 'Property',
+          byteRange: clampedRange(apduOffset + 1, lastByte),
           value: packet.summary.property,
         }]
       : []),
@@ -888,16 +952,18 @@ function protocolTree(
       ? [{
           key: 'service.value',
           title: 'Value',
+          byteRange: clampedRange(apduOffset + 1, lastByte),
           value: String(packet.summary.value),
         }]
       : []),
-    ...sectionNodes('service', packet.service),
+    ...sectionNodes('service', packet.service, clampedRange(apduOffset + 1, lastByte)),
   ]
 
   const tree: ProtocolTreeNode[] = [
     {
       key: 'bvlc',
       title: 'BACnet Virtual Link Control',
+      byteRange: clampedRange(0, 3),
       value: `${bvlcLength} bytes`,
       children: bvlcChildren,
     },
@@ -905,12 +971,14 @@ function protocolTree(
       key: 'npdu',
       title:
         'Building Automation and Control Network NPDU',
+      byteRange: clampedRange(npduOffset, Math.max(npduOffset, apduOffset - 1)),
       children: npduChildren,
     },
     {
       key: 'apdu',
       title:
         'Building Automation and Control Network APDU',
+      byteRange: clampedRange(apduOffset, lastByte),
       children: apduChildren,
     },
   ]
@@ -922,6 +990,7 @@ function protocolTree(
         packet.summary?.operation ??
         packet.service_name ??
         'BACnet Service',
+      byteRange: clampedRange(apduOffset + 1, lastByte),
       children: serviceChildren,
     })
   }
@@ -935,6 +1004,43 @@ const selectedProtocolTree = computed<
   if (!selectedPacket.value) return []
   return protocolTree(selectedPacket.value)
 })
+
+const selectedPacketFullFrameHexHtml = computed<string>(() => {
+  const payloadRange = activeHexRange.value
+  const fullFrameRange = payloadRange
+    ? {
+        // Ethernet(14) + IPv4(20) + UDP(8) = 42 bytes before BACnet payload.
+        start: payloadRange.start + 42,
+        end: payloadRange.end + 42,
+      }
+    : null
+
+  return renderHexHtml(
+    selectedPacket.value?.full_frame_hex,
+    fullFrameRange,
+  )
+})
+
+function onProtocolNodeSelect(
+  selectedKeys: Array<string | number>,
+  info: unknown,
+): void {
+  selectedProtocolKeys.value = selectedKeys.map(String)
+
+  const maybeInfo = info as {
+    node?: {
+      byteRange?: ByteRange
+      dataRef?: {
+        byteRange?: ByteRange
+      }
+    }
+  } | undefined
+
+  activeHexRange.value =
+    maybeInfo?.node?.byteRange ??
+    maybeInfo?.node?.dataRef?.byteRange ??
+    null
+}
 
 const columns: TableColumnsType<ProtocolPacket> = [
   {
@@ -1014,10 +1120,14 @@ const columns: TableColumnsType<ProtocolPacket> = [
 
 watch(isRunning, (running, wasRunning) => {
   if (running) {
+    suppressLivePackets.value = false
     wsConnect()
   } else {
+    suppressLivePackets.value = true
     wsDisconnect()
-    if (wasRunning) void reconcilePackets() // one authoritative resync when capture stops (any tab)
+    if (wasRunning && !stopInFlight.value) {
+      void reconcilePackets() // one authoritative resync when capture stops outside this tab
+    }
   }
 }, { immediate: true })
 
@@ -1161,7 +1271,7 @@ onUnmounted(() => {
         danger
         :disabled="!status?.packets_stored"
         :loading="actionLoading === 'clear'"
-        @click="confirmClear"
+        @click="clearCapture"
       >
         <template #icon>
           <ClearOutlined />
@@ -1490,12 +1600,10 @@ onUnmounted(() => {
           </template>
 
           <div class="hex-header">
-            Raw BACnet/IP payload
+            Full Frame (Ethernet + IPv4 + UDP + BACnet)
           </div>
 
-          <pre class="packet-hex">{{
-            formatHex(selectedPacket.raw_hex)
-          }}</pre>
+          <pre class="packet-hex" v-html="selectedPacketFullFrameHexHtml"></pre>
 
 
           <div class="protocol-tree-header">
@@ -1505,8 +1613,10 @@ onUnmounted(() => {
           <div class="protocol-tree-panel">
             <a-tree
               :tree-data="selectedProtocolTree"
+              :selected-keys="selectedProtocolKeys"
               default-expand-all
               block-node
+              @select="onProtocolNodeSelect"
             >
               <template #title="{ title, value }">
                 <div class="protocol-tree-row">
@@ -1670,6 +1780,18 @@ onUnmounted(() => {
   font-size: 12px;
   line-height: 1.65;
   white-space: pre;
+}
+
+.packet-hex :deep(.hex-byte) {
+  display: inline-block;
+  min-width: 14px;
+  text-align: center;
+  border-radius: 2px;
+}
+
+.packet-hex :deep(.hex-byte--selected) {
+  background: #264d73;
+  color: #e6f7ff;
 }
 
 

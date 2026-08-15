@@ -22,6 +22,8 @@ const form = reactive<Settings>({
   trend_log_default_interval: 60,
   trend_log_default_buffer_size: 1000,
   jwt_expire_hours: 24,
+  fmu_runtime_url: 'http://localhost:8002',
+  fmu_runtime_timeout_s: 20,
 })
 
 async function load() {
@@ -82,6 +84,13 @@ onMounted(load)
               </a-form-item>
               <a-form-item label="Default trend-log buffer size" tooltip="Used when creating a new trend log without specifying one" style="margin-bottom:0">
                 <a-input-number v-model:value="form.trend_log_default_buffer_size" :min="1" :max="100000" style="width:100%" />
+              </a-form-item>
+              <a-divider orientation="left">FMU Runtime</a-divider>
+              <a-form-item label="FMU Model Runtime URL" tooltip="Base URL for the generic IoT FMU model runtime">
+                <a-input v-model:value="form.fmu_runtime_url" placeholder="http://localhost:8002" />
+              </a-form-item>
+              <a-form-item label="Request Timeout (seconds)" tooltip="Timeout for FMU model catalog and simulation runtime requests" style="margin-bottom:0">
+                <a-input-number v-model:value="form.fmu_runtime_timeout_s" :min="1" :max="120" :step="1" style="width:100%" />
               </a-form-item>
             </a-form>
           </div>

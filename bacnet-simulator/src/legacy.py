@@ -220,7 +220,6 @@ from .api.guards import reject_external_device
 # src/simulation/providers; legacy.py only consumes the abstraction.
 from .simulation.providers import (
     BuiltInSimulationProvider,
-    SystemSimulationProvider,
     PointConfig,
     ProviderStatus,
     SimulationContext,
@@ -249,6 +248,8 @@ SETTINGS_SCHEMA: dict[str, type] = {
     "trend_log_default_interval": int,
     "trend_log_default_buffer_size": int,
     "jwt_expire_hours": int,
+    "fmu_runtime_url": str,
+    "fmu_runtime_timeout_s": float,
 }
 
 
@@ -267,6 +268,13 @@ def _default_settings() -> dict:
         # Seeded from the env var so upgrading an existing deployment that
         # already sets JWT_EXPIRE_HOURS doesn't silently change on first read.
         "jwt_expire_hours": int(os.environ.get("JWT_EXPIRE_HOURS", "24")),
+        "fmu_runtime_url": os.environ.get(
+            "FMU_MODEL_RUNTIME_URL",
+            "http://localhost:8002",
+        ),
+        "fmu_runtime_timeout_s": float(
+            os.environ.get("FMU_MODEL_RUNTIME_TIMEOUT_S", "20")
+        ),
     }
 
 
@@ -1392,8 +1400,8 @@ class Database:
 
     def delete_location(self, location_id: int) -> bool:
         """Refuses to delete a non-empty location (sub-locations, devices,
-        or semantic entities still reference it) — returns False rather
-        than silently cascading."""
+        or equipment still reference it) -- returns False rather than
+        silently cascading real project contents."""
         with self._conn() as conn:
             has_sublocations = conn.execute(
                 "SELECT 1 FROM locations WHERE parent_location_id=?", (location_id,)
@@ -1404,11 +1412,18 @@ class Database:
             has_equipment = conn.execute(
                 "SELECT 1 FROM equipment WHERE location_id=?", (location_id,)
             ).fetchone()
-            has_semantic_entities = conn.execute(
-                "SELECT 1 FROM semantic_entities WHERE location_id=?", (location_id,)
-            ).fetchone()
-            if has_sublocations or has_devices or has_equipment or has_semantic_entities:
+            if has_sublocations or has_devices or has_equipment:
                 return False
+            # A location's own Brick/semantic mirror is metadata, not a
+            # child occupant. Remove it and its relationships so generated
+            # empty Building/Level rows can be deleted from the UI.
+            conn.execute(
+                "DELETE FROM semantic_relationships "
+                "WHERE source_entity_id IN (SELECT id FROM semantic_entities WHERE location_id=?) "
+                "OR target_entity_id IN (SELECT id FROM semantic_entities WHERE location_id=?)",
+                (location_id, location_id),
+            )
+            conn.execute("DELETE FROM semantic_entities WHERE location_id=?", (location_id,))
             cur = conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
             conn.commit()
             return cur.rowcount > 0
@@ -2833,6 +2848,149 @@ class Database:
             r = conn.execute("SELECT * FROM profiles WHERE id=?", (project_id,)).fetchone()
             return dict(r) if r else None
 
+    @staticmethod
+    def _normalize_discovery_connections(
+        connections: Optional[list[dict]],
+        legacy_connection_config: Optional[dict] = None,
+    ) -> list[dict]:
+        normalized: list[dict] = []
+        next_id = 1
+        for raw in connections or []:
+            target = raw.get("target", raw.get("discovery_target"))
+            if target == "":
+                target = None
+            try:
+                conn_id = int(raw.get("id", next_id))
+            except (TypeError, ValueError):
+                conn_id = next_id
+            next_id = max(next_id, conn_id + 1)
+            name = str(raw.get("name") or target or "Local BACnet").strip() or "Local BACnet"
+            normalized.append({
+                "id": conn_id,
+                "name": name,
+                "target": target,
+                "device_instance_low": int(raw.get("device_instance_low", 0)),
+                "device_instance_high": int(raw.get("device_instance_high", 4194303)),
+                "timeout_ms": int(raw.get("timeout_ms", 5000)),
+                "enabled": bool(raw.get("enabled", True)),
+            })
+
+        if not normalized and legacy_connection_config:
+            target = legacy_connection_config.get("target", legacy_connection_config.get("discovery_target"))
+            if target == "":
+                target = None
+            normalized.append({
+                "id": 1,
+                "name": str(target or "Local BACnet"),
+                "target": target,
+                "device_instance_low": int(legacy_connection_config.get("device_instance_low", 0)),
+                "device_instance_high": int(legacy_connection_config.get("device_instance_high", 4194303)),
+                "timeout_ms": int(legacy_connection_config.get("timeout_ms", 5000)),
+                "enabled": True,
+            })
+
+        return normalized
+
+    def _get_project_payload(self, conn: sqlite3.Connection, project_id: int) -> Optional[dict]:
+        row = conn.execute("SELECT data FROM profiles WHERE id=?", (project_id,)).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["data"])
+
+    def _write_project_payload(self, conn: sqlite3.Connection, project_id: int, payload: dict) -> bool:
+        cur = conn.execute(
+            "UPDATE profiles SET data=? WHERE id=?",
+            (json.dumps(payload), project_id),
+        )
+        return cur.rowcount > 0
+
+    def get_project_discovery_connections(self, project_id: int) -> Optional[list[dict]]:
+        with self._conn() as conn:
+            payload = self._get_project_payload(conn, project_id)
+            if payload is None:
+                return None
+            connections = self._normalize_discovery_connections(
+                payload.get("discovery_connections"),
+                payload.get("connection_config"),
+            )
+            payload["discovery_connections"] = connections
+            if connections and not payload.get("connection_config"):
+                first = connections[0]
+                payload["connection_config"] = {
+                    "discovery_target": first["target"],
+                    "device_instance_low": first["device_instance_low"],
+                    "device_instance_high": first["device_instance_high"],
+                    "timeout_ms": first["timeout_ms"],
+                }
+            self._write_project_payload(conn, project_id, payload)
+            conn.commit()
+            return connections
+
+    def create_project_discovery_connection(self, project_id: int, data: dict) -> Optional[dict]:
+        with self._conn() as conn:
+            payload = self._get_project_payload(conn, project_id)
+            if payload is None:
+                return None
+            connections = self._normalize_discovery_connections(
+                payload.get("discovery_connections"),
+                payload.get("connection_config"),
+            )
+            next_id = max((c["id"] for c in connections), default=0) + 1
+            connection = self._normalize_discovery_connections([{**data, "id": next_id}])[0]
+            connections.append(connection)
+            payload["discovery_connections"] = connections
+            self._write_project_payload(conn, project_id, payload)
+            conn.commit()
+            return connection
+
+    def update_project_discovery_connection(
+        self,
+        project_id: int,
+        connection_id: int,
+        data: dict,
+    ) -> Optional[dict]:
+        with self._conn() as conn:
+            payload = self._get_project_payload(conn, project_id)
+            if payload is None:
+                return None
+            connections = self._normalize_discovery_connections(
+                payload.get("discovery_connections"),
+                payload.get("connection_config"),
+            )
+            updated = self._normalize_discovery_connections([{**data, "id": connection_id}])[0]
+            found = False
+            next_connections = []
+            for connection in connections:
+                if connection["id"] == connection_id:
+                    next_connections.append(updated)
+                    found = True
+                else:
+                    next_connections.append(connection)
+            if not found:
+                return {}
+            payload["discovery_connections"] = next_connections
+            self._write_project_payload(conn, project_id, payload)
+            conn.commit()
+            return updated
+
+    def delete_project_discovery_connection(self, project_id: int, connection_id: int) -> Optional[bool]:
+        with self._conn() as conn:
+            payload = self._get_project_payload(conn, project_id)
+            if payload is None:
+                return None
+            connections = self._normalize_discovery_connections(
+                payload.get("discovery_connections"),
+                payload.get("connection_config"),
+            )
+            next_connections = [c for c in connections if c["id"] != connection_id]
+            if len(next_connections) == len(connections):
+                return False
+            payload["discovery_connections"] = next_connections
+            if not next_connections:
+                payload["connection_config"] = None
+            self._write_project_payload(conn, project_id, payload)
+            conn.commit()
+            return True
 
     # ── Fault Detection  ──────────────────────────────────────────────────────────────
     def get_fault_rule_configs(
@@ -3230,8 +3388,13 @@ class Database:
         name: str,
         description: str,
         connection_config: Optional[dict] = None,
+        discovery_connections: Optional[list[dict]] = None,
     ) -> dict:
         with self._conn() as conn:
+            discovery_connections = self._normalize_discovery_connections(
+                discovery_connections,
+                connection_config,
+            )
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             equipment = [dict(r) for r in conn.execute("SELECT * FROM equipment")]
             devices = [dict(r) for r in conn.execute(
@@ -3271,6 +3434,7 @@ class Database:
                 "energy_model_configs": energy_model_configs,
                 "functional_tests": functional_tests,
                 "connection_config": connection_config,
+                "discovery_connections": discovery_connections,
             })
             cur = conn.execute(
                 "INSERT INTO profiles (name, description, device_count, data) VALUES (?,?,?,?)",
@@ -3282,6 +3446,7 @@ class Database:
                 (cur.lastrowid,),
             ).fetchone())
             row["connection_config"] = connection_config
+            row["discovery_connections"] = discovery_connections
             return row
 
     def update_project(
@@ -3290,19 +3455,27 @@ class Database:
         name: str,
         description: str,
         connection_config: Optional[dict] = None,
+        discovery_connections: Optional[list[dict]] = None,
+        connection_config_provided: bool = False,
+        discovery_connections_provided: bool = False,
     ) -> bool:
         with self._conn() as conn:
-            # connection_config isn't part of live device/location state --
-            # it only exists in this row's own stored data blob. A None here
-            # means "leave it as-is", so fall back to whatever is already
-            # stored rather than dropping it; a given value overwrites it
-            # (used by the Discover modal's "Remember connection" option).
+            # Discovery connection settings aren't part of live device/location
+            # state -- they only exist in this row's own stored data blob. An
+            # omitted field means "leave it as-is"; an explicit empty list means
+            # "forget every saved discovery connection".
             existing = conn.execute(
                 "SELECT data FROM profiles WHERE id=?", (project_id,)
             ).fetchone()
             existing_payload = json.loads(existing["data"]) if existing else {}
-            if connection_config is None:
+            if not connection_config_provided:
                 connection_config = existing_payload.get("connection_config")
+            if not discovery_connections_provided:
+                discovery_connections = existing_payload.get("discovery_connections", [])
+            discovery_connections = self._normalize_discovery_connections(
+                discovery_connections,
+                connection_config,
+            )
 
             locations = [dict(r) for r in conn.execute("SELECT * FROM locations")]
             equipment = [dict(r) for r in conn.execute("SELECT * FROM equipment")]
@@ -3330,6 +3503,7 @@ class Database:
                 "energy_model_configs": energy_model_configs,
                 "functional_tests": functional_tests,
                 "connection_config": connection_config,
+                "discovery_connections": discovery_connections,
             })
             cur = conn.execute(
                 "UPDATE profiles SET name=?, description=?, device_count=?, data=? WHERE id=?",
@@ -3694,8 +3868,13 @@ class Database:
                 )
 
             conn.commit()
+            discovery_connections = self._normalize_discovery_connections(
+                payload.get("discovery_connections"),
+                payload.get("connection_config"),
+            )
             return {
                 "connection_config": payload.get("connection_config"),
+                "discovery_connections": discovery_connections,
             }
 
     def import_project(self, name: str, description: str, data: dict) -> dict:
@@ -3706,10 +3885,16 @@ class Database:
                 (name, description, device_count, json.dumps(data)),
             )
             conn.commit()
-            return dict(conn.execute(
+            row = dict(conn.execute(
                 "SELECT id, name, description, created_at, device_count FROM profiles WHERE id=?",
                 (cur.lastrowid,),
             ).fetchone())
+            row["connection_config"] = data.get("connection_config")
+            row["discovery_connections"] = self._normalize_discovery_connections(
+                data.get("discovery_connections"),
+                data.get("connection_config"),
+            )
+            return row
 
     def delete_project(self, project_id: int) -> bool:
         with self._conn() as conn:
@@ -4714,6 +4899,7 @@ class SimEngine:
         self.network_port: Optional[NetworkPortObject] = None
         # object DB id → (bacpypes3 object, Behavior)
         self._objects: dict[int, tuple[Any, Behavior]] = {}
+        self._used_object_identifiers: set[tuple[str, int]] = set()
         # device instance → slot index (for physical instance offset)
         self._device_slots: dict[int, int] = {}
         # device instance → device row, rebuilt on every start()/reload() from
@@ -4774,7 +4960,7 @@ class SimEngine:
         #
         # "builtin" is always present and owns every normal simulated point
         # that has not been explicitly claimed as an output by another
-        # provider. Additional providers (System/FMU/Learned/etc.) register
+        # provider. Additional providers (FMU/Learned/etc.) register
         # their input/output point bindings through register_simulation_provider().
         #
         # BACnet object lifecycle, alarms, trends, history and snapshots stay
@@ -4785,6 +4971,70 @@ class SimEngine:
         self._provider_input_points: dict[str, set[int]] = {"builtin": set()}
         self._provider_output_points: dict[str, set[int]] = {"builtin": set()}
         self._point_output_owner: dict[int, str] = {}
+        self._provider_diagnostics: dict[str, dict[str, Any]] = {}
+        self._model_input_shadow_values: dict[int, tuple[Any, str | None]] = {}
+
+    def _model_input_shadow_for_point(self, point_id: int) -> tuple[Any | None, str | None]:
+        if point_id in self._model_input_shadow_values:
+            return self._model_input_shadow_values[point_id]
+        for provider_id, diagnostics in self._provider_diagnostics.items():
+            if provider_id == "builtin":
+                continue
+            state = str(
+                diagnostics.get("runtime_state")
+                or diagnostics.get("status")
+                or ""
+            ) or None
+            for report in (diagnostics.get("last_step_inputs") or {}).values():
+                try:
+                    report_point_id = int(report.get("point_id"))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if report_point_id == int(point_id):
+                    return report.get("value"), state
+        return None, None
+
+    def _twin_snapshot_payload(
+        self,
+        obj_id: int,
+        obj_row: dict,
+        mirror_val: Any,
+        provider_outputs: dict[int, Any],
+    ) -> Optional[dict]:
+        model_value = None
+        model_state = None
+        owner = self._point_output_owner.get(obj_id)
+        if owner:
+            model_state = str(
+                (self._provider_diagnostics.get(owner) or {}).get("runtime_state")
+                or (self._provider_diagnostics.get(owner) or {}).get("status")
+                or ""
+            ) or None
+            if obj_id in provider_outputs:
+                model_value = provider_outputs[obj_id]
+        if model_value is None:
+            input_model_value, input_model_state = self._model_input_shadow_for_point(obj_id)
+            if input_model_value is not None:
+                model_value = input_model_value
+                model_state = input_model_state
+        if mirror_val is None and owner is None and model_value is None:
+            return None
+
+        payload = {
+            "id": obj_id,
+            "name": obj_row["name"],
+            "object_type": obj_row["object_type"],
+            "object_instance": obj_row["object_instance"],
+            "units": obj_row.get("units", ""),
+            "behavior": obj_row["behavior"],
+        }
+        if mirror_val is not None:
+            payload["value"] = mirror_val
+        if model_state is not None:
+            payload["model_state"] = model_state
+        if model_value is not None:
+            payload["model_value"] = model_value
+        return payload
 
     @staticmethod
     def _point_config_from_row(obj_row: dict) -> PointConfig:
@@ -4858,6 +5108,7 @@ class SimEngine:
                 f"Simulation provider {provider_id!r} is not valid: {message}"
             )
 
+        context.metadata["provider_id"] = provider_id
         provider.initialize(context)
 
         self._providers[provider_id] = provider
@@ -4893,8 +5144,10 @@ class SimEngine:
             if self._point_output_owner.get(point_id) == provider_id:
                 self._point_output_owner.pop(point_id, None)
 
-        self._provider_input_points.pop(provider_id, None)
+        for point_id in self._provider_input_points.pop(provider_id, set()):
+            self._model_input_shadow_values.pop(int(point_id), None)
         self._provider_contexts.pop(provider_id, None)
+        self._provider_diagnostics.pop(provider_id, None)
 
         log.info("Unregistered simulation provider %s", provider_id)
         return True
@@ -4918,6 +5171,13 @@ class SimEngine:
                     self._provider_output_points.get(provider_id, set())
                 ),
             }
+            if hasattr(provider, "get_diagnostics"):
+                try:
+                    result[provider_id]["diagnostics"] = provider.get_diagnostics()
+                except Exception as exc:
+                    result[provider_id]["diagnostics"] = {
+                        "error": str(exc),
+                    }
         return result
 
     def _replace_builtin_provider(self, provider: BuiltInSimulationProvider) -> None:
@@ -4979,6 +5239,20 @@ class SimEngine:
                     provider.start()
                 provider.step(dt)
                 outputs = dict(provider.get_outputs())
+                diagnostics = {}
+                if hasattr(provider, "get_diagnostics"):
+                    try:
+                        diagnostics = provider.get_diagnostics()
+                    except Exception as exc:
+                        diagnostics = {"diagnostics_error": str(exc)}
+                self._provider_diagnostics[provider_id] = diagnostics
+                runtime_state = str(
+                    diagnostics.get("runtime_state")
+                    or diagnostics.get("status")
+                    or ""
+                ) or None
+                for point_id, value in inputs.items():
+                    self._model_input_shadow_values[int(point_id)] = (value, runtime_state)
             except Exception:
                 log.exception(
                     "Simulation provider %s (%s) failed during tick",
@@ -5005,6 +5279,18 @@ class SimEngine:
                     )
                     continue
                 generated_values[point_id] = value
+
+            if provider_id != "builtin":
+                log.info(
+                    "Simulation provider output batch: provider=%s type=%s "
+                    "dt=%s inputs=%s outputs=%s diagnostics=%s",
+                    provider_id,
+                    type(provider).__name__,
+                    dt,
+                    inputs,
+                    outputs,
+                    diagnostics,
+                )
 
         return generated_values
 
@@ -5058,8 +5344,8 @@ class SimEngine:
         enabled = self._simulated_enabled_devices(devices)
 
         # A start/reload rebuilds the BACnet runtime from DB, so rebuild only
-        # the Built-in adapter from the same source of truth. Registered System/
-        # FMU/Learned providers remain registered and keep their output claims.
+        # the Built-in adapter from the same source of truth. Registered FMU/
+        # Learned providers remain registered and keep their output claims.
         self._replace_builtin_provider(BuiltInSimulationProvider())
         provider_participants: list[int] = []
         provider_points: list[PointConfig] = []
@@ -5104,6 +5390,7 @@ class SimEngine:
         self.app = SimApplication.from_object_list([primary_dev_obj, self.network_port])
         self.app._sim_engine = self
         self.app._own_ip = base_ip  # for filtering our own I-Am loopback in duplicate-ID detection
+        self._used_object_identifiers.clear()
         await asyncio.sleep(0.3)
 
         self.app._virtual_devices[primary["device_instance"]] = primary_dev_obj
@@ -5133,8 +5420,9 @@ class SimEngine:
                     self.app.add_object(bacnet_obj)
                 except RuntimeError:
                     log.exception(
-                        "Failed to add object %r on device %r (name/identifier collision?) — skipping",
-                        obj_row["name"], dev["name"],
+                        "Failed to add object %r as %r on device %r "
+                        "(name/identifier collision?) — skipping",
+                        obj_row["name"], bacnet_obj.objectIdentifier, dev["name"],
                     )
                     continue
                 self._objects[obj_row["id"]] = (bacnet_obj, behavior)
@@ -5265,21 +5553,19 @@ class SimEngine:
         if self.clock_state == "running":
             self._builtin_provider.start()
 
-        # Rewind registered non-built-in models when the BACnet runtime is
-        # rebuilt. Their point mappings/ownership stay intact.
+        # Keep registered non-built-in models alive across BACnet runtime
+        # rebuilds. Device/object CRUD reloads should not rewind FMU/Learned
+        # sessions; their output ownership/mappings remain valid because the
+        # DB object IDs do not change.
         for provider_id, provider in list(self._providers.items()):
             if provider_id == "builtin":
                 continue
             try:
-                provider.reset()
-                context = self._provider_contexts.get(provider_id)
-                if context is not None:
-                    provider.initialize(context)
                 if self.clock_state == "running":
                     provider.start()
             except Exception:
                 log.exception(
-                    "Failed to reinitialize simulation provider %s during start",
+                    "Failed to keep simulation provider %s running during start",
                     provider_id,
                 )
 
@@ -5312,17 +5598,35 @@ class SimEngine:
             segmentationSupported=segmentation,
         )
 
+    def _allocate_object_identifier(
+        self,
+        object_type: str,
+        preferred_instance: int,
+    ) -> int:
+        """Return a BACnet object instance not already used for this type."""
+        instance = max(0, int(preferred_instance)) % 4_194_303
+        while (object_type, instance) in self._used_object_identifiers:
+            instance += 1
+            if instance > 4_194_302:
+                instance = 0
+
+        self._used_object_identifiers.add((object_type, instance))
+        return instance
+
     def _create_object(self, obj_row: dict, slot: int, device_name: str = "") -> tuple[Any, Behavior]:
 
 
-        phys = slot * 1000 + obj_row["object_instance"]
+        otype = obj_row["object_type"]
+        phys = self._allocate_object_identifier(
+            otype,
+            slot * 1000 + int(obj_row["object_instance"]),
+        )
         behavior = make_behavior(
             obj_row["behavior"],
             obj_row["behavior_params"],
             obj_row.get("manual_value"),
         )
         val = behavior.compute(self.state)
-        otype = obj_row["object_type"]
         # BACnet requires globally unique object names within a single application,
         # even across virtual devices — prefix with device name to guarantee uniqueness.
         obj_name = f"{device_name}.{obj_row['name']}" if device_name else obj_row["name"]
@@ -5583,7 +5887,7 @@ class SimEngine:
             self._builtin_provider.start()
         self._builtin_provider.step(TICK_SECONDS)
 
-        # Then run System/FMU/Learned providers in registration order. Inputs
+        # Then run FMU/Learned providers in registration order. Inputs
         # resolve against the newest value already generated this tick, so a
         # System model can consume a Built-in point (or an earlier provider's
         # output) without duplicating the point.
@@ -5607,19 +5911,17 @@ class SimEngine:
             if dev.get("simulation_mode", "simulation") == "mirror":
                 # Behaviors stay stored but inactive; mirror_sync_loop drives the value.
                 mirror_val = self._mirror_values.get(obj_id)
-                if mirror_val is not None:
+                payload = self._twin_snapshot_payload(
+                    obj_id,
+                    obj_row,
+                    mirror_val,
+                    provider_outputs,
+                )
+                if payload is not None:
                     did = dev["device_instance"]
                     if did not in snapshot:
                         snapshot[did] = {"device_instance": did, "name": dev["name"], "objects": []}
-                    snapshot[did]["objects"].append({
-                        "id": obj_id,
-                        "name": obj_row["name"],
-                        "object_type": obj_row["object_type"],
-                        "object_instance": obj_row["object_instance"],
-                        "value": mirror_val,
-                        "units": obj_row.get("units", ""),
-                        "behavior": obj_row["behavior"],
-                    })
+                    snapshot[did]["objects"].append(payload)
                 continue
             # Value generation is provider-owned. Everything after this
             # assignment remains the existing BACnet/alarm/trend/history path.
@@ -5633,6 +5935,25 @@ class SimEngine:
                 continue
             val = provider_outputs[obj_id]
             self._update_value(bacnet_obj, obj_row["object_type"], val)
+            owner = self._point_output_owner.get(obj_id, "builtin")
+            if owner != "builtin":
+                log.info(
+                    "BACnet object write from simulation provider: provider=%s "
+                    "tick=%s device_id=%s device_instance=%s device_name=%s "
+                    "object_id=%s object_name=%s object_type=%s "
+                    "object_instance=%s value=%s units=%s",
+                    owner,
+                    self.state.elapsed_seconds,
+                    obj_row["device_id"],
+                    dev["device_instance"],
+                    dev["name"],
+                    obj_id,
+                    obj_row["name"],
+                    obj_row["object_type"],
+                    obj_row["object_instance"],
+                    val,
+                    obj_row.get("units", ""),
+                )
 
             cfg = alarm_configs.get(obj_id)
             if cfg is not None:
@@ -5660,7 +5981,7 @@ class SimEngine:
             did = dev["device_instance"]
             if did not in snapshot:
                 snapshot[did] = {"device_instance": did, "name": dev["name"], "objects": []}
-            snapshot[did]["objects"].append({
+            payload = {
                 "id": obj_id,
                 "name": obj_row["name"],
                 "object_type": obj_row["object_type"],
@@ -5668,7 +5989,12 @@ class SimEngine:
                 "value": val,
                 "units": obj_row.get("units", ""),
                 "behavior": obj_row["behavior"],
-            })
+            }
+            if owner != "builtin":
+                provider_diag = self._provider_diagnostics.get(owner) or {}
+                payload["model_state"] = str(provider_diag.get("runtime_state") or "RUNNING")
+                payload["model_value"] = val
+            snapshot[did]["objects"].append(payload)
 
         self._current_values = {"devices": list(snapshot.values()), "tick": self.state.elapsed_seconds}
 
@@ -5694,6 +6020,7 @@ class SimEngine:
     ) -> None:
         """Propagate external present-values into a Mirror simulated device.
         Called only by mirror_sync_loop -- never from the HTTP layer."""
+        dev = await asyncio.to_thread(self.db.get_device, device_id)
         for obj in objects:
             key = (obj["object_type"], obj["object_instance"])
             if key not in values:
@@ -5709,6 +6036,9 @@ class SimEngine:
             normalized = normalize_present_value(obj["object_type"], val)
             self._update_value(bacnet_obj, obj["object_type"], normalized)
             self._mirror_values[obj_id] = normalized
+            self._prev_values[obj_id] = normalized
+            if dev is not None:
+                self._upsert_current_value_snapshot(dev, obj, normalized)
 
     async def _evaluate_alarm(
         self, obj_id: int, obj_row: dict, dev: dict, val: Any, cfg: dict, notification_classes: dict[int, dict],
@@ -6090,6 +6420,62 @@ class SimEngine:
 
     def get_state(self) -> dict:
         return self._current_values
+
+    def _upsert_current_value_snapshot(
+        self,
+        dev: dict,
+        obj_row: dict,
+        value: Any,
+    ) -> None:
+        """Patch one live value into the API/WebSocket snapshot cache.
+
+        Normal simulated values flow through tick(), but Mirror values are
+        injected by mirror_sync_loop on a separate cadence. Keeping the cache
+        current here lets the UI show mirror-device values even while the
+        simulation clock is paused or stopped.
+        """
+        current = self._current_values if isinstance(self._current_values, dict) else {}
+        devices = [dict(d) for d in current.get("devices", [])]
+        did = dev["device_instance"]
+
+        device_snapshot = next(
+            (d for d in devices if d.get("device_instance") == did),
+            None,
+        )
+        if device_snapshot is None:
+            device_snapshot = {
+                "device_instance": did,
+                "name": dev["name"],
+                "objects": [],
+            }
+            devices.append(device_snapshot)
+
+        objects = [
+            dict(o)
+            for o in device_snapshot.get("objects", [])
+            if o.get("id") != obj_row["id"]
+        ]
+        objects.append({
+            "id": obj_row["id"],
+            "name": obj_row["name"],
+            "object_type": obj_row["object_type"],
+            "object_instance": obj_row["object_instance"],
+            "value": value,
+            "units": obj_row.get("units", ""),
+            "behavior": obj_row["behavior"],
+        })
+        objects.sort(
+            key=lambda o: (
+                str(o.get("object_type", "")),
+                int(o.get("object_instance", 0)),
+            ),
+        )
+        device_snapshot["objects"] = objects
+
+        self._current_values = {
+            "devices": devices,
+            "tick": current.get("tick", self.state.elapsed_seconds),
+        }
 
     def db_id_for_bacnet_object(self, bacnet_obj: Any) -> Optional[int]:
         """Reverse lookup: given a live bacpypes3 object, find the DB row id
@@ -6784,6 +7170,7 @@ async def _mirror_sync_once(sim_engine: SimEngine, discovery_session_ctx: Any) -
             # Source unavailable -- retain last _mirror_values; no behaviors start.
             continue
 
+        await asyncio.to_thread(sim_engine.db.touch_external_device_last_seen, src_dev_id)
         for mirror_dev, mirror_objects in mirrors_with_objects:
             await sim_engine.inject_mirror_values(mirror_dev["id"], values, mirror_objects)
 
@@ -6877,7 +7264,7 @@ async def lifespan(app: FastAPI):
     _apply_settings_live(await asyncio.to_thread(db.get_settings))
     await engine.start()
 
-    # Restore persisted System/FMU/Learned model registrations only after the
+    # Restore persisted FMU/Learned model registrations only after the
     # BACnet runtime exists. Built-in remains the default/fallback provider.
     model_bootstrap = await bootstrap_simulation_models(app)
 

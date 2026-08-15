@@ -165,7 +165,11 @@ class CapturedPacket:
     def raw_hex(self) -> str:
         return self.payload.hex(" ")
 
-    def to_dict(self, include_hex: bool = True) -> dict:
+    def to_dict(
+        self,
+        include_hex: bool = True,
+        include_full_frame_hex: bool = False,
+    ) -> dict:
         result = asdict(self)
         result.pop("payload", None)
 
@@ -174,6 +178,16 @@ class CapturedPacket:
 
         if include_hex:
             result["raw_hex"] = self.raw_hex
+
+        if include_full_frame_hex:
+            frame = build_udp_ethernet_frame(
+                source_ip=self.source_ip,
+                destination_ip=self.destination_ip,
+                source_port=self.source_port,
+                destination_port=self.destination_port,
+                payload=self.payload,
+            )
+            result["full_frame_hex"] = frame.hex(" ")
 
         result.update(decode_bacnet_summary(self.payload))
         return result
@@ -368,7 +382,10 @@ class PacketCapture:
             packets = list(self._packets)
 
         decoded = [
-            packet.to_dict(include_hex=True)
+            packet.to_dict(
+                include_hex=True,
+                include_full_frame_hex=True,
+            )
             for packet in packets
         ]
 

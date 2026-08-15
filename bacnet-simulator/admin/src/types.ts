@@ -24,10 +24,18 @@ export interface Device {
   external_last_seen_at?: string | null
   /** Server-computed: whether this device already has an entity_kind='controller' semantic entity. */
   has_controller_entity?: boolean
-  /** 'simulation' (default) | 'mirror' | 'replay' — Mirror drives values from the external source. */
+  /** 'simulation' (default) | 'mirror' | 'replay' — Twin mode uses internal value 'mirror' and follows the external source. */
   simulation_mode?: 'simulation' | 'mirror' | 'replay'
-  /** ID of the external source device for Mirror/Replay modes; null for ordinary simulated devices. */
+  /** ID of the external source device for Twin/Replay modes; null for ordinary simulated devices. */
   source_device_id?: number | null
+  /** Server-computed summary of the enabled explicit simulation model driving this device's output points. */
+  active_simulation_model?: {
+    id: number
+    name: string
+    provider_type: 'fmu' | 'learned'
+    model_type: string
+    model_count?: number
+  } | null
 }
 
 export interface Location {
@@ -81,6 +89,14 @@ export interface SimObject {
   polarity: string
   point_type?: string | null
   description?: string | null
+  /** Explicit model output owner. When present, built-in behavior is inactive for this point. */
+  simulation_output_owner?: {
+    id: number
+    name: string
+    provider_type: 'fmu' | 'learned'
+    model_type: string
+    variable: string
+  } | null
 }
 
 /** SimObject shape plus a live-read value, returned by the external-device
@@ -163,6 +179,8 @@ export interface Settings {
   trend_log_default_interval: number
   trend_log_default_buffer_size: number
   jwt_expire_hours: number
+  fmu_runtime_url: string
+  fmu_runtime_timeout_s: number
 }
 
 export interface NotificationRecipient {
@@ -368,6 +386,16 @@ export interface BACnetConnectionConfig {
   timeout_ms: number
 }
 
+export interface BACnetDiscoveryConnection {
+  id: number
+  name: string
+  target: string | null
+  device_instance_low: number
+  device_instance_high: number
+  timeout_ms: number
+  enabled: boolean
+}
+
 export interface Project {
   id: number
   name: string
@@ -375,6 +403,7 @@ export interface Project {
   created_at: string
   device_count: number
   connection_config?: BACnetConnectionConfig | null
+  discovery_connections?: BACnetDiscoveryConnection[] | null
 }
 
 export interface DiscoveredDevice {
@@ -576,6 +605,7 @@ export interface CapturedPacket {
 
   length: number
   raw_hex?: string
+  full_frame_hex?: string
 
   decode_status: 'decoded' | 'partial' | 'warning' | 'error' | 'unknown'
   bvlc_function: string | null

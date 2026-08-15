@@ -102,7 +102,7 @@ async function create() {
             <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;margin-left:24px">Create a simple independent simulation seeded from current values.</div>
           </a-radio>
           <a-radio value="mirror">
-            <span style="font-weight:500">Mirror</span>
+            <span style="font-weight:500">Twin</span>
             <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;margin-left:24px">Follow values from the external device in real time.</div>
           </a-radio>
           <a-tooltip title="Replay mode is not yet available.">

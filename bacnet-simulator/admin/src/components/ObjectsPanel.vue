@@ -2,7 +2,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
-import { EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined, BulbOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined, BulbOutlined, ExperimentOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import { formatPresentValue } from '../format'
 import { coerceValueForObjectType } from '../objectValue'
@@ -16,21 +16,65 @@ import SemanticSuggestionsModal from './SemanticSuggestionsModal.vue'
 
 const props = defineProps<{
   device: Device
+  devices: Device[]
   meta: Meta
   /** WS-driven live values for simulated devices, owned by App.vue — read
    * here, never written. External devices never touch this map; they use
    * their own locally-polled externalLiveValues instead (see below). */
   liveValues: Record<number, number | boolean>
+  /** WS-driven shadow model values. On Twin devices this is intentionally
+   * separate from liveValues so external/source values remain authoritative. */
+  modelValues: Record<number, number | boolean>
+  modelStates: Record<number, string>
 }>()
 
 // Fired after Suggest Semantics applies a device-level (equipment_type)
 // change, so App.vue can refresh its devices list — the tree row's
 // equipment-type label lives there, outside this component.
-const emit = defineEmits<{ 'device-updated': [] }>()
+const emit = defineEmits<{
+  'device-updated': []
+  'external-device-seen': [deviceId: number, seenAt: string]
+  'edit-device': [device: Device]
+  'simulation-model': [device: Device]
+}>()
 
 const isExternal = computed(() => props.device.source_type === 'external-bacnet')
 const isMirror = computed(() => props.device.simulation_mode === 'mirror')
+const isSimulationMode = computed(() => !isExternal.value && !isMirror.value)
 const canConfigureSimulation = computed(() => !isExternal.value)
+const simulationProviderLabel = computed(() => {
+  const provider = props.device.active_simulation_model?.provider_type
+  if (!provider) return null
+  if (provider === 'fmu') return 'FMU'
+  return provider
+})
+const simulationProviderColor = computed(() => {
+  const provider = props.device.active_simulation_model?.provider_type
+  if (provider === 'fmu') return 'purple'
+  if (provider === 'learned') return 'cyan'
+  return 'default'
+})
+const simulationProviderTitle = computed(() => {
+  const model = props.device.active_simulation_model
+  if (!model) return ''
+  const suffix = model.model_count && model.model_count > 1
+    ? ` plus ${model.model_count - 1} more`
+    : ''
+  return `${model.name} (${model.model_type})${suffix}`
+})
+const mirrorSourceName = computed(() => {
+  const sourceId = props.device.source_device_id
+  if (sourceId == null) return 'source'
+  return props.devices.find(d => d.id === sourceId)?.name ?? `source device ${sourceId}`
+})
+
+function openSimulationModel() {
+  emit('simulation-model', props.device)
+}
+
+function openEditDevice() {
+  emit('edit-device', props.device)
+}
 
 // ─── Object list ──────────────────────────────────────────────────────────
 
@@ -71,6 +115,7 @@ async function pollExternalValues() {
     for (const o of result.objects) map[o.id] = o.present_value
     externalLiveValues.value = map
     externalLastUpdatedAt.value = Date.now()
+    emit('external-device-seen', props.device.id, new Date().toISOString())
   } catch { /* transient poll failure — try again next tick */ }
 }
 
@@ -113,6 +158,7 @@ async function discoverObjects() {
     for (const o of result.objects) map[o.id] = o.present_value
     externalLiveValues.value = map
     externalLastUpdatedAt.value = Date.now()
+    emit('external-device-seen', props.device.id, new Date().toISOString())
     message.success(result.objects.length
       ? `Discovered ${result.objects.length} object${result.objects.length !== 1 ? 's' : ''}`
       : 'No objects found')
@@ -135,6 +181,37 @@ function hasLive(id: number): boolean {
 }
 function fmtVal(obj: SimObject): string {
   return formatPresentValue(obj.object_type, liveVal(obj.id))
+}
+function modelVal(id: number): number | boolean | null {
+  const v = props.modelValues[id]
+  return v !== undefined ? v : null
+}
+function hasModel(id: number): boolean {
+  return props.modelValues[id] !== undefined
+}
+function modelState(id: number): string | null {
+  return props.modelStates[id] ?? null
+}
+function isModelWarming(obj: SimObject): boolean {
+  const state = modelState(obj.id)
+  return state === 'WARMING_UP'
+}
+function fmtModelVal(obj: SimObject): string {
+  if (isModelWarming(obj)) return 'Warming up…'
+  return hasModel(obj.id) ? formatPresentValue(obj.object_type, modelVal(obj.id)) : '—'
+}
+function deltaVal(obj: SimObject): number | null {
+  const live = liveVal(obj.id)
+  const model = modelVal(obj.id)
+  if (typeof live !== 'number' || typeof model !== 'number') return null
+  return model - live
+}
+function fmtDelta(obj: SimObject): string {
+  if (isModelWarming(obj)) return '—'
+  const delta = deltaVal(obj)
+  if (delta === null) return '—'
+  const prefix = delta > 0 ? '+' : ''
+  return `${prefix}${delta.toFixed(2)}`
 }
 
 // ─── Table ────────────────────────────────────────────────────────────────
@@ -164,6 +241,11 @@ function sortableLiveValue(obj: SimObject): number {
 
 const objectSearch = ref('')
 const objectTypeFilter = ref<string | undefined>(undefined)
+const objectTypeOptions = computed(() => (
+  [...new Set(objects.value.map(o => o.object_type))]
+    .sort((a, b) => compareText(a, b))
+    .map(t => ({ value: t, label: t }))
+))
 
 const filteredObjects = computed(() => {
   const q = objectSearch.value.trim().toLowerCase()
@@ -180,24 +262,58 @@ function clearObjectFilters() {
   objectTypeFilter.value = undefined
 }
 
-const columns = computed<TableColumnsType<SimObject>>(() => [
-  { title: 'Name', dataIndex: 'name', key: 'name', sorter: (a, b) => compareText(a.name, b.name), sortDirections: ['ascend', 'descend'] },
-  { title: 'Type', key: 'type', width: 170, sorter: (a, b) => compareText(a.object_type, b.object_type), sortDirections: ['ascend', 'descend'] },
-  { title: 'Inst.', dataIndex: 'object_instance', key: 'instance', width: 65, sorter: (a, b) => a.object_instance - b.object_instance, sortDirections: ['ascend', 'descend'] },
-  { title: 'Behavior', key: 'behavior', width: 120, sorter: (a, b) => compareText(a.behavior, b.behavior), sortDirections: ['ascend', 'descend'] },
-  {
-    title: 'Semantic Type', key: 'point_type', width: 190,
-    sorter: (a, b) => compareText(
-      a.point_type ? pointTypeLabel.value[a.point_type] ?? a.point_type : '',
-      b.point_type ? pointTypeLabel.value[b.point_type] ?? b.point_type : '',
-    ),
-    sortDirections: ['ascend', 'descend'],
-  },
-  { title: 'Units', dataIndex: 'units', key: 'units', width: 150, sorter: (a, b) => compareText(a.units === 'no-units' ? '' : a.units, b.units === 'no-units' ? '' : b.units), sortDirections: ['ascend', 'descend'] },
-  { title: 'Live Value', key: 'value', width: 110, sorter: (a, b) => sortableLiveValue(a) - sortableLiveValue(b), sortDirections: ['ascend', 'descend'] },
-  { title: 'On', key: 'enabled', width: 50, sorter: (a, b) => Number(Boolean(a.enabled)) - Number(Boolean(b.enabled)), sortDirections: ['ascend', 'descend'] },
-  { title: '', key: 'actions', width: 200 },
-])
+function providerLabel(obj: SimObject): string {
+  const provider = obj.simulation_output_owner?.provider_type
+  if (provider === 'fmu') return 'FMU'
+  if (provider === 'learned') return 'Learned'
+  return provider ?? ''
+}
+
+function providerColor(obj: SimObject): string {
+  const provider = obj.simulation_output_owner?.provider_type
+  if (provider === 'fmu') return 'purple'
+  if (provider === 'learned') return 'cyan'
+  return 'default'
+}
+
+watch(objectTypeOptions, (options) => {
+  if (
+    objectTypeFilter.value !== undefined
+    && !options.some(o => o.value === objectTypeFilter.value)
+  ) {
+    objectTypeFilter.value = undefined
+  }
+})
+
+const columns = computed<TableColumnsType<SimObject>>(() => {
+  const baseColumns: TableColumnsType<SimObject> = [
+    { title: 'Name', dataIndex: 'name', key: 'name', sorter: (a, b) => compareText(a.name, b.name), sortDirections: ['ascend', 'descend'] },
+    { title: 'Type', key: 'type', width: 170, sorter: (a, b) => compareText(a.object_type, b.object_type), sortDirections: ['ascend', 'descend'] },
+    { title: 'Inst.', dataIndex: 'object_instance', key: 'instance', width: 65, sorter: (a, b) => a.object_instance - b.object_instance, sortDirections: ['ascend', 'descend'] },
+    { title: 'Behavior', key: 'behavior', width: 120, sorter: (a, b) => compareText(a.behavior, b.behavior), sortDirections: ['ascend', 'descend'] },
+    {
+      title: 'Semantic Type', key: 'point_type', width: 190,
+      sorter: (a, b) => compareText(
+        a.point_type ? pointTypeLabel.value[a.point_type] ?? a.point_type : '',
+        b.point_type ? pointTypeLabel.value[b.point_type] ?? b.point_type : '',
+      ),
+      sortDirections: ['ascend', 'descend'],
+    },
+    { title: 'Units', dataIndex: 'units', key: 'units', width: 150, sorter: (a, b) => compareText(a.units === 'no-units' ? '' : a.units, b.units === 'no-units' ? '' : b.units), sortDirections: ['ascend', 'descend'] },
+    { title: isMirror.value ? 'Live' : 'Live Value', key: 'value', width: isMirror.value ? 95 : 110, sorter: (a, b) => sortableLiveValue(a) - sortableLiveValue(b), sortDirections: ['ascend', 'descend'] },
+  ]
+  if (isMirror.value) {
+    baseColumns.push(
+      { title: 'Model', key: 'model_value', width: 105 },
+      { title: 'Δ', key: 'delta', width: 75 },
+    )
+  }
+  baseColumns.push(
+    { title: 'On', key: 'enabled', width: 50, sorter: (a, b) => Number(Boolean(a.enabled)) - Number(Boolean(b.enabled)), sortDirections: ['ascend', 'descend'] },
+    { title: '', key: 'actions', width: 200 },
+  )
+  return baseColumns
+})
 
 // ─── Object drawer / actions (simulated devices only — the actions column
 // is empty for external, so these are unreachable there, but the guards
@@ -322,7 +438,7 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
   return new Promise((resolve) => {
     Modal.confirm({
       title: 'Switch to Simulation mode?',
-      content: 'This device uses Mirror mode. Changing a point behavior will switch the device to Simulation mode and activate its point behaviors.',
+      content: 'This device uses Twin mode. Changing a point behavior will switch the device to Simulation mode and activate its point behaviors.',
       okText: 'Switch to Simulation',
       cancelText: 'Cancel',
       onOk: async () => {
@@ -347,7 +463,11 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
     <div style="font-size:18px;font-weight:600">
       {{ device.name }}
       <a-tag v-if="isExternal" color="default" style="margin-left:8px;font-weight:normal">Read Only</a-tag>
-      <a-tag v-if="isMirror" color="blue" style="margin-left:8px;font-weight:normal">Mirror</a-tag>
+      <a-tag v-if="isMirror" color="blue" style="margin-left:8px;font-weight:normal">Twin</a-tag>
+      <a-tag v-if="isSimulationMode" color="green" style="margin-left:8px;font-weight:normal">Sim</a-tag>
+      <a-tooltip v-if="simulationProviderLabel" :title="simulationProviderTitle">
+        <a-tag :color="simulationProviderColor" style="margin-left:8px;font-weight:normal">{{ simulationProviderLabel }}</a-tag>
+      </a-tooltip>
     </div>
     <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
       <template v-if="isExternal">
@@ -384,14 +504,22 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
         size="small"
         placeholder="Object Type"
         style="width:170px"
-        :options="meta.object_types.map(t => ({ value: t, label: t }))"
+        :options="objectTypeOptions"
       />
 
       <template #actions>
         <template v-if="canConfigureSimulation">
           <template v-if="isMirror">
-            <span style="font-size:11px;color:var(--text-placeholder);margin-right:4px">Mirror mode · values driven by source</span>
+            <span style="font-size:11px;color:var(--text-placeholder);margin-right:4px">Twin mode · values driven by {{ mirrorSourceName }}</span>
           </template>
+          <a-button @click="openEditDevice">
+            <template #icon><EditOutlined /></template>
+            Edit
+          </a-button>
+          <a-button @click="openSimulationModel">
+            <template #icon><ExperimentOutlined /></template>
+            Simulation
+          </a-button>
           <a-button :disabled="!objects.length" @click="saveTemplateOpen = true">Save as Template</a-button>
           <a-button @click="templateModalOpen = true">From Template</a-button>
           <a-button :disabled="!objects.length" @click="suggestModalOpen = true">
@@ -404,6 +532,10 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
           <span v-if="externalLastUpdatedAt" style="font-size:11px;color:var(--text-placeholder);margin-right:4px">
             Live · updated {{ secondsSinceUpdate }}s ago
           </span>
+          <a-button @click="openEditDevice">
+            <template #icon><EditOutlined /></template>
+            Edit
+          </a-button>
           <a-button :loading="refreshing" @click="manualRefresh">Refresh</a-button>
           <a-button :disabled="!objects.length" @click="suggestModalOpen = true">
             <template #icon><BulbOutlined /></template>
@@ -439,7 +571,10 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
           <a-tag style="font-family:monospace;font-size:11px">{{ (record as SimObject).object_type }}</a-tag>
         </template>
         <template v-else-if="column.key === 'behavior'">
-          <a-tag v-if="canConfigureSimulation && !isMirror" :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
+          <a-tooltip v-if="(record as SimObject).simulation_output_owner" :title="`Driven by ${(record as SimObject).simulation_output_owner!.name} / ${(record as SimObject).simulation_output_owner!.variable}`">
+            <a-tag :color="providerColor(record as SimObject)">{{ providerLabel(record as SimObject) }}</a-tag>
+          </a-tooltip>
+          <a-tag v-else-if="canConfigureSimulation && !isMirror" :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
           <span v-else style="color:var(--text-disabled)">—</span>
         </template>
         <template v-else-if="column.key === 'point_type'">
@@ -452,6 +587,25 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
         <template v-else-if="column.key === 'value'">
           <span :style="{ fontFamily:'monospace', color: hasLive((record as SimObject).id) ? '#1890ff' : 'var(--text-disabled)' }">
             {{ fmtVal(record as SimObject) }}
+          </span>
+        </template>
+        <template v-else-if="column.key === 'model_value'">
+          <span
+            :style="{
+              fontFamily:'monospace',
+              color: isModelWarming(record as SimObject)
+                ? '#faad14'
+                : hasModel((record as SimObject).id)
+                  ? '#722ed1'
+                  : 'var(--text-disabled)'
+            }"
+          >
+            {{ fmtModelVal(record as SimObject) }}
+          </span>
+        </template>
+        <template v-else-if="column.key === 'delta'">
+          <span :style="{ fontFamily:'monospace', color: deltaVal(record as SimObject) === null ? 'var(--text-disabled)' : 'var(--text-secondary)' }">
+            {{ fmtDelta(record as SimObject) }}
           </span>
         </template>
         <template v-else-if="column.key === 'enabled'">
@@ -472,7 +626,7 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
               <template #icon><CopyOutlined /></template>
             </a-button>
             <a-button
-              v-if="(record as SimObject).behavior === 'manual'"
+              v-if="!(record as SimObject).simulation_output_owner && (record as SimObject).behavior === 'manual'"
               type="link" size="small"
               style="color:#fa8c16"
               @click="openSetValue(record as SimObject)"

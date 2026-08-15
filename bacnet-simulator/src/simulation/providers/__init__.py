@@ -1,8 +1,7 @@
 from .base import PointConfig, ProviderStatus, SimulationContext, SimulationProvider, ValidationResult
 from .builtin import BuiltInSimulationProvider
-from .fmu import FMUSimulationProvider
+from .fmu import FMUPointBinding, FMUSimulationProvider
 from .learned_twin import LearnedTwinSimulationProvider
-from .system import PointBinding, SystemSimulationProvider
 
 
 __all__ = [
@@ -13,7 +12,6 @@ __all__ = [
     "ProviderStatus",
     "BuiltInSimulationProvider",
     "FMUSimulationProvider",
+    "FMUPointBinding",
     "LearnedTwinSimulationProvider",
-    "SystemSimulationProvider",
-    "PointBinding"
 ]

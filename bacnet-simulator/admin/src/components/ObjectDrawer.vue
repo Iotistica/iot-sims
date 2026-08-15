@@ -174,6 +174,8 @@ async function removeAlarmConfig() {
 
 const COMMANDABLE_TYPES = ['analog-output', 'binary-output', 'multi-state-output']
 const showPriorityArraySection = computed(() => !props.draftMode && !!props.object && COMMANDABLE_TYPES.includes(form.object_type))
+const simulationOutputOwner = computed(() => props.object?.simulation_output_owner ?? null)
+const behaviorEditable = computed(() => !simulationOutputOwner.value)
 
 const priorityArray = ref<PriorityArrayInfo | null>(null)
 const paLoading = ref(false)
@@ -304,6 +306,13 @@ async function save() {
     return
   }
   if (!props.deviceId) return
+  if (simulationOutputOwner.value && props.object) {
+    form.behavior = props.object.behavior
+    try {
+      const raw = props.object.behavior_params
+      params.value = { ...(typeof raw === 'string' ? JSON.parse(raw) : raw) }
+    } catch { params.value = { value: 0 } }
+  }
   if (props.mirrorMode && props.object && form.behavior !== props.object.behavior) {
     if (props.onBeforeSaveBehaviorChange) {
       const proceed = await props.onBeforeSaveBehaviorChange()
@@ -400,14 +409,22 @@ function doDelete() {
         </a-select>
       </a-form-item>
 
-      <a-form-item label="Behavior">
+      <a-form-item v-if="behaviorEditable" label="Behavior">
         <a-select v-model:value="form.behavior">
           <a-select-option v-for="b in meta.behaviors" :key="b" :value="b">{{ b }}</a-select-option>
         </a-select>
       </a-form-item>
+      <a-form-item v-else label="Provider">
+        <a-tag :color="simulationOutputOwner?.provider_type === 'fmu' ? 'purple' : 'cyan'">
+          {{ simulationOutputOwner?.provider_type === 'fmu' ? 'FMU' : 'Learned' }}
+        </a-tag>
+        <span style="font-size:12px;color:var(--text-secondary)">
+          {{ simulationOutputOwner?.name }} / {{ simulationOutputOwner?.variable }}
+        </span>
+      </a-form-item>
 
       <!-- Behavior params -->
-      <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:14px">
+      <div v-if="behaviorEditable" style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:14px">
         <!-- constant -->
         <a-form-item v-if="form.behavior === 'constant'" label="Value" style="margin-bottom:0">
           <a-input-number v-model:value="params.value" style="width:100%" :step="0.1" />

@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ApiOutlined, CopyOutlined, DeleteOutlined, DeploymentUnitOutlined,
   DownloadOutlined, EditOutlined, EllipsisOutlined, FolderAddOutlined,
   FolderOutlined, LineChartOutlined, PlusOutlined, SearchOutlined,
-  AlertOutlined, CalendarOutlined, ScheduleOutlined, ThunderboltOutlined,
+  AlertOutlined, CalendarOutlined, DownOutlined, ScheduleOutlined, ThunderboltOutlined,
   ExperimentOutlined, ClusterOutlined, UploadOutlined,
 } from '@ant-design/icons-vue'
-import type { Device, Equipment, Location, Meta } from '../types'
+import type { BACnetDiscoveryConnection, Device, Equipment, Location, Meta } from '../types'
 import { buildLocationTreeOptions, flattenLocationTree } from '../locationTree'
 import { getLocationIcon } from '../locationIcons'
 import { getEquipmentIcon, getControllerIcon } from '../equipmentIcons'
@@ -31,11 +31,11 @@ const props = withDefaults(defineProps<{
   search: string
   expandedKeys: string[]
   quickDiscoverLoading?: boolean
-  hasRememberedConnection?: boolean
+  discoveryConnections?: BACnetDiscoveryConnection[]
   width?: number
 }>(), {
   quickDiscoverLoading: false,
-  hasRememberedConnection: false,
+  discoveryConnections: () => [],
   width: 320,
 })
 
@@ -51,7 +51,9 @@ const emit = defineEmits<{
   'edit-equipment': [equipment: Equipment]
   'edit-device': [device: Device]
   'discover': []
-  'edit-discovery': []
+  'discover-all': []
+  'discover-connection': [connection: BACnetDiscoveryConnection]
+  'manage-discovery': []
   'assign-device-location': [device: Device, locationId: number]
   'create-simulated-copy': [device: Device]
   'remove-external-device': [device: Device]
@@ -168,6 +170,52 @@ const TREE_ICON_SLOT_STYLE = {
   display:'inline-flex', alignItems:'center', justifyContent:'center',
   width:'20px', height:'20px', fontSize:'16px', flexShrink:'0',
 } as const
+const EXTERNAL_HEALTH_STALE_MS = 2 * 60 * 1000
+const now = ref(Date.now())
+let healthClock: ReturnType<typeof setInterval> | null = null
+
+function externalLastSeenMs(device: Device): number | null {
+  if (!device.external_last_seen_at) return null
+  const value = Date.parse(device.external_last_seen_at)
+  return Number.isNaN(value) ? null : value
+}
+
+function formatRelativeAge(ageMs: number): string {
+  const seconds = Math.max(0, Math.round(ageMs / 1000))
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  return `${hours}h ago`
+}
+
+function deviceHealthStatus(device: Device): 'success' | 'warning' | 'default' {
+  if (!device.enabled) return 'default'
+  if (device.source_type !== 'external-bacnet') return 'success'
+  const lastSeen = externalLastSeenMs(device)
+  if (lastSeen === null) return 'default'
+  return now.value - lastSeen <= EXTERNAL_HEALTH_STALE_MS ? 'success' : 'warning'
+}
+
+function deviceHealthTitle(device: Device): string {
+  if (!device.enabled) return 'Device disabled'
+  if (device.source_type !== 'external-bacnet') return 'Simulation enabled'
+  const lastSeen = externalLastSeenMs(device)
+  if (lastSeen === null) return 'External device has not been seen yet'
+  const age = now.value - lastSeen
+  const seen = formatRelativeAge(age)
+  return age <= EXTERNAL_HEALTH_STALE_MS
+    ? `External device last seen ${seen}`
+    : `External device stale; last seen ${seen}`
+}
+
+onMounted(() => {
+  healthClock = setInterval(() => { now.value = Date.now() }, 30_000)
+})
+const hasDiscoveryConnections = computed(() => props.discoveryConnections.length > 0)
+onUnmounted(() => {
+  if (healthClock) clearInterval(healthClock)
+})
 
 function onTreeSelect(_keys: unknown, info: { node: { dataRef?: SidebarTreeNode } & Partial<SidebarTreeNode> }) {
   const data = info.node.dataRef ?? (info.node as SidebarTreeNode)
@@ -180,8 +228,10 @@ const openAddEquipment = (id: number | null = null) => emit('add-equipment', id)
 const openAddDevice = (id: number | null = null) => emit('add-device', id)
 const openEditLocation = (v: Location) => emit('edit-location', v)
 const openEditEquipment = (v: Equipment) => emit('edit-equipment', v)
-const openEditDevice = (v: Device) => emit('edit-device', v)
 const onDiscoverClick = () => emit('discover')
+const onDiscoverAllClick = () => emit('discover-all')
+const onDiscoverConnectionClick = (connection: BACnetDiscoveryConnection) => emit('discover-connection', connection)
+const onManageDiscoveryClick = () => emit('manage-discovery')
 const assignDeviceToLocation = (d: Device, id: number) => emit('assign-device-location', d, id)
 const openCreateSimulatedCopy = (d: Device) => emit('create-simulated-copy', d)
 const removeExternalDevice = (d: Device) => emit('remove-external-device', d)
@@ -221,21 +271,42 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
                   </a-menu>
                 </template>
               </a-dropdown>
+              <a-dropdown v-if="hasDiscoveryConnections" :trigger="['click']">
+                <a-button
+                  size="small"
+                  :title="hasExternalDevices ? 'Rediscover' : 'Discover Devices'"
+                  :loading="quickDiscoverLoading"
+                >
+                  Discover <DownOutlined />
+                </a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item key="all" @click="onDiscoverAllClick">
+                      All Connections
+                    </a-menu-item>
+                    <a-menu-divider />
+                    <a-menu-item
+                      v-for="connection in discoveryConnections"
+                      :key="connection.id"
+                      @click="onDiscoverConnectionClick(connection)"
+                    >
+                      {{ connection.name }}
+                    </a-menu-item>
+                    <a-menu-divider />
+                    <a-menu-item key="manage" @click="onManageDiscoveryClick">
+                      Manage connections...
+                    </a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
               <a-button
+                v-else
                 size="small"
                 :title="hasExternalDevices ? 'Rediscover' : 'Discover Devices'"
                 :loading="quickDiscoverLoading"
                 @click="onDiscoverClick"
               >
                 Discover
-              </a-button>
-              <a-button
-                v-if="hasRememberedConnection"
-                size="small"
-                title="Edit discovery connection"
-                @click="$emit('edit-discovery')"
-              >
-                <template #icon><EditOutlined /></template>
               </a-button>
             </a-space>
           </div>
@@ -312,8 +383,13 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
                 </a-tooltip>
                 <div style="flex:1;min-width:0">
                   <div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</div>
-                  <div style="font-size:11px;color:var(--text-secondary)">
-                    ID {{ node.device.device_instance }}
+                  <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-secondary)">
+                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                      ID {{ node.device.device_instance }}
+                    </span>
+                    <a-tooltip :title="deviceHealthTitle(node.device)">
+                      <a-badge :status="deviceHealthStatus(node.device)" style="flex-shrink:0" />
+                    </a-tooltip>
                   </div>
                 </div>
                 <a-tag color="default" style="font-size:10px;margin:0;line-height:16px">External</a-tag>
@@ -331,9 +407,6 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
                             </a-menu-item>
                           </template>
                         </a-menu-item-group>
-                        <a-menu-item key="edit" @click="openEditDevice(node.device)">
-                          <EditOutlined /> Edit
-                        </a-menu-item>
                         <a-menu-item key="create-simulated-copy" @click="openCreateSimulatedCopy(node.device)">
                           <CopyOutlined /> Create Simulation
                         </a-menu-item>
@@ -379,13 +452,16 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
                 <div style="flex:1;min-width:0">
                   <div style="display:flex;align-items:center;gap:4px;overflow:hidden">
                     <span style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</span>
-                    <a-tag v-if="node.device.simulation_mode === 'mirror'" color="blue" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Mirror</a-tag>
+                    <a-tag v-if="node.device.simulation_mode !== 'mirror'" color="green" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
+                    <a-tag v-if="node.device.simulation_mode === 'mirror'" color="blue" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Twin</a-tag>
                   </div>
                   <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-secondary)">
                     <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
                       ID {{ node.device.device_instance }}<template v-if="node.device.equipment_type"> · {{ equipmentTypeLabel[node.device.equipment_type] ?? node.device.equipment_type }}</template>
                     </span>
-                    <a-badge :status="node.device.enabled ? 'success' : 'default'" style="flex-shrink:0" />
+                    <a-tooltip :title="deviceHealthTitle(node.device)">
+                      <a-badge :status="deviceHealthStatus(node.device)" style="flex-shrink:0" />
+                    </a-tooltip>
                   </div>
                 </div>
                 <a-space :size="2" @click.stop>
@@ -395,9 +471,6 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
                     </a-button>
                     <template #overlay>
                       <a-menu>
-                        <a-menu-item key="edit" @click="openEditDevice(node.device)">
-                          <EditOutlined /> Edit
-                        </a-menu-item>
                         <a-menu-item key="duplicate" @click="duplicateDevice(node.device)">
                           <CopyOutlined /> Duplicate
                         </a-menu-item>
@@ -431,13 +504,7 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
                         <a-menu-item key="energy-model" @click="openEnergyModel(node.device)">
                           <ThunderboltOutlined /> Energy Model
                         </a-menu-item>
-                        <a-menu-item
-                          v-if="node.device.source_type !== 'external-bacnet'"
-                          key="simulation-model"
-                          @click="openSimulationModel(node.device)"
-                        >
-                          <ExperimentOutlined /> Simulation Model
-                        </a-menu-item>
+                       
                         <a-menu-item key="view-traffic" @click="viewTraffic(node.device)">
                           <ClusterOutlined /> View Traffic
                         </a-menu-item>

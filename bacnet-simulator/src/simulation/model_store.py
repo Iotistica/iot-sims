@@ -4,6 +4,8 @@ import json
 import sqlite3
 from typing import Any
 
+from .models.remote_catalog import normalize_remote_model_id
+
 
 def ensure_simulation_model_schema(database: Any) -> None:
     """
@@ -61,6 +63,8 @@ def ensure_simulation_model_schema(database: Any) -> None:
 
 def _decode_config(row: Any) -> dict[str, Any]:
     result = dict(row)
+    if result.get("provider_type") == "fmu":
+        result["model_type"] = normalize_remote_model_id(str(result.get("model_type") or ""))
     try:
         result["parameters"] = json.loads(result.get("parameters") or "{}")
     except (TypeError, json.JSONDecodeError):
@@ -116,6 +120,7 @@ def list_simulation_models(
     database: Any,
     *,
     created_from_device_id: int | None = None,
+    include_legacy_system: bool = False,
 ) -> list[dict]:
     ensure_simulation_model_schema(database)
     with database._conn() as conn:
@@ -136,6 +141,11 @@ def list_simulation_models(
         result: list[dict] = []
         for row in rows:
             item = _decode_config(row)
+            if (
+                not include_legacy_system
+                and item.get("provider_type") == "system"
+            ):
+                continue
             item["mappings"] = _load_mappings(conn, int(item["id"]))
             result.append(item)
         return result
@@ -148,6 +158,102 @@ def list_enabled_simulation_models(database: Any) -> list[dict]:
         for model in list_simulation_models(database)
         if model["enabled"]
     ]
+
+
+def get_active_simulation_models_by_device(database: Any) -> dict[int, dict]:
+    """
+    Return the enabled explicit simulation model driving each device.
+
+    Simulation models own output points, not devices directly, so this derives
+    the device badge from enabled output mappings. If a device is driven by
+    more than one model, keep the first model for the label and expose the
+    count so the UI can make that ambiguity visible later if needed.
+    """
+    ensure_simulation_model_schema(database)
+    with database._conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT
+                o.device_id,
+                c.id,
+                c.name,
+                c.provider_type,
+                c.model_type
+            FROM simulation_model_configs c
+            JOIN simulation_model_mappings m ON m.model_config_id=c.id
+            JOIN objects o ON o.id=m.point_id
+        WHERE c.enabled=1 AND m.direction='output'
+            AND c.provider_type<>'system'
+        ORDER BY o.device_id, c.id
+            """
+        ).fetchall()
+
+    result: dict[int, dict] = {}
+    seen_models: dict[int, set[int]] = {}
+    for row in rows:
+        device_id = int(row["device_id"])
+        model_id = int(row["id"])
+        seen_for_device = seen_models.setdefault(device_id, set())
+        if model_id in seen_for_device:
+            continue
+        seen_for_device.add(model_id)
+
+        if device_id not in result:
+            result[device_id] = {
+                "id": model_id,
+                "name": row["name"],
+                "provider_type": row["provider_type"],
+                "model_type": row["model_type"],
+                "model_count": 1,
+            }
+        else:
+            result[device_id]["model_count"] += 1
+    return result
+
+
+def get_output_owners_by_point(
+    database: Any,
+    point_ids: list[int] | set[int] | tuple[int, ...] | None = None,
+    *,
+    excluding_model_id: int | None = None,
+) -> dict[int, dict]:
+    """Return explicit simulation-model output ownership by point id."""
+    ensure_simulation_model_schema(database)
+    sql = """
+        SELECT
+            m.point_id,
+            c.id,
+            c.name,
+            c.provider_type,
+            c.model_type,
+            m.variable
+        FROM simulation_model_mappings m
+        JOIN simulation_model_configs c ON c.id=m.model_config_id
+        WHERE c.enabled=1 AND m.direction='output'
+            AND c.provider_type<>'system'
+    """
+    params: list[Any] = []
+    ids = [int(point_id) for point_id in (point_ids or [])]
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        sql += f" AND m.point_id IN ({placeholders})"
+        params.extend(ids)
+    if excluding_model_id is not None:
+        sql += " AND c.id<>?"
+        params.append(int(excluding_model_id))
+
+    with database._conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return {
+            int(row["point_id"]): {
+                "id": int(row["id"]),
+                "name": row["name"],
+                "provider_type": row["provider_type"],
+                "model_type": row["model_type"],
+                "variable": row["variable"],
+            }
+            for row in rows
+        }
 
 
 def _replace_mappings(
@@ -286,6 +392,7 @@ def get_explicit_output_owner(
         FROM simulation_model_mappings m
         JOIN simulation_model_configs c ON c.id=m.model_config_id
         WHERE m.direction='output' AND m.point_id=?
+            AND c.provider_type<>'system'
     """
     params: list[Any] = [point_id]
     if excluding_model_id is not None:

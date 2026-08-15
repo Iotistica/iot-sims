@@ -29,7 +29,7 @@ import CalendarDrawer from './components/CalendarDrawer.vue'
 import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
 import SimulationModelModal from './components/SimulationModelDrawer.vue'
 
-import type { Device, Meta, Health, Location, Equipment, Project, BACnetConnectionConfig } from './types'
+import type { Device, Meta, Health, Location, Equipment, Project, BACnetConnectionConfig, BACnetDiscoveryConnection } from './types'
 import { api, projectDirty } from './api'
 import { buildLocationTreeOptions, flattenLocationTree } from './locationTree'
 import { authToken, currentUser, logout } from './auth'
@@ -76,37 +76,98 @@ const filteredDevices = computed(() => {
 // simulated devices already use — no separate tree structure needed.
 const discoverModalOpen = ref(false)
 const quickDiscoverLoading = ref(false)
-// Once a project has a remembered connection, clicking Discover runs
-// discovery immediately with it instead of reopening the modal each time —
-// the modal is still reachable via the "Edit connection" button to change
-// or clear it.
-const hasRememberedConnection = computed(() => activeProjectConnectionConfig.value !== null)
+function defaultConnectionName(config: BACnetConnectionConfig): string {
+  return config.discovery_target?.trim() || 'Local BACnet'
+}
 
-async function onDiscovered(rememberedConfig: BACnetConnectionConfig | null) {
-  // Only overwrite the cached connection when this discovery actually
-  // remembered one — an unchecked/failed "Remember connection" must leave
-  // the project's previously remembered connection untouched.
-  if (rememberedConfig) activeProjectConnectionConfig.value = rememberedConfig
+function normalizeDiscoveryConnections(
+  connections?: BACnetDiscoveryConnection[] | null,
+  legacyConfig?: BACnetConnectionConfig | null,
+): BACnetDiscoveryConnection[] {
+  if (connections?.length) return connections
+  if (!legacyConfig) return []
+  return [{
+    id: 1,
+    name: defaultConnectionName(legacyConfig),
+    target: legacyConfig.discovery_target,
+    device_instance_low: legacyConfig.device_instance_low,
+    device_instance_high: legacyConfig.device_instance_high,
+    timeout_ms: legacyConfig.timeout_ms,
+    enabled: true,
+  }]
+}
+
+function connectionConfigForCompat(connections: BACnetDiscoveryConnection[]): BACnetConnectionConfig | null {
+  const first = connections[0]
+  if (!first) return null
+  return {
+    discovery_target: first.target,
+    device_instance_low: first.device_instance_low,
+    device_instance_high: first.device_instance_high,
+    timeout_ms: first.timeout_ms,
+  }
+}
+
+async function refreshDiscoveryConnections() {
+  if (activeProjectId.value == null) {
+    activeProjectDiscoveryConnections.value = []
+    activeProjectConnectionConfig.value = null
+    return
+  }
+  try {
+    const result = await api.discovery.connections.list(activeProjectId.value)
+    activeProjectDiscoveryConnections.value = result.connections
+    activeProjectConnectionConfig.value = connectionConfigForCompat(result.connections)
+  } catch {
+    activeProjectDiscoveryConnections.value = []
+    activeProjectConnectionConfig.value = null
+  }
+}
+
+async function onDiscovered(savedConnections: BACnetDiscoveryConnection[] | null) {
+  if (savedConnections) {
+    activeProjectDiscoveryConnections.value = savedConnections
+    activeProjectConnectionConfig.value = connectionConfigForCompat(savedConnections)
+  }
   await loadDevices()
   await loadHealth()
 }
 
 function onDiscoverClick() {
-  if (hasRememberedConnection.value) {
-    void quickDiscover()
-  } else {
+  discoverModalOpen.value = true
+}
+
+async function discoverConnection(connection: BACnetDiscoveryConnection) {
+  if (activeProjectId.value == null) {
     discoverModalOpen.value = true
+    return
+  }
+  quickDiscoverLoading.value = true
+  try {
+    const result = await api.discovery.connections.sync(activeProjectId.value, connection.id)
+    message.success(result.devices.length
+      ? `${connection.name}: discovered ${result.devices.length} device${result.devices.length !== 1 ? 's' : ''}`
+      : 'No devices found')
+    await loadDevices()
+    await loadHealth()
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Discovery failed')
+  } finally {
+    quickDiscoverLoading.value = false
   }
 }
 
-async function quickDiscover() {
-  const config = activeProjectConnectionConfig.value
-  if (!config) return
+async function discoverAllConnections() {
+  const connections = activeProjectDiscoveryConnections.value
+  if (!connections.length || activeProjectId.value == null) {
+    discoverModalOpen.value = true
+    return
+  }
   quickDiscoverLoading.value = true
   try {
-    const result = await api.discovery.sync(config)
+    const result = await api.discovery.connections.syncAll(activeProjectId.value)
     message.success(result.devices.length
-      ? `Discovered ${result.devices.length} device${result.devices.length !== 1 ? 's' : ''}`
+      ? `Discovered ${result.devices.length} device${result.devices.length !== 1 ? 's' : ''} across ${result.connections} connection${result.connections !== 1 ? 's' : ''}`
       : 'No devices found')
     await loadDevices()
     await loadHealth()
@@ -218,6 +279,8 @@ const selectedDevice = ref<Device | null>(null)
 const selectedEquipment = ref<Equipment | null>(null)
 const objectsPanelRef = ref<{ reload: () => void } | null>(null)
 const liveValues = ref<Record<number, number | boolean>>({})
+const modelValues = ref<Record<number, number | boolean>>({})
+const modelStates = ref<Record<number, string>>({})
 
 // Drawers
 const deviceDrawerOpen  = ref(false)
@@ -242,13 +305,14 @@ const ACTIVE_PROJECT_KEY = 'bacnet-sim-active-project'
 const activeProjectId   = ref<number | null>(null)
 const activeProjectName = ref<string | null>(null)
 const activeProjectDesc = ref<string>('')
-// The project's remembered BACnet discovery connection. Deliberately NOT
+// The project's saved BACnet discovery connections. Deliberately NOT
 // persisted to localStorage (unlike id/name/desc below) — it must always
 // come from an authoritative backend response (project load/create/save-as,
-// or a just-completed "remember" write), never from a browser cache, so
+// or a just-completed connection save), never from a browser cache, so
 // switching projects or refreshing the page can never leak a stale or
 // wrong-project value into the Discover modal.
 const activeProjectConnectionConfig = ref<BACnetConnectionConfig | null>(null)
+const activeProjectDiscoveryConnections = ref<BACnetDiscoveryConnection[]>([])
 
 function loadActiveProjectFromStorage() {
   try {
@@ -289,10 +353,27 @@ function wsConnect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   ws = new WebSocket(`${proto}//${location.host}/ws?token=${encodeURIComponent(authToken.value ?? '')}`)
   ws.onmessage = (e) => {
-    const data = JSON.parse(e.data) as { devices?: { objects?: { id: number; value: number | boolean }[] }[] }
+    const data = JSON.parse(e.data) as {
+      devices?: {
+        objects?: {
+          id: number
+          value?: number | boolean
+          model_value?: number | boolean
+          model_state?: string
+        }[]
+      }[]
+    }
     const map: Record<number, number | boolean> = {}
-    data.devices?.forEach(d => d.objects?.forEach(o => { map[o.id] = o.value }))
+    const modelMap: Record<number, number | boolean> = {}
+    const stateMap: Record<number, string> = {}
+    data.devices?.forEach(d => d.objects?.forEach(o => {
+      if (o.value !== undefined) map[o.id] = o.value
+      if (o.model_value !== undefined) modelMap[o.id] = o.model_value
+      if (o.model_state !== undefined) stateMap[o.id] = o.model_state
+    }))
     liveValues.value = map
+    modelValues.value = modelMap
+    modelStates.value = stateMap
   }
   // Only keep retrying while still logged in — an expired/cleared token would
   // otherwise reconnect forever against a server that immediately closes it.
@@ -334,6 +415,15 @@ async function loadDevices() {
       selectedDevice.value = found ?? null
     }
   } catch { /* swallow */ }
+}
+
+function markExternalDeviceSeen(deviceId: number, seenAt: string) {
+  devices.value = devices.value.map(d =>
+    d.id === deviceId ? { ...d, external_last_seen_at: seenAt } : d
+  )
+  if (selectedDevice.value?.id === deviceId) {
+    selectedDevice.value = { ...selectedDevice.value, external_last_seen_at: seenAt }
+  }
 }
 async function loadLocations() {
   try { locations.value = await api.locations.list() } catch { /* swallow */ }
@@ -388,8 +478,11 @@ function openCreateSimulatedCopy(d: Device) {
   createCopySource.value = d
   createCopyModalOpen.value = true
 }
-async function onSimulatedCopyCreated() {
+async function onSimulatedCopyCreated(created: Device) {
   await loadDevices()
+  const fresh = devices.value.find(d => d.id === created.id)
+  selectedEquipment.value = null
+  selectedDevice.value = fresh ?? created
   await loadHealth()
 }
 function removeExternalDevice(d: Device) {
@@ -534,6 +627,7 @@ async function resetToNewProject(silent = false) {
   activeProjectName.value = null
   activeProjectDesc.value = ''
   activeProjectConnectionConfig.value = null
+  activeProjectDiscoveryConnections.value = []
   projectDirty.value = false
   await loadDevices()
   await loadLocations()
@@ -566,7 +660,8 @@ function onNewProjectCreated(project: Project) {
   activeProjectId.value = project.id
   activeProjectName.value = project.name
   activeProjectDesc.value = project.description
-  activeProjectConnectionConfig.value = project.connection_config ?? null
+  activeProjectDiscoveryConnections.value = normalizeDiscoveryConnections(project.discovery_connections, project.connection_config)
+  activeProjectConnectionConfig.value = connectionConfigForCompat(activeProjectDiscoveryConnections.value)
 }
 
 function openSaveAs() {
@@ -579,7 +674,13 @@ async function openSave() {
   if (activeProjectId.value !== null) {
     // Overwrite existing project directly — no dialog
     try {
-      await api.projects.update(activeProjectId.value, activeProjectName.value!, activeProjectDesc.value)
+      await api.projects.update(
+        activeProjectId.value,
+        activeProjectName.value!,
+        activeProjectDesc.value,
+        connectionConfigForCompat(activeProjectDiscoveryConnections.value),
+        activeProjectDiscoveryConnections.value,
+      )
       projectDirty.value = false
       message.success(`"${activeProjectName.value}" saved`)
     } catch (e: unknown) {
@@ -596,17 +697,21 @@ async function doSave() {
   if (!saveModalName.value.trim()) return
   saveModalLoading.value = true
   try {
-    // Save As carries over the current project's remembered discovery
-    // connection too, so a copy doesn't silently lose it.
+    // Save As carries over the current project's saved discovery
+    // connections too, so a copy doesn't silently lose them.
     const project = await api.projects.save(
       saveModalName.value.trim(),
       saveModalDesc.value.trim(),
-      activeProjectConnectionConfig.value,
+      connectionConfigForCompat(activeProjectDiscoveryConnections.value),
+      undefined,
+      undefined,
+      activeProjectDiscoveryConnections.value,
     )
     activeProjectId.value = project.id
     activeProjectName.value = project.name
     activeProjectDesc.value = project.description
-    activeProjectConnectionConfig.value = project.connection_config ?? null
+    activeProjectDiscoveryConnections.value = normalizeDiscoveryConnections(project.discovery_connections, project.connection_config)
+    activeProjectConnectionConfig.value = connectionConfigForCompat(activeProjectDiscoveryConnections.value)
     saveModalOpen.value = false
     projectDirty.value = false
     message.success(`"${project.name}" saved`)
@@ -620,11 +725,13 @@ async function doSave() {
 async function onProjectLoaded(
   id: number, name: string, desc: string,
   connectionConfig: BACnetConnectionConfig | null,
+  discoveryConnections: BACnetDiscoveryConnection[] | null,
 ) {
   activeProjectId.value = id
   activeProjectName.value = name
   activeProjectDesc.value = desc
-  activeProjectConnectionConfig.value = connectionConfig
+  activeProjectDiscoveryConnections.value = normalizeDiscoveryConnections(discoveryConnections, connectionConfig)
+  activeProjectConnectionConfig.value = connectionConfigForCompat(activeProjectDiscoveryConnections.value)
   projectDirty.value = false
   await loadDevices()
   await loadLocations()
@@ -655,21 +762,26 @@ const TREE_ICON_SLOT_STYLE = {
 
 // Lifecycle — gated behind auth: protected endpoints 401 until logged in
 let healthTimer: ReturnType<typeof setInterval>
+let devicesTimer: ReturnType<typeof setInterval>
 
 async function startApp() {
   await Promise.all([loadMeta(), loadDevices(), loadLocations(), loadEquipment(), loadHealth()])
+  await refreshDiscoveryConnections()
   wsConnect()
   healthTimer = setInterval(loadHealth, 10_000)
+  devicesTimer = setInterval(loadDevices, 30_000)
 }
 
 function stopApp() {
   clearInterval(healthTimer)
+  clearInterval(devicesTimer)
   if (wsTimer) { clearTimeout(wsTimer); wsTimer = null }
   ws?.close()
   ws = null
 }
 
 async function onAuthenticated() {
+  loadActiveProjectFromStorage()
   await startApp()
 }
 
@@ -797,7 +909,7 @@ onUnmounted(() => {
           :selected-device="selectedDevice"
           :selected-equipment="selectedEquipment"
           :quick-discover-loading="quickDiscoverLoading"
-          :has-remembered-connection="hasRememberedConnection"
+          :discovery-connections="activeProjectDiscoveryConnections"
           @select-device="selectDevice"
           @select-equipment="selectEquipment"
           @add-location="openAddLocation"
@@ -807,7 +919,9 @@ onUnmounted(() => {
           @edit-equipment="openEditEquipment"
           @edit-device="openEditDevice"
           @discover="onDiscoverClick"
-          @edit-discovery="discoverModalOpen = true"
+          @discover-all="discoverAllConnections"
+          @discover-connection="discoverConnection"
+          @manage-discovery="discoverModalOpen = true"
           @assign-device-location="assignDeviceToLocation"
           @create-simulated-copy="openCreateSimulatedCopy"
           @remove-external-device="removeExternalDevice"
@@ -844,9 +958,15 @@ onUnmounted(() => {
             v-else-if="selectedDevice"
             ref="objectsPanelRef"
             :device="selectedDevice"
+            :devices="devices"
             :meta="meta"
             :live-values="liveValues"
+            :model-values="modelValues"
+            :model-states="modelStates"
             @device-updated="loadDevices"
+            @external-device-seen="markExternalDeviceSeen"
+            @edit-device="openEditDevice"
+            @simulation-model="openSimulationModel"
           />
 
           <div v-else style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px">
@@ -870,6 +990,7 @@ onUnmounted(() => {
       :existing-instances="devices.map(d => d.device_instance)"
       :default-location-id="addContextLocationId"
       @saved="onDeviceSaved"
+      @simulation-model="openSimulationModel"
     />
 
     <!-- Location drawer -->
@@ -916,10 +1037,8 @@ onUnmounted(() => {
     <!-- Discover BACnet devices modal -->
     <DiscoverModal
       v-model:open="discoverModalOpen"
-      :connection-config="activeProjectConnectionConfig"
+      :discovery-connections="activeProjectDiscoveryConnections"
       :active-project-id="activeProjectId"
-      :active-project-name="activeProjectName"
-      :active-project-desc="activeProjectDesc"
       @discovered="onDiscovered"
     />
 

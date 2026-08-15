@@ -34,6 +34,7 @@ import type {
   CapturedPacketPage,
   PacketCaptureFilters,
   BACnetConnectionConfig,
+  BACnetDiscoveryConnection,
   DiscoveredDevice,
   ExternalObjectRow,
   SemanticSuggestionsResponse,
@@ -74,6 +75,7 @@ const NON_CONFIG_MUTATION = [
   // Selected step, which goes through the ordinary device/object PUT
   // routes above, actually changes anything.
   /\/semantic-suggestions(\/points\/\d+\/ai)?$/,
+  /\/simulation\/models\/mapping-suggestions(\/ai)?$/,
   /\/simulation\/models\/\d+\/reload$/,
   /\/simulation\/models\/reconcile$/,
 ]
@@ -104,6 +106,23 @@ function authHeaders(): Record<string, string> {
   return headers
 }
 
+function errorMessageFromDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail
+
+  if (Array.isArray(detail)) {
+    // FastAPI/Pydantic validation errors: detail is a list of
+    // { loc, msg, type } objects, not a string.
+    return detail.map((d) => (d as { msg?: string })?.msg).filter(Boolean).join('; ')
+  }
+
+  if (detail && typeof detail === 'object') {
+    const message = (detail as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+
+  return ''
+}
+
 async function downloadFile(path: string, fallbackName: string): Promise<void> {
   const res = await fetch(path, { headers: authHeaders() })
   if (!res.ok) throw new Error(res.statusText)
@@ -126,7 +145,7 @@ async function uploadFile<T>(path: string, file: File, fields: Record<string, st
   if (!res.ok) {
     const e = await res.json().catch(() => ({ detail: res.statusText }))
     const detail = (e as { detail?: unknown }).detail
-    throw new Error(typeof detail === 'string' ? detail : res.statusText)
+    throw new Error(errorMessageFromDetail(detail) || res.statusText)
   }
   if (markDirty) projectDirty.value = true
   return res.json() as Promise<T>
@@ -140,16 +159,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     if (res.status === 401) logout()
     const e = await res.json().catch(() => ({ detail: res.statusText }))
     const detail = (e as { detail?: unknown }).detail
-    let message: string
-    if (typeof detail === 'string') {
-      message = detail
-    } else if (Array.isArray(detail)) {
-      // FastAPI/Pydantic validation errors: detail is a list of
-      // { loc, msg, type } objects, not a string.
-      message = detail.map((d) => (d as { msg?: string })?.msg).filter(Boolean).join('; ')
-    } else {
-      message = ''
-    }
+    const message = errorMessageFromDetail(detail)
     throw new Error(message || res.statusText)
   }
   markDirtyIfConfigMutation(path, init?.method)
@@ -160,7 +170,6 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type SimulationProviderType =
   | 'builtin'
-  | 'system'
   | 'fmu'
   | 'learned'
 
@@ -189,6 +198,7 @@ export interface SimulationModelVariableDefinition {
   label: string
   direction: 'input' | 'output'
   unit?: string | null
+  default?: unknown
   required?: boolean
   suggested_point_types?: string[]
 }
@@ -246,6 +256,46 @@ export interface SimulationModelPointOption {
   name: string
   device_id: number
   device_name?: string
+  object_type?: string
+  object_instance?: number
+  units?: string
+  behavior?: string
+  behavior_params?: string
+  manual_value?: unknown
+  point_type?: string | null
+  configured_value?: unknown
+}
+
+export interface MappingSuggestionAlternative {
+  point_id: number
+  point_name: string
+  score: number
+  reasons: string[]
+}
+
+/** One suggestion row (one model input/output variable) from
+ * POST /simulation/models/mapping-suggestions. Cross-device suggestions
+ * are expected and valid -- equipment_scope_used/related_equipment_name
+ * explain *why* a point on a different device was chosen (see
+ * MappingHints on the backend's VariableDefinition). */
+export interface MappingSuggestionEntry {
+  variable: string
+  direction: 'input' | 'output'
+  suggested_point_id: number | null
+  suggested_point_name: string | null
+  confidence: 'high' | 'medium' | 'low' | 'none'
+  score: number
+  reasons: string[]
+  alternatives: MappingSuggestionAlternative[]
+  /** 'rule' = deterministic engine (default), 'ai' = this row was
+   * refreshed via an explicit "Use AI" click. */
+  source: 'rule' | 'ai'
+  equipment_scope_used: 'self' | 'upstream' | 'downstream' | 'any' | 'fallback'
+  related_equipment_name: string | null
+}
+
+export interface MappingSuggestionsResponse {
+  variables: MappingSuggestionEntry[]
 }
 
 export const api = {
@@ -293,6 +343,7 @@ export const api = {
         : ''
       return req<SimulationModelConfig[]>(`/simulation/models${q}`)
     },
+    get: (id: number) => req<SimulationModelConfig>(`/simulation/models/${id}`),
     create: (body: SimulationModelPayload) => req<SimulationModelConfig>('/simulation/models', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -303,6 +354,10 @@ export const api = {
     }),
     del: (id: number) => req<{ ok: boolean; model_id: number; runtime_id: string }>(`/simulation/models/${id}`, { method: 'DELETE' }),
     pointOptions: () => req<SimulationModelPointOption[]>('/simulation/points/options'),
+    mappingSuggestions: (body: { model_type: string; provider_type: string; created_from_device_id: number | null; current_model_id?: number | null }) =>
+      req<MappingSuggestionsResponse>('/simulation/models/mapping-suggestions', { method: 'POST', body: JSON.stringify(body) }),
+    mappingSuggestionAi: (body: { model_type: string; variable: string; created_from_device_id: number | null; current_model_id?: number | null }) =>
+      req<MappingSuggestionEntry>('/simulation/models/mapping-suggestions/ai', { method: 'POST', body: JSON.stringify(body) }),
   },
 
   settings: {
@@ -425,12 +480,12 @@ export const api = {
   // frontend-facing naming here was renamed to "project" to match the UI.
   projects: {
     list:    ()                                              => req<Project[]>('/profiles'),
-    save:    (name: string, description: string, connectionConfig?: BACnetConnectionConfig | null, aboveGroundLevels?: number, belowGroundLevels?: number) =>
-      req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description, connection_config: connectionConfig, above_ground_levels: aboveGroundLevels ?? 0, below_ground_levels: belowGroundLevels ?? 0 }) }),
-    update:  (id: number, name: string, description: string, connectionConfig?: BACnetConnectionConfig | null) =>
-      req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description, connection_config: connectionConfig }) }),
+    save:    (name: string, description: string, connectionConfig?: BACnetConnectionConfig | null, aboveGroundLevels?: number, belowGroundLevels?: number, discoveryConnections?: BACnetDiscoveryConnection[] | null) =>
+      req<Project>('/profiles', { method: 'POST', body: JSON.stringify({ name, description, connection_config: connectionConfig, discovery_connections: discoveryConnections, above_ground_levels: aboveGroundLevels ?? 0, below_ground_levels: belowGroundLevels ?? 0 }) }),
+    update:  (id: number, name: string, description: string, connectionConfig?: BACnetConnectionConfig | null, discoveryConnections?: BACnetDiscoveryConnection[] | null) =>
+      req<{ ok: boolean }>(`/profiles/${id}`, { method: 'PUT', body: JSON.stringify({ name, description, connection_config: connectionConfig, discovery_connections: discoveryConnections }) }),
     del:     (id: number)                                   => req<null>(`/profiles/${id}`, { method: 'DELETE' }),
-    load:    (id: number)                                   => req<{ ok: boolean; connection_config: BACnetConnectionConfig | null }>(`/profiles/${id}/load`, { method: 'POST' }),
+    load:    (id: number)                                   => req<{ ok: boolean; connection_config: BACnetConnectionConfig | null; discovery_connections: BACnetDiscoveryConnection[] | null }>(`/profiles/${id}/load`, { method: 'POST' }),
     // Wipes live project state back to blank (devices/locations/semantic
     // data) for "New Project" — reuses the server's own load_project()
     // wipe sequence rather than looping individual per-row deletes, which
@@ -471,6 +526,26 @@ export const api = {
           timeout_ms: opts.timeout_ms,
         }),
       }),
+    connections: {
+      list: (projectId: number) =>
+        req<{ connections: BACnetDiscoveryConnection[] }>(`/bacnet-discovery/connections/${projectId}`),
+      create: (projectId: number, connection: Omit<BACnetDiscoveryConnection, 'id'>) =>
+        req<BACnetDiscoveryConnection>(`/bacnet-discovery/connections/${projectId}`, {
+          method: 'POST',
+          body: JSON.stringify(connection),
+        }),
+      update: (projectId: number, connectionId: number, connection: Omit<BACnetDiscoveryConnection, 'id'>) =>
+        req<BACnetDiscoveryConnection>(`/bacnet-discovery/connections/${projectId}/${connectionId}`, {
+          method: 'PUT',
+          body: JSON.stringify(connection),
+        }),
+      delete: (projectId: number, connectionId: number) =>
+        req<null>(`/bacnet-discovery/connections/${projectId}/${connectionId}`, { method: 'DELETE' }),
+      sync: (projectId: number, connectionId: number) =>
+        req<{ devices: Device[] }>(`/bacnet-discovery/connections/${projectId}/${connectionId}/sync`, { method: 'POST' }),
+      syncAll: (projectId: number) =>
+        req<{ devices: Device[]; connections: number }>(`/bacnet-discovery/connections/${projectId}/sync-enabled`, { method: 'POST' }),
+    },
   },
 
   externalObjects: {

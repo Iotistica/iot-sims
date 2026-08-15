@@ -57,6 +57,16 @@ def schedule_engine_reload(request: Request) -> None:
     asyncio.create_task(engine.reload())
 
 
+def payload_fields(body: Any) -> set[str]:
+    return set(
+        getattr(
+            body,
+            "model_fields_set",
+            getattr(body, "__fields_set__", set()),
+        )
+    )
+
+
 # ─── Project CRUD ──────────────────────────────────────────────────────────────
 
 @router.get("")
@@ -93,6 +103,7 @@ async def create_project(
         body.name,
         body.description,
         body.connection_config,
+        body.discovery_connections,
     )
 
 
@@ -103,6 +114,7 @@ async def update_project(
     request: Request,
 ):
     database = get_database(request)
+    fields = payload_fields(body)
 
     updated = await asyncio.to_thread(
         database.update_project,
@@ -110,6 +122,9 @@ async def update_project(
         body.name,
         body.description,
         body.connection_config,
+        body.discovery_connections,
+        "connection_config" in fields,
+        "discovery_connections" in fields,
     )
 
     if not updated:
@@ -177,6 +192,7 @@ async def load_project(
     return {
         "ok": True,
         "connection_config": loaded["connection_config"],
+        "discovery_connections": loaded.get("discovery_connections"),
     }
 
 

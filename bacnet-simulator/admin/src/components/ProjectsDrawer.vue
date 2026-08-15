@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { DownloadOutlined, DeleteOutlined, UploadOutlined } from '@ant-design/icons-vue'
-import type { Project, BACnetConnectionConfig } from '../types'
+import type { Project, BACnetConnectionConfig, BACnetDiscoveryConnection } from '../types'
 import { api } from '../api'
 import ImportProjectModal from './ImportProjectModal.vue'
 
@@ -11,6 +11,7 @@ const emit = defineEmits<{
   loaded: [
     projectId: number, projectName: string, projectDesc: string,
     connectionConfig: BACnetConnectionConfig | null,
+    discoveryConnections: BACnetDiscoveryConnection[] | null,
   ]
 }>()
 
@@ -35,7 +36,7 @@ async function loadProject(p: Project) {
   try {
     const result = await api.projects.load(p.id)
     message.success(`"${p.name}" loaded`)
-    emit('loaded', p.id, p.name, p.description, result.connection_config ?? null)
+    emit('loaded', p.id, p.name, p.description, result.connection_config ?? null, result.discovery_connections ?? null)
     emit('update:open', false)
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Failed to load project')

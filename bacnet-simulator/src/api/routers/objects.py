@@ -14,6 +14,7 @@ from ...bacnet.schemas import (
     SetValueRequest,
 )
 from ...core.config import COMMANDABLE_TYPES
+from ...simulation.model_store import get_output_owners_by_point
 from ..guards import reject_external_device, reject_external_object_source_mutation
 
 
@@ -159,10 +160,18 @@ async def list_objects(
         device_id,
     )
 
-    return await asyncio.to_thread(
+    objects = await asyncio.to_thread(
         database.get_objects,
         device_id,
     )
+    owners = await asyncio.to_thread(
+        get_output_owners_by_point,
+        database,
+        [int(obj["id"]) for obj in objects],
+    )
+    for obj in objects:
+        obj["simulation_output_owner"] = owners.get(int(obj["id"]))
+    return objects
 
 
 @router.post(
@@ -263,8 +272,16 @@ async def update_object(
         device_id,
         object_id,
     )
+    owner = await asyncio.to_thread(
+        get_output_owners_by_point,
+        database,
+        [object_id],
+    )
 
     body_dict = body.model_dump()
+    if object_id in owner:
+        body_dict["behavior"] = existing["behavior"]
+        body_dict["behavior_params"] = existing["behavior_params"]
     reject_external_object_source_mutation(device, existing, body_dict)
 
     try:

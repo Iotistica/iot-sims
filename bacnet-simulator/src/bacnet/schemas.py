@@ -299,6 +299,7 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
     connection_config: Optional[dict] = None
+    discovery_connections: Optional[list[dict]] = None
     # Auto-generates a Building root + N/M Level locations at creation time
     # (see Database.generate_building_levels). 0/0 (the default) generates
     # nothing -- existing behavior for any caller that doesn't send these.
@@ -309,11 +310,11 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
-    # None means "leave the project's remembered discovery connection
+    # None means "leave the project's saved discovery connection(s)
     # untouched" -- update_project() preserves the existing stored value
-    # when this is omitted, and overwrites it when a value is given (used
-    # by the Discover modal's "Remember connection" option).
+    # when this is omitted, and overwrites it when a value is given.
     connection_config: Optional[dict] = None
+    discovery_connections: Optional[list[dict]] = None
 
 
 class ProjectImport(BaseModel):
@@ -337,6 +338,15 @@ class DiscoveryTriggerRequest(BaseModel):
     timeout_ms: int = Field(5000, ge=100, le=60000)
 
 
+class DiscoveryConnectionPayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    target: Optional[str] = Field(None, max_length=255)
+    device_instance_low: int = Field(0, ge=0, le=4194303)
+    device_instance_high: int = Field(4194303, ge=0, le=4194303)
+    timeout_ms: int = Field(5000, ge=100, le=60000)
+    enabled: bool = True
+
+
 class Credentials(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=8, max_length=200)
@@ -358,6 +368,8 @@ class SettingsPayload(BaseModel):
     trend_log_default_interval: int = Field(60, ge=1)
     trend_log_default_buffer_size: int = Field(1000, ge=1, le=100000)
     jwt_expire_hours: int = Field(24, ge=1, le=8760)
+    fmu_runtime_url: str = Field("http://localhost:8002", min_length=1, max_length=500)
+    fmu_runtime_timeout_s: float = Field(20.0, ge=1.0, le=120.0)
 
 
 class PriorityWrite(BaseModel):

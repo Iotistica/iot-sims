@@ -116,3 +116,15 @@ def test_load_project_restores_sort_order_values(database: Database):
     assert locs["B1"]["sort_order"] == -1
     assert locs["L1"]["sort_order"] == 1
     assert locs["L2"]["sort_order"] == 2
+
+
+def test_empty_generated_level_can_be_deleted_with_semantic_mirror(database: Database):
+    database.generate_building_levels("Tower", 1, 2)
+    locs = {l["name"]: l for l in database.get_locations()}
+
+    b1 = locs["B1"]
+    assert database.get_semantic_entities(location_id=b1["id"])
+
+    assert database.delete_location(b1["id"]) is True
+    assert database.get_location(b1["id"]) is None
+    assert database.get_semantic_entities(location_id=b1["id"]) == []

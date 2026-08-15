@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { UploadOutlined } from '@ant-design/icons-vue'
+import { ExperimentOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type { SimulationProviderCatalogEntry, SimulationProviderType } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
@@ -26,6 +26,7 @@ const emit = defineEmits<{
   'update:open': [v: boolean]
   saved: []
   'draft-saved': [data: Record<string, any>]
+  'simulation-model': [device: Device]
 }>()
 
 const loading = ref(false)
@@ -104,6 +105,13 @@ const selectedSimulationProvider = computed(() =>
     provider => provider.provider_type === simulationProviderType.value,
   )
 )
+const simulationSummary = computed(() => {
+  if (activeProviderTypesForController.value.length === 0) return 'Built-in point behaviors'
+  const labels = activeProviderTypesForController.value.map(type =>
+    simulationProviders.value.find(provider => provider.provider_type === type)?.label ?? type,
+  )
+  return labels.join(', ')
+})
 
 async function loadSimulationProviderState() {
   simulationProvidersLoading.value = true
@@ -571,28 +579,14 @@ function doDelete() {
       </a-form-item>
 
 
-      <a-form-item
-        v-if="!isExternal"
-        label="Simulation Provider"
-      >
-        <a-select
-          :value="simulationProviderType"
-          :loading="simulationProvidersLoading"
-          :options="simulationProviderOptions"
-          placeholder="Built-in"
-          @change="onSimulationProviderChange"
-        />
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
-          {{
-            selectedSimulationProvider?.description
-            ?? 'Built-in point behaviors are used unless an explicit model owns a point.'
-          }}
-        </div>
-        <div
-          v-if="simulationProviderType !== 'builtin'"
-          style="font-size:11px;color:var(--text-muted);margin-top:2px"
-        >
-          Configure an Add Model mapping to activate it.
+      <a-form-item v-if="!isExternal && device" label="Simulation Model">
+        <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--surface-alt)">
+          <ExperimentOutlined style="color:#52c41a" />
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:600">{{ simulationSummary }}</div>
+            <div style="font-size:11px;color:var(--text-muted)">Provider, model, parameters, defaults, and point mappings are configured in Simulation Model.</div>
+          </div>
+          <a-button size="small" @click="emit('simulation-model', device)">Configure</a-button>
         </div>
       </a-form-item>
 

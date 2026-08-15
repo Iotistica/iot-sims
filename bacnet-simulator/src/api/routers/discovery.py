@@ -10,14 +10,14 @@ import socket
 import struct
 from typing import Any, AsyncIterator, NoReturn
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from bacpypes3.app import Application
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.networkport import NetworkPortObject
 
 from ...bacnet.client import Bacpypes3Transport, BACnetDiscovery, DiscoveryOptions
-from ...bacnet.schemas import DiscoveryTriggerRequest
+from ...bacnet.schemas import DiscoveryConnectionPayload, DiscoveryTriggerRequest
 
 
 router = APIRouter(
@@ -326,6 +326,27 @@ async def _run_discovery(body: DiscoveryTriggerRequest) -> list[dict[str, Any]]:
         return [dataclasses.asdict(d) for d in devices]
 
 
+def _request_from_connection(connection: dict[str, Any]) -> DiscoveryTriggerRequest:
+    return DiscoveryTriggerRequest(
+        discovery_target=connection.get("target"),
+        device_instance_low=connection.get("device_instance_low", 0),
+        device_instance_high=connection.get("device_instance_high", 4194303),
+        timeout_ms=connection.get("timeout_ms", 5000),
+    )
+
+
+async def _sync_discovery_request(
+    database: Any,
+    body: DiscoveryTriggerRequest,
+    request: Request,
+) -> list[dict]:
+    try:
+        devices = await _run_discovery(body)
+    except DiscoveryBindError as exc:
+        raise_discovery_bind_error(request, exc)
+    return await asyncio.to_thread(database.sync_external_devices, devices)
+
+
 @router.post("/run")
 async def run_discovery(
     body: DiscoveryTriggerRequest,
@@ -336,6 +357,134 @@ async def run_discovery(
     except DiscoveryBindError as exc:
         raise_discovery_bind_error(request, exc)
     return {"devices": devices}
+
+
+@router.get("/connections/{project_id}")
+async def list_discovery_connections(
+    project_id: int,
+    request: Request,
+):
+    database = get_database(request)
+    connections = await asyncio.to_thread(
+        database.get_project_discovery_connections,
+        project_id,
+    )
+    if connections is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"connections": connections}
+
+
+@router.post(
+    "/connections/{project_id}",
+    status_code=201,
+)
+async def create_discovery_connection(
+    project_id: int,
+    body: DiscoveryConnectionPayload,
+    request: Request,
+):
+    database = get_database(request)
+    connection = await asyncio.to_thread(
+        database.create_project_discovery_connection,
+        project_id,
+        body.model_dump() if hasattr(body, "model_dump") else body.dict(),
+    )
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return connection
+
+
+@router.post("/connections/{project_id}/sync-enabled")
+async def sync_enabled_discovery_connections(
+    project_id: int,
+    request: Request,
+):
+    database = get_database(request)
+    connections = await asyncio.to_thread(
+        database.get_project_discovery_connections,
+        project_id,
+    )
+    if connections is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    enabled = [c for c in connections if c.get("enabled", True)]
+    persisted_by_instance: dict[int, dict] = {}
+    for connection in enabled:
+        persisted = await _sync_discovery_request(
+            database,
+            _request_from_connection(connection),
+            request,
+        )
+        for device in persisted:
+            persisted_by_instance[device["device_instance"]] = device
+
+    return {
+        "devices": list(persisted_by_instance.values()),
+        "connections": len(enabled),
+    }
+
+
+@router.put("/connections/{project_id}/{connection_id}")
+async def update_discovery_connection(
+    project_id: int,
+    connection_id: int,
+    body: DiscoveryConnectionPayload,
+    request: Request,
+):
+    database = get_database(request)
+    connection = await asyncio.to_thread(
+        database.update_project_discovery_connection,
+        project_id,
+        connection_id,
+        body.model_dump() if hasattr(body, "model_dump") else body.dict(),
+    )
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if connection == {}:
+        raise HTTPException(status_code=404, detail="Discovery connection not found")
+    return connection
+
+
+@router.delete(
+    "/connections/{project_id}/{connection_id}",
+    status_code=204,
+)
+async def delete_discovery_connection(
+    project_id: int,
+    connection_id: int,
+    request: Request,
+) -> Response:
+    database = get_database(request)
+    deleted = await asyncio.to_thread(
+        database.delete_project_discovery_connection,
+        project_id,
+        connection_id,
+    )
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Discovery connection not found")
+    return Response(status_code=204)
+
+
+@router.post("/connections/{project_id}/{connection_id}/sync")
+async def sync_discovery_connection(
+    project_id: int,
+    connection_id: int,
+    request: Request,
+):
+    database = get_database(request)
+    connections = await asyncio.to_thread(
+        database.get_project_discovery_connections,
+        project_id,
+    )
+    if connections is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    connection = next((c for c in connections if c["id"] == connection_id), None)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Discovery connection not found")
+    persisted = await _sync_discovery_request(database, _request_from_connection(connection), request)
+    return {"devices": persisted}
 
 
 @router.post("/sync")
@@ -352,9 +501,5 @@ async def sync_discovery(
     pure ephemeral dry-run.
     """
     database = get_database(request)
-    try:
-        devices = await _run_discovery(body)
-    except DiscoveryBindError as exc:
-        raise_discovery_bind_error(request, exc)
-    persisted = await asyncio.to_thread(database.sync_external_devices, devices)
+    persisted = await _sync_discovery_request(database, body, request)
     return {"devices": persisted}

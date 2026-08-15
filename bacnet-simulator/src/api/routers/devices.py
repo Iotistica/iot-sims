@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from ...bacnet.schemas import DeviceCreate, DeviceUpdate, EnergyModelConfigCreate
 from ...energy.registry import energy_model_config_to_api, validate_energy_model_parameters
+from ...simulation.model_store import get_active_simulation_models_by_device
 from ..guards import reject_external_device, reject_external_source_mutation
 
 
@@ -155,6 +156,10 @@ async def list_devices(
     devices = await asyncio.to_thread(
         database.get_devices
     )
+    simulation_models_by_device = await asyncio.to_thread(
+        get_active_simulation_models_by_device,
+        database,
+    )
 
     for device in devices:
         device[
@@ -162,6 +167,9 @@ async def list_devices(
         ] = effective_can_receive_events(
             request,
             device,
+        )
+        device["active_simulation_model"] = simulation_models_by_device.get(
+            int(device["id"])
         )
 
     return devices
