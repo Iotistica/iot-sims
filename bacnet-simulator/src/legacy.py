@@ -4006,6 +4006,18 @@ class Database:
                             "direction": m["direction"],
                             "point_id": new_point_id,
                         })
+                # input_exposures: same tolerant remap-or-drop as an ordinary
+                # mapping above -- an exposure targeting a point that didn't
+                # come back is dropped, never left pointing at a stale id.
+                restored_input_exposures: list[dict] = []
+                for e in model.get("input_exposures", []):
+                    new_point_id = global_obj_id_map.get(e["point_id"])
+                    if new_point_id is None:
+                        continue
+                    restored_input_exposures.append({
+                        "variable": e["variable"],
+                        "point_id": new_point_id,
+                    })
                 insert_simulation_model(
                     conn,
                     name=model["name"],
@@ -4016,6 +4028,7 @@ class Database:
                     created_from_device_id=new_created_from_device_id,
                     mappings=restored_mappings,
                     aggregate_mappings=restored_aggregate_mappings,
+                    input_exposures=restored_input_exposures,
                 )
 
             # No FK to device/object/location at all -- unlike everything

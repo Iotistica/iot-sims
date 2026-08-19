@@ -334,9 +334,10 @@ def test_existing_constant_mapping_create_and_reload_unaffected(client, database
 class _FakeFMUProvider:
     created: list["_FakeFMUProvider"] = []
 
-    def __init__(self, *, runtime_url, model, bindings, aggregate_inputs=None, input_defaults, timeout_s, input_variables, output_variables) -> None:
+    def __init__(self, *, runtime_url, model, bindings, aggregate_inputs=None, input_exposures=None, input_defaults, timeout_s, input_variables, output_variables) -> None:
         self.bindings = list(bindings)
         self.aggregate_inputs = list(aggregate_inputs or [])
+        self.input_exposures = list(input_exposures or [])
         self.created.append(self)
 
 

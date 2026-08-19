@@ -83,6 +83,13 @@ const form = reactive({
    * either side unset is "in progress"; both sides must be set for the
    * row to be valid (see validateMappings/buildPayload). */
   aggregatePairs: {} as Record<string, Array<{ value?: number; weight?: number }>>,
+  /** variable -> a second BACnet point that mirrors this input's already-
+   * resolved value (whichever of Constant/Point/Aggregate currently
+   * sources it) each step. Independent of inputSources -- applies no
+   * matter which of the three modes is active, since it just relays the
+   * value already computed for the FMU, not an alternate way to compute
+   * it. undefined/absent means "not exposed" for that variable. */
+  inputExposures: {} as Record<string, number | undefined>,
 })
 
 // Per-variable ranked candidate order (point_id -> rank index, lower =
@@ -130,6 +137,17 @@ function aggregatePointOptions(variableName: string) {
     .sort((a, b) => a._rank - b._rank)
 }
 
+/** Input-exposure target options: same numeric-only filter as
+ * aggregatePointOptions (an exposure writes a Present Value, same as an
+ * aggregate reads one), unranked -- exposure targets aren't scored by the
+ * mapping-suggestion engine the way aggregate source candidates are. */
+const numericPointOptions = computed(() => points.value
+  .filter(p => !NON_NUMERIC_OBJECT_TYPES.has(p.object_type ?? ''))
+  .map(p => ({
+    value: p.id,
+    label: p.device_name ? `${p.device_name} / ${p.name}` : p.name,
+  })))
+
 function addAggregatePair(variableName: string) {
   const pairs = form.aggregatePairs[variableName] ?? []
   form.aggregatePairs[variableName] = [...pairs, {}]
@@ -138,6 +156,16 @@ function addAggregatePair(variableName: string) {
 function removeAggregatePair(variableName: string, index: number) {
   const pairs = form.aggregatePairs[variableName] ?? []
   form.aggregatePairs[variableName] = pairs.filter((_pair, i) => i !== index)
+}
+
+/** The "Also write this resolved value to a point" exposure control only
+ * makes sense for Aggregate inputs -- that's the mode where the resolved
+ * value isn't already sitting on a single BACnet point somewhere (a plain
+ * Point input already IS a point; Constant has no upstream reading at
+ * all). Showing it on every input was reported as visual clutter, so it's
+ * now gated to Aggregate (both Maximum and Weighted Average) here. */
+function exposureApplicable(variableName: string): boolean {
+  return form.inputSources[variableName] === 'aggregate'
 }
 
 function onAggregateOperationChange(variableName: string, operation: 'max' | 'weighted_average') {
@@ -242,6 +270,7 @@ function resetForModel(modelType: string) {
   form.aggregatePoints = {}
   form.aggregateOperation = {}
   form.aggregatePairs = {}
+  form.inputExposures = {}
   advancedOpen.value = []
   for (const p of model?.parameters ?? []) {
     if (p.default !== undefined) form.parameters[p.name] = p.default
@@ -254,6 +283,7 @@ function resetForModel(modelType: string) {
     form.aggregatePoints[v.name] = []
     form.aggregateOperation[v.name] = 'max'
     form.aggregatePairs[v.name] = []
+    form.inputExposures[v.name] = undefined
   }
   if (props.device && model) form.name = `${props.device.name} ${model.label}`
 }
@@ -309,6 +339,10 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
   form.aggregatePoints = aggregatePoints
   form.aggregateOperation = aggregateOperation
   form.aggregatePairs = aggregatePairs
+  form.inputExposures = {}
+  for (const e of saved.input_exposures ?? []) {
+    form.inputExposures[e.variable] = e.point_id
+  }
   form.inputSources = {}
   for (const v of catalog.value.find(m => m.model_type === saved.model_type)?.inputs ?? []) {
     const savedSource = inputSources[v.name]
@@ -319,6 +353,7 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
     if (form.aggregatePoints[v.name] === undefined) form.aggregatePoints[v.name] = []
     if (form.aggregateOperation[v.name] === undefined) form.aggregateOperation[v.name] = 'max'
     if (form.aggregatePairs[v.name] === undefined) form.aggregatePairs[v.name] = []
+    if (form.inputExposures[v.name] === undefined) form.inputExposures[v.name] = undefined
     if (form.inputSources[v.name] === 'aggregate') void loadVariableCandidates(v)
   }
   advancedOpen.value = []
@@ -483,6 +518,9 @@ function buildPayload(enabled: boolean): SimulationModelPayload | null {
           point_ids: form.aggregatePoints[v.name]!,
         }
       }),
+    input_exposures: inputs.value
+      .filter(v => form.inputExposures[v.name] != null)
+      .map(v => ({ variable: v.name, point_id: form.inputExposures[v.name]! })),
   }
 }
 
@@ -526,6 +564,7 @@ function onMappingsApplied({ mappings, switchToPoint }: { mappings: Record<strin
 function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggregate') {
   form.inputSources[v.name] = source
   if (source === 'aggregate') void loadVariableCandidates(v)
+  if (!exposureApplicable(v.name)) form.inputExposures[v.name] = undefined
 }
 </script>
 
@@ -737,6 +776,23 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
                 </div>
               </template>
             </template>
+
+            <div
+              v-if="exposureApplicable(v.name)"
+              style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border-color, #303030)"
+            >
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px">
+                Also write this resolved value to a point (optional)
+              </div>
+              <a-select
+                v-model:value="form.inputExposures[v.name]"
+                show-search allow-clear
+                :options="numericPointOptions"
+                option-filter-prop="label"
+                placeholder="Not exposed"
+                style="width:100%"
+              />
+            </div>
           </a-form-item>
 
           <a-divider orientation="left">Output Mapping</a-divider>

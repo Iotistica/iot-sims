@@ -202,6 +202,12 @@ async function copySimulationModels(
       created_from_device_id: created.id,
       mappings: [...ownMappings, ...suggestedMappings],
       aggregate_mappings: [],
+      // Input exposures target a specific point; a copy's cross-device
+      // points are re-suggested (see externalInputVariables above), so
+      // there's no safe automatic target to carry an exposure over to --
+      // left for the user to reconfigure via the drawer, same as an
+      // aggregate mapping.
+      input_exposures: [],
     }
     await api.simulationModels.create(payload)
     count += 1

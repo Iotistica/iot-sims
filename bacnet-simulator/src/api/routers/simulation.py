@@ -6,6 +6,7 @@ import logging
 import sqlite3
 from dataclasses import asdict
 from typing import Any, Literal
+from urllib.error import HTTPError
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -27,6 +28,7 @@ from ...simulation.model_store import (
     create_simulation_model,
     delete_simulation_model,
     ensure_simulation_model_schema,
+    get_explicit_exposure_owner,
     get_explicit_output_owner,
     get_simulation_model,
     list_simulation_models,
@@ -133,6 +135,19 @@ class SimulationModelAggregateMappingPayload(BaseModel):
         return self
 
 
+class SimulationModelInputExposurePayload(BaseModel):
+    """Mirrors an already-resolved model INPUT value (whichever of Point,
+    Aggregate, or Constant currently sources `variable`) onto a second
+    BACnet point's Present Value each step, without recomputing it. Not a
+    "mapping" in the read/write direction=input/output sense
+    SimulationModelMappingPayload uses -- see
+    simulation_model_input_exposures's own schema comment in
+    model_store.py for why this is a separate list/table instead of a
+    third `direction` value."""
+    variable: str = Field(min_length=1)
+    point_id: int = Field(gt=0)
+
+
 class SimulationModelPayload(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     provider_type: Literal["fmu", "learned"] = "fmu"
@@ -150,15 +165,42 @@ class SimulationModelPayload(BaseModel):
     aggregate_mappings: list[SimulationModelAggregateMappingPayload] = Field(
         default_factory=list
     )
+    input_exposures: list[SimulationModelInputExposurePayload] = Field(
+        default_factory=list
+    )
 
 
 def _runtime_definition(database: Any, model_type: str):
+    normalized = normalize_remote_model_id(model_type)
     try:
         return get_remote_model_definition(
             database.get_settings(),
-            normalize_remote_model_id(model_type),
+            normalized,
         )
     except Exception as exc:
+        # An HTTP 404 from the runtime means the catalog was reached fine
+        # and genuinely doesn't recognize this model id -- most likely a
+        # stale/orphaned model_type value (e.g. from before the model-id-
+        # to-GUID catalog migration, or a config predating a catalog model
+        # being removed). That's a different, more actionable problem than
+        # "the runtime is unreachable", and shouldn't be reported as one --
+        # a 503 tells an operator to check network/service health, when
+        # the real fix is to re-map this simulation model to a current
+        # catalog entry.
+        http_cause = exc.__cause__ if isinstance(exc.__cause__, HTTPError) else None
+        if http_cause is not None and http_cause.code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": (
+                        f"FMU model {normalized!r} was not found in the model "
+                        "runtime's catalog -- it may be stale/orphaned "
+                        "(e.g. from before a catalog id change) and need to "
+                        "be re-mapped to a current model"
+                    ),
+                    "model_type": normalized,
+                },
+            ) from exc
         raise HTTPException(
             status_code=503,
             detail={
@@ -238,6 +280,17 @@ def _aggregate_mapping_dicts(
         }
         for aggregate in payload.aggregate_mappings
         if input_sources.get(aggregate.variable) == "aggregate"
+    ]
+
+
+def _input_exposure_dicts(
+    payload: SimulationModelPayload,
+) -> list[dict[str, Any]]:
+    if payload.provider_type != "fmu":
+        return []
+    return [
+        {"variable": exposure.variable, "point_id": exposure.point_id}
+        for exposure in payload.input_exposures
     ]
 
 
@@ -629,6 +682,148 @@ def _validate_mapping_contract(
                 )
         # No output-ownership check -- aggregates are direction="input"
         # only (structurally enforced by SimulationModelAggregateMappingPayload).
+
+    # Input exposures are deliberately NOT added to `seen` -- unlike a
+    # plain/aggregate mapping, an exposure doesn't OWN a variable's
+    # resolution, it just relays whatever already resolved it, so a
+    # variable can be both, say, an Aggregate mapping AND exposed to a
+    # point at the same time (that's the whole point of the feature).
+    effective_exposures = _input_exposure_dicts(payload)
+    seen_exposure_variables: set[str] = set()
+    seen_exposure_points: set[int] = set()
+    for exposure in effective_exposures:
+        key = (exposure["variable"], "input")
+        if key not in variable_defs:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{exposure['variable']!r} is not a declared input for "
+                    f"model {payload.model_type!r}"
+                ),
+            )
+        variable = variable_defs[key]
+
+        if exposure["variable"] in seen_exposure_variables:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Duplicate input exposure for variable {exposure['variable']!r}",
+            )
+        seen_exposure_variables.add(exposure["variable"])
+
+        if exposure["point_id"] in seen_exposure_points:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Point {exposure['point_id']} is targeted by more than one input exposure",
+            )
+        seen_exposure_points.add(exposure["point_id"])
+
+        point = database.get_object(exposure["point_id"])
+        if point is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Point {exposure['point_id']} does not exist",
+            )
+
+        device = database.get_device(int(point["device_id"]))
+        if device is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Point {exposure['point_id']} belongs to a missing device",
+            )
+
+        if device.get("source_type", "simulated") != "simulated":
+            point_label = _format_point_label(point, device)
+            variable_label = _format_variable_label(variable)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": (
+                        f"{variable_label} cannot be exposed to {point_label}, "
+                        "which belongs to an external device. Simulation-model "
+                        "mappings currently require simulated points."
+                    ),
+                    "variable": {
+                        "name": exposure["variable"],
+                        "label": getattr(variable, "label", None),
+                        "direction": "input",
+                    },
+                    "point": _point_detail(point, device),
+                },
+            )
+
+        if point.get("object_type") in (BINARY_TYPES | MULTISTATE_TYPES):
+            point_label = _format_point_label(point, device)
+            variable_label = _format_variable_label(variable)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": (
+                        f"{variable_label} cannot be exposed to {point_label}: "
+                        "an input exposure target must be a numeric (analog) "
+                        f"point, not {point.get('object_type')!r}."
+                    ),
+                    "variable": {
+                        "name": exposure["variable"],
+                        "label": getattr(variable, "label", None),
+                        "direction": "input",
+                    },
+                    "point": _point_detail(point, device),
+                },
+            )
+
+        # Same "one writer per point" invariant the plain output-mapping
+        # ownership check above enforces, extended across both tables: an
+        # exposure point must not collide with another model's plain
+        # output mapping, another model's exposure, or (within THIS
+        # payload) this model's own output mapping.
+        if exposure["point_id"] in {
+            m["point_id"] for m in effective_mappings if m["direction"] == "output"
+        }:
+            point_label = _format_point_label(point, device)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{point_label} cannot be both an output mapping and an "
+                    "input exposure target in the same model"
+                ),
+            )
+
+        output_owner = get_explicit_output_owner(
+            database,
+            exposure["point_id"],
+            excluding_model_id=model_id,
+        )
+        if output_owner is not None:
+            point_label = _format_point_label(point, device)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        f"{point_label} is already owned by another simulation model"
+                    ),
+                    "point": _point_detail(point, device),
+                    "owner": output_owner,
+                },
+            )
+
+        exposure_owner = get_explicit_exposure_owner(
+            database,
+            exposure["point_id"],
+            excluding_model_id=model_id,
+        )
+        if exposure_owner is not None:
+            point_label = _format_point_label(point, device)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        f"{point_label} is already an input-exposure target "
+                        "of another simulation model"
+                    ),
+                    "point": _point_detail(point, device),
+                    "owner": exposure_owner,
+                },
+            )
 
     required = {
         (variable.name, variable.direction)
@@ -1133,6 +1328,7 @@ async def add_simulation_model(
             created_from_device_id=payload.created_from_device_id,
             mappings=_mapping_dicts(payload),
             aggregate_mappings=_aggregate_mapping_dicts(payload),
+            input_exposures=_input_exposure_dicts(payload),
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
@@ -1222,6 +1418,7 @@ async def edit_simulation_model(
             created_from_device_id=payload.created_from_device_id,
             mappings=_mapping_dicts(payload),
             aggregate_mappings=_aggregate_mapping_dicts(payload),
+            input_exposures=_input_exposure_dicts(payload),
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(

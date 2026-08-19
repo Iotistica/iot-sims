@@ -4,7 +4,7 @@ import json
 import sqlite3
 from typing import Any
 
-from .models.remote_catalog import normalize_remote_model_id
+from .models.remote_catalog import LEGACY_MODEL_IDS, normalize_remote_model_id
 
 
 def ensure_simulation_model_schema(database: Any) -> None:
@@ -106,6 +106,44 @@ def ensure_simulation_model_schema(database: Any) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_sim_model_agg_members_point
                 ON simulation_model_aggregate_members(point_id);
+
+            -- Mirrors an already-resolved model INPUT value (Point,
+            -- Aggregate, or Constant -- whichever currently sources
+            -- `variable`) onto a second BACnet point's Present Value. Kept
+            -- as its own table rather than a third simulation_model_mappings
+            -- direction (e.g. 'expose'): that table's direction column,
+            -- point-scoped output-owner index, and every "direction=='input'
+            -- vs 'output'" check throughout model_runtime.py/fmu.py would
+            -- all need auditing for a value that is simultaneously read-
+            -- adjacent (keyed off an input variable) and write-adjacent
+            -- (claims output ownership of a point) -- a separate table needs
+            -- none of that. point_id is ON DELETE CASCADE (unlike an
+            -- aggregate member's point_id): an exposure is a convenience
+            -- mirror, not a required source -- losing the target point just
+            -- means nothing gets mirrored anymore, the same as deleting an
+            -- ordinary output mapping's point today.
+            CREATE TABLE IF NOT EXISTS simulation_model_input_exposures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_config_id INTEGER NOT NULL
+                    REFERENCES simulation_model_configs(id) ON DELETE CASCADE,
+                variable TEXT NOT NULL,
+                point_id INTEGER NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+                UNIQUE(model_config_id, variable)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sim_model_input_exposures_model
+                ON simulation_model_input_exposures(model_config_id);
+
+            -- One explicit exposure writer per point -- same "one writer"
+            -- invariant idx_sim_model_output_owner enforces for plain
+            -- output mappings, just in this table's own domain. A point
+            -- being simultaneously an output-mapping target AND an
+            -- exposure target is a separate, cross-table conflict checked
+            -- at the API validation layer (get_explicit_output_owner +
+            -- get_explicit_exposure_owner), since SQLite can't express a
+            -- uniqueness constraint spanning two tables.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sim_model_input_exposure_owner
+                ON simulation_model_input_exposures(point_id);
             """
         )
 
@@ -130,7 +168,41 @@ def ensure_simulation_model_schema(database: Any) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_sim_model_agg_members_weight_point "
                 "ON simulation_model_aggregate_members(weight_point_id)"
             )
+
+        _backfill_legacy_model_type_ids(conn)
         conn.commit()
+
+
+def _backfill_legacy_model_type_ids(conn: sqlite3.Connection) -> None:
+    """One-time data migration for the model-id-to-GUID catalog cutover:
+    rewrites any simulation_model_configs.model_type row still holding a
+    pre-migration id (e.g. "RTU", "SimpleVAVZone", or an even older
+    snake_case id) to its current GUID, using the exact same
+    LEGACY_MODEL_IDS table _decode_config()'s normalize_remote_model_id()
+    already uses to upgrade on READ. That read-time upgrade alone is not
+    enough here: this is a hard cutover (old ids are rejected by the
+    catalog's own GET /models/{id}/... routes going forward, not aliased
+    indefinitely), so a row left un-rewritten would work today (because of
+    the read-time upgrade) but break the moment normalize_remote_model_id's
+    fallback-to-identity path is ever removed, or wherever model_type is
+    read via a path that doesn't call it. Guarded by a cheap COUNT check so
+    this is a no-op on every call after the first (ensure_simulation_model_
+    schema runs on most requests)."""
+    ids = tuple(LEGACY_MODEL_IDS.keys())
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    stale = conn.execute(
+        f"SELECT COUNT(*) FROM simulation_model_configs WHERE model_type IN ({placeholders})",
+        ids,
+    ).fetchone()[0]
+    if not stale:
+        return
+    for old_id, new_id in LEGACY_MODEL_IDS.items():
+        conn.execute(
+            "UPDATE simulation_model_configs SET model_type=? WHERE model_type=?",
+            (new_id, old_id),
+        )
 
 
 def _decode_config(row: Any) -> dict[str, Any]:
@@ -271,6 +343,36 @@ def _load_aggregate_mappings(conn: sqlite3.Connection, model_id: int) -> list[di
     return result
 
 
+def _load_input_exposures(conn: sqlite3.Connection, model_id: int) -> list[dict]:
+    """Loads {variable, point_id} exposure rows plus the target point's
+    display metadata -- same shape/columns _load_mappings already returns
+    for a plain mapping, so the runtime/API/frontend layers can treat an
+    exposure's point info identically to any other point reference."""
+    rows = conn.execute(
+        """
+        SELECT
+            e.id,
+            e.model_config_id,
+            e.variable,
+            e.point_id,
+            o.device_id,
+            o.name AS point_name,
+            o.object_type,
+            o.object_instance,
+            o.units,
+            o.point_type,
+            d.name AS device_name
+        FROM simulation_model_input_exposures e
+        JOIN objects o ON o.id = e.point_id
+        JOIN devices d ON d.id = o.device_id
+        WHERE e.model_config_id=?
+        ORDER BY e.variable
+        """,
+        (model_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def list_all_simulation_models(conn: sqlite3.Connection) -> list[dict]:
     """Same shape as list_simulation_models() (every simulation model, with
     mappings/aggregate_mappings assembled) but takes an already-open
@@ -288,6 +390,7 @@ def list_all_simulation_models(conn: sqlite3.Connection) -> list[dict]:
     for row in rows:
         item = _decode_config(row)
         item["mappings"] = _load_mappings(conn, int(item["id"])) + _load_aggregate_mappings(conn, int(item["id"]))
+        item["input_exposures"] = _load_input_exposures(conn, int(item["id"]))
         result.append(item)
     return result
 
@@ -303,6 +406,7 @@ def get_simulation_model(database: Any, model_id: int) -> dict | None:
             return None
         result = _decode_config(row)
         result["mappings"] = _load_mappings(conn, model_id) + _load_aggregate_mappings(conn, model_id)
+        result["input_exposures"] = _load_input_exposures(conn, model_id)
         return result
 
 
@@ -337,6 +441,7 @@ def list_simulation_models(
             ):
                 continue
             item["mappings"] = _load_mappings(conn, int(item["id"])) + _load_aggregate_mappings(conn, int(item["id"]))
+            item["input_exposures"] = _load_input_exposures(conn, int(item["id"]))
             result.append(item)
         return result
 
@@ -446,6 +551,56 @@ def get_output_owners_by_point(
         }
 
 
+def get_exposure_owners_by_point(
+    database: Any,
+    point_ids: list[int] | set[int] | tuple[int, ...] | None = None,
+    *,
+    excluding_model_id: int | None = None,
+) -> dict[int, dict]:
+    """Return explicit simulation-model input-exposure ownership by point
+    id. Mirrors get_output_owners_by_point's shape/filters exactly -- used
+    alongside it so a point driven by a mirrored INPUT value (rather than a
+    plain OUTPUT mapping) is still surfaced as FMU/Learned-driven in the
+    UI's Behavior column, instead of falling through to that point's raw,
+    stale `behavior` field."""
+    ensure_simulation_model_schema(database)
+    sql = """
+        SELECT
+            e.point_id,
+            c.id,
+            c.name,
+            c.provider_type,
+            c.model_type,
+            e.variable
+        FROM simulation_model_input_exposures e
+        JOIN simulation_model_configs c ON c.id=e.model_config_id
+        WHERE c.enabled=1
+            AND c.provider_type<>'system'
+    """
+    params: list[Any] = []
+    ids = [int(point_id) for point_id in (point_ids or [])]
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        sql += f" AND e.point_id IN ({placeholders})"
+        params.extend(ids)
+    if excluding_model_id is not None:
+        sql += " AND c.id<>?"
+        params.append(int(excluding_model_id))
+
+    with database._conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return {
+            int(row["point_id"]): {
+                "id": int(row["id"]),
+                "name": row["name"],
+                "provider_type": row["provider_type"],
+                "model_type": row["model_type"],
+                "variable": row["variable"],
+            }
+            for row in rows
+        }
+
+
 def _replace_mappings(
     conn: sqlite3.Connection,
     model_id: int,
@@ -522,6 +677,33 @@ def _replace_aggregate_mappings(
             )
 
 
+def _replace_input_exposures(
+    conn: sqlite3.Connection,
+    model_id: int,
+    input_exposures: list[dict],
+) -> None:
+    """DELETE-then-reinsert, same pattern as _replace_mappings/
+    _replace_aggregate_mappings."""
+    conn.execute(
+        "DELETE FROM simulation_model_input_exposures WHERE model_config_id=?",
+        (model_id,),
+    )
+
+    for exposure in input_exposures:
+        conn.execute(
+            """
+            INSERT INTO simulation_model_input_exposures
+                (model_config_id, variable, point_id)
+            VALUES (?, ?, ?)
+            """,
+            (
+                model_id,
+                str(exposure["variable"]),
+                int(exposure["point_id"]),
+            ),
+        )
+
+
 def insert_simulation_model(
     conn: sqlite3.Connection,
     *,
@@ -533,6 +715,7 @@ def insert_simulation_model(
     created_from_device_id: int | None,
     mappings: list[dict],
     aggregate_mappings: list[dict] | None = None,
+    input_exposures: list[dict] | None = None,
 ) -> int:
     """Inserts one simulation_model_configs row + its mappings/aggregate
     mappings using an already-open connection -- the shared core of
@@ -562,6 +745,7 @@ def insert_simulation_model(
     model_id = int(cur.lastrowid)
     _replace_mappings(conn, model_id, mappings)
     _replace_aggregate_mappings(conn, model_id, aggregate_mappings or [])
+    _replace_input_exposures(conn, model_id, input_exposures or [])
     return model_id
 
 
@@ -576,6 +760,7 @@ def create_simulation_model(
     created_from_device_id: int | None,
     mappings: list[dict],
     aggregate_mappings: list[dict] | None = None,
+    input_exposures: list[dict] | None = None,
 ) -> dict:
     ensure_simulation_model_schema(database)
     with database._conn() as conn:
@@ -589,6 +774,7 @@ def create_simulation_model(
             created_from_device_id=created_from_device_id,
             mappings=mappings,
             aggregate_mappings=aggregate_mappings,
+            input_exposures=input_exposures,
         )
         conn.commit()
 
@@ -610,6 +796,7 @@ def update_simulation_model(
     created_from_device_id: int | None,
     mappings: list[dict],
     aggregate_mappings: list[dict] | None = None,
+    input_exposures: list[dict] | None = None,
 ) -> dict | None:
     ensure_simulation_model_schema(database)
     with database._conn() as conn:
@@ -644,6 +831,7 @@ def update_simulation_model(
         )
         _replace_mappings(conn, model_id, mappings)
         _replace_aggregate_mappings(conn, model_id, aggregate_mappings or [])
+        _replace_input_exposures(conn, model_id, input_exposures or [])
         conn.commit()
 
     return get_simulation_model(database, model_id)
@@ -673,6 +861,34 @@ def get_explicit_output_owner(
         JOIN simulation_model_configs c ON c.id=m.model_config_id
         WHERE m.direction='output' AND m.point_id=?
             AND c.provider_type<>'system'
+    """
+    params: list[Any] = [point_id]
+    if excluding_model_id is not None:
+        sql += " AND c.id<>?"
+        params.append(excluding_model_id)
+
+    with database._conn() as conn:
+        row = conn.execute(sql, params).fetchone()
+        return dict(row) if row else None
+
+
+def get_explicit_exposure_owner(
+    database: Any,
+    point_id: int,
+    *,
+    excluding_model_id: int | None = None,
+) -> dict | None:
+    """Mirrors get_explicit_output_owner's shape, for the separate
+    simulation_model_input_exposures table -- used at the API validation
+    layer to reject a point being claimed by both an ordinary output
+    mapping and an input exposure (or by two exposures), since SQLite can't
+    express a uniqueness constraint spanning two tables."""
+    ensure_simulation_model_schema(database)
+    sql = """
+        SELECT c.id, c.name, c.provider_type, c.model_type, e.variable
+        FROM simulation_model_input_exposures e
+        JOIN simulation_model_configs c ON c.id=e.model_config_id
+        WHERE e.point_id=?
     """
     params: list[Any] = [point_id]
     if excluding_model_id is not None:

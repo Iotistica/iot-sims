@@ -14,7 +14,11 @@ from ...bacnet.schemas import (
     SetValueRequest,
 )
 from ...core.config import COMMANDABLE_TYPES
-from ...simulation.model_store import get_aggregate_membership_owner, get_output_owners_by_point
+from ...simulation.model_store import (
+    get_aggregate_membership_owner,
+    get_exposure_owners_by_point,
+    get_output_owners_by_point,
+)
 from ..guards import reject_external_device, reject_external_object_source_mutation
 
 
@@ -164,13 +168,20 @@ async def list_objects(
         database.get_objects,
         device_id,
     )
-    owners = await asyncio.to_thread(
+    point_ids = [int(obj["id"]) for obj in objects]
+    output_owners = await asyncio.to_thread(
         get_output_owners_by_point,
         database,
-        [int(obj["id"]) for obj in objects],
+        point_ids,
+    )
+    exposure_owners = await asyncio.to_thread(
+        get_exposure_owners_by_point,
+        database,
+        point_ids,
     )
     for obj in objects:
-        obj["simulation_output_owner"] = owners.get(int(obj["id"]))
+        pid = int(obj["id"])
+        obj["simulation_output_owner"] = output_owners.get(pid) or exposure_owners.get(pid)
     return objects
 
 

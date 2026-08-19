@@ -274,6 +274,26 @@ export interface SimulationModelAggregateMapping {
   }>
 }
 
+/** Mirrors an already-resolved model INPUT value (whichever of Point,
+ * Aggregate, or Constant currently sources `variable`) onto a second
+ * BACnet point's Present Value each step, without recomputing it. Not a
+ * "mapping" in the read/write direction sense SimulationModelMapping uses
+ * -- see simulation_model_input_exposures's schema comment in the
+ * backend's model_store.py for why this is its own list/table. */
+export interface SimulationModelInputExposure {
+  id?: number
+  model_config_id?: number
+  variable: string
+  point_id: number
+  device_id?: number
+  device_name?: string
+  point_name?: string
+  object_type?: string
+  object_instance?: number
+  units?: string
+  point_type?: string | null
+}
+
 export interface SimulationModelConfig {
   id: number
   name: string
@@ -286,6 +306,7 @@ export interface SimulationModelConfig {
    * of "point_id" -- the same discriminator the backend's
    * model_runtime._is_aggregate_row uses. */
   mappings: Array<SimulationModelMapping | SimulationModelAggregateMapping>
+  input_exposures?: SimulationModelInputExposure[]
   runtime_id?: string
   runtime?: unknown
 }
@@ -299,6 +320,7 @@ export interface SimulationModelPayload {
   created_from_device_id?: number | null
   mappings: Array<Pick<SimulationModelMapping, 'variable' | 'direction' | 'point_id'>>
   aggregate_mappings: Array<Pick<SimulationModelAggregateMapping, 'variable' | 'direction' | 'operation' | 'point_ids' | 'weight_point_ids'>>
+  input_exposures: Array<Pick<SimulationModelInputExposure, 'variable' | 'point_id'>>
 }
 
 export interface SimulationModelPointOption {

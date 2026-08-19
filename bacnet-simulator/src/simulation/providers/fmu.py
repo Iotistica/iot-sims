@@ -85,6 +85,24 @@ class FMUAggregateInput:
 
 
 @dataclass(frozen=True)
+class FMUInputExposure:
+    """Mirrors an already-resolved model INPUT value onto a second BACnet
+    point's Present Value, without recomputing it. `variable` may currently
+    be sourced any of the three ways an input can be (a plain Point
+    mapping, an Aggregate/weighted_average, or a Constant/default) -- this
+    is deliberately agnostic to which, since it just reads whatever
+    _build_step_payload() already resolved into that step's input_report
+    entry for `variable`. Kept as its own list (rather than piggy-backing on
+    FMUPointBinding, whose `direction` is exactly "input" or "output") since
+    an exposure is neither: it doesn't feed the FMU (that's the real input
+    binding/aggregate) and it isn't itself computed by the FMU (that's a
+    real output binding) -- it's a read-only tap on a value the model
+    already needed for its own purposes."""
+    variable: str
+    point_id: int
+
+
+@dataclass(frozen=True)
 class FMURuntimeResponse:
     status_code: int
     raw_body: str
@@ -203,6 +221,7 @@ class FMUSimulationProvider(SimulationProvider):
         model: str,
         bindings: list[FMUPointBinding],
         aggregate_inputs: list[FMUAggregateInput] | None = None,
+        input_exposures: list[FMUInputExposure] | None = None,
         input_defaults: Mapping[str, Any] | None = None,
         timeout_s: float = 20.0,
         input_variables: set[str] | None = None,
@@ -212,6 +231,7 @@ class FMUSimulationProvider(SimulationProvider):
         self._model = model
         self._bindings = bindings
         self._aggregate_inputs = list(aggregate_inputs or [])
+        self._input_exposures = list(input_exposures or [])
         self._input_defaults = dict(input_defaults or {})
         self._timeout_s = float(timeout_s)
         self._input_variables = set(input_variables or ())
@@ -227,6 +247,7 @@ class FMUSimulationProvider(SimulationProvider):
         self._last_runtime_time: float | None = None
         self._last_step_inputs: dict[str, dict[str, Any]] = {}
         self._last_step_outputs: dict[str, dict[str, Any]] = {}
+        self._last_step_exposures: dict[str, dict[str, Any]] = {}
         self._step_sequence = 0
         self._step_in_progress = False
         self._last_step_id: str | None = None
@@ -245,6 +266,7 @@ class FMUSimulationProvider(SimulationProvider):
         self._last_runtime_time = None
         self._last_step_inputs = {}
         self._last_step_outputs = {}
+        self._last_step_exposures = {}
         self._step_sequence = 0
         self._step_in_progress = False
         self._last_step_id = None
@@ -318,6 +340,7 @@ class FMUSimulationProvider(SimulationProvider):
                     f"{binding.variable} <- {source_label} (point {binding.point_id})"
                 )
                 continue
+            value = self._convert_input_value(binding, value)
             inputs[binding.variable] = value
             log.info(
                 "FMU INPUT RESOLVE input=%s mode=point source=%s value=%s",
@@ -475,6 +498,31 @@ class FMUSimulationProvider(SimulationProvider):
                 }
         return {}
 
+    def _exposure_metadata(self, exposure: FMUInputExposure) -> dict[str, Any]:
+        """Mirrors _binding_metadata() but keyed off (point_id, variable)
+        against context.metadata["input_exposures"] -- an exposure has no
+        `direction` of its own to match on, unlike a real FMUPointBinding."""
+        if not self._context:
+            return {}
+        for item in self._context.metadata.get("input_exposures", []):
+            if (
+                int(item.get("point_id", -1)) == exposure.point_id
+                and str(item.get("variable")) == exposure.variable
+            ):
+                return {
+                    key: item.get(key)
+                    for key in (
+                        "point_name",
+                        "device_name",
+                        "device_id",
+                        "object_type",
+                        "object_instance",
+                        "units",
+                    )
+                    if item.get(key) is not None
+                }
+        return {}
+
     def _aggregate_member_metadata(self, agg: FMUAggregateInput, point_id: int) -> dict[str, Any]:
         """Mirrors _binding_metadata() but keyed off point_id + the
         aggregate's own variable, since aggregate members don't have their
@@ -605,7 +653,28 @@ class FMUSimulationProvider(SimulationProvider):
             })
         if denominator <= 0:
             return None, pair_diagnostics
-        return numerator / denominator, pair_diagnostics
+        result = numerator / denominator
+        # Explicit staged breakdown -- every quantity that feeds the final
+        # division, logged in the model input's own declared unit (no
+        # conversion of any kind happens in this repo -- see
+        # FMUInputExposure's docstring). Exists so a wrong-looking resolved
+        # value (e.g. an accidentally-unweighted mean, or a value that's
+        # actually a normalized weight/fraction) is diagnosable straight
+        # from these logs instead of by re-deriving the math by hand.
+        log.info(
+            "FMU WEIGHTED_AVERAGE variable=%s pairs=%s sum(value*weight)=%s "
+            "sum(weight)=%s result=%s",
+            agg.variable,
+            [
+                {"value_point_id": d["value_point_id"], "value": d["value"],
+                 "weight_point_id": d["weight_point_id"], "weight": d["weight"], "used": d["used"]}
+                for d in pair_diagnostics
+            ],
+            numerator,
+            denominator,
+            result,
+        )
+        return result, pair_diagnostics
 
     def _weighted_average_failure_detail(
         self, agg: FMUAggregateInput, pair_diagnostics: list[dict[str, Any]],
@@ -657,6 +726,36 @@ class FMUSimulationProvider(SimulationProvider):
                 return value
         return value
 
+    def _convert_input_value(self, binding: FMUPointBinding, value: Any) -> Any:
+        """Inverse of _convert_output_value: a Point-mapped INPUT whose
+        bound BACnet point is in CFM (e.g. a VAV's own Zone-Airflow output,
+        feeding a downstream zone/AHU model's supply_airflow_m3_s input)
+        must be converted to m3/s before being sent to the FMU -- the FMU
+        always speaks the model's declared unit (m3/s here), never the
+        BACnet point's own unit. Without this, a raw CFM reading (order
+        100-1000) gets sent straight through as if it were already m3/s,
+        overwhelming the receiving model's heat/mass balance by ~2000x.
+        Scoped to this one variable name for the same reason
+        _convert_output_value is: it's the one place in the whole variable
+        surface where a point's natural BACnet unit (CFM) and a model's
+        declared unit (m3/s) diverge -- every other Point-mapped input
+        already matches its bound point's unit 1:1 (degC-to-degC,
+        percent-to-percent, etc)."""
+        if binding.variable != "supply_airflow_m3_s":
+            return value
+        metadata = self._binding_metadata(binding)
+        units = str(metadata.get("units") or "").lower()
+        normalized_units = "".join(ch for ch in units if ch.isalnum())
+        if (
+            normalized_units in {"cfm", "cubicfeetperminute"}
+            or ("cubicfeet" in normalized_units and "minute" in normalized_units)
+        ):
+            try:
+                return float(value) / 2118.880003
+            except (TypeError, ValueError):
+                return value
+        return value
+
     def _build_step_payload(self, dt: float) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
         payload: dict[str, Any] = {
             "session_id": self._session_id,
@@ -701,7 +800,7 @@ class FMUSimulationProvider(SimulationProvider):
                     binding.point_id,
                 )
                 continue
-            value = self._inputs[binding.point_id]
+            value = self._convert_input_value(binding, self._inputs[binding.point_id])
             inputs[binding.variable] = value
             input_report[binding.variable] = {
                 "source": "mapped-point",
@@ -745,10 +844,12 @@ class FMUSimulationProvider(SimulationProvider):
                 **diagnostics,
             }
             log.info(
-                "FMU AGGREGATE variable=%s operation=%s aggregate=%s",
+                "FMU AGGREGATE variable=%s operation=%s resolved=%s "
+                "value_sent_to_fmu=%s",
                 agg.variable,
                 agg.operation,
                 aggregate_value,
+                inputs[agg.variable],
             )
 
         return payload, input_report
@@ -902,6 +1003,52 @@ class FMUSimulationProvider(SimulationProvider):
                     **self._binding_metadata(binding),
                 }
 
+            # Input exposures: reuse the value already resolved into
+            # input_report by _build_step_payload() above -- no recompute,
+            # no second HTTP round-trip, and works identically whichever of
+            # the three input modes (Point/Aggregate/Constant) currently
+            # sources the variable. Folded into the SAME output_updates dict
+            # real output bindings use, so it rides the existing
+            # self._outputs -> get_outputs() -> engine write pipeline with
+            # no separate write path. Skipped (this tick only) if the input
+            # itself couldn't be resolved (e.g. an unresolved Point mapping)
+            # -- the exposure point simply keeps its last-known value rather
+            # than being overwritten with None.
+            exposure_report: dict[str, dict[str, Any]] = {}
+            for exposure in self._input_exposures:
+                entry = input_report.get(exposure.variable)
+                if entry is None or entry.get("value") is None:
+                    log.info(
+                        "FMU INPUT EXPOSURE variable=%s point_id=%s "
+                        "skipped=unresolved-source",
+                        exposure.variable,
+                        exposure.point_id,
+                    )
+                    continue
+                value = entry["value"]
+                output_updates[exposure.point_id] = value
+                exposure_report[exposure.variable] = {
+                    "value": value,
+                    "point_id": exposure.point_id,
+                    "source": entry.get("source"),
+                    **self._exposure_metadata(exposure),
+                }
+                # This is the exact same object already resolved into
+                # input_report above (by a Point read, an Aggregate/
+                # weighted_average, or a Constant default) -- never
+                # recomputed, never the FMU runtime's response body, never
+                # a normalized weight or partial accumulator. Logged
+                # explicitly so "what got written to this BACnet point" is
+                # never in question.
+                log.info(
+                    "FMU INPUT EXPOSURE variable=%s source=%s "
+                    "value_written_to_bacnet_point=%s point_id=%s",
+                    exposure.variable,
+                    entry.get("source"),
+                    value,
+                    exposure.point_id,
+                )
+
             if runtime_time is not None:
                 try:
                     numeric_runtime_time = float(runtime_time)
@@ -960,6 +1107,7 @@ class FMUSimulationProvider(SimulationProvider):
                 self._error = None
                 self._last_step_outputs = output_report
                 self._last_step_inputs = input_report
+                self._last_step_exposures = exposure_report
             else:
                 self._error = (
                     "FMU runtime response did not include any configured "
@@ -1061,6 +1209,26 @@ class FMUSimulationProvider(SimulationProvider):
             if self._input_variables and agg.variable not in self._input_variables:
                 errors.append(f"Unsupported FMU input field: {agg.variable}")
 
+        exposure_point_ids: dict[int, str] = {}
+        for exposure in self._input_exposures:
+            if self._input_variables and exposure.variable not in self._input_variables:
+                errors.append(f"Unsupported FMU input field: {exposure.variable}")
+            if exposure.point_id in exposure_point_ids:
+                errors.append(
+                    f"Point {exposure.point_id} is targeted by more than one "
+                    f"input exposure ({exposure_point_ids[exposure.point_id]!r} "
+                    f"and {exposure.variable!r})"
+                )
+            else:
+                exposure_point_ids[exposure.point_id] = exposure.variable
+            output_point_ids = {b.point_id for b in self._bindings if b.direction == "output"}
+            if exposure.point_id in output_point_ids:
+                errors.append(
+                    f"Point {exposure.point_id} cannot be both an output "
+                    f"binding and an input exposure target (variable "
+                    f"{exposure.variable!r})"
+                )
+
         # Defensive second layer -- _build_fmu_provider should already reject
         # this at registration time, but a provider can also be constructed
         # directly (as the tests do), so validate() re-checks that no
@@ -1095,6 +1263,7 @@ class FMUSimulationProvider(SimulationProvider):
             "last_runtime_time": self._last_runtime_time,
             "last_step_inputs": dict(self._last_step_inputs),
             "last_step_outputs": dict(self._last_step_outputs),
+            "last_step_exposures": dict(self._last_step_exposures),
             "device_ids": self._device_ids(),
             "last_step_id": self._last_step_id,
             "last_http_status": self._last_http_status,

@@ -14,6 +14,7 @@ from .models.remote_catalog import (
 )
 from .providers import (
     FMUAggregateInput,
+    FMUInputExposure,
     FMUPointBinding,
     FMUSimulationProvider,
     SimulationContext,
@@ -25,6 +26,23 @@ log = logging.getLogger("bacnet-sim")
 
 
 RUNTIME_PREFIXES = ("fmu:", "learned:")
+
+# Circuit breaker for recover_unhealthy_simulation_models: a model whose
+# model_type doesn't resolve in the catalog (e.g. orphaned by an upstream
+# catalog id change) can never become healthy on its own -- without this,
+# every recovery sweep would retry and fail it forever, forever logging
+# "FMU SESSION RECOVER FAILED". Keyed by (id(engine), model id) rather than
+# just model id: there is normally exactly one long-lived SimEngine per
+# process, so id(engine) is effectively a process/engine-lifetime scope --
+# it naturally resets counts if the engine is ever replaced, and (as a
+# side benefit) keeps this state from leaking between independently-
+# constructed engine instances in tests, where small integer model ids are
+# routinely reused across unrelated test databases. Reset to 0 the moment
+# a model is next seen already running (including after an operator fixes
+# it via PUT /simulation/models/{id}, which calls reload_model directly
+# and so succeeds outside this sweep entirely).
+_recovery_failure_counts: dict[tuple[int, int], int] = {}
+_MAX_CONSECUTIVE_RECOVERY_FAILURES = 5
 
 
 def provider_runtime_id(config: dict) -> str:
@@ -176,6 +194,35 @@ def _build_fmu_provider(
             f"mapped to the same variable(s): {conflicting}"
         )
 
+    input_variable_names = {
+        variable.name for variable in definition.variables if variable.direction == "input"
+    }
+    exposure_rows = config.get("input_exposures") or []
+    input_exposures = [
+        FMUInputExposure(
+            variable=str(exposure["variable"]),
+            point_id=int(exposure["point_id"]),
+        )
+        for exposure in exposure_rows
+    ]
+    for exposure in input_exposures:
+        if exposure.variable not in input_variable_names:
+            raise ValueError(
+                f"Model {config['model_type']!r} has an input exposure for "
+                f"{exposure.variable!r}, which is not a declared input variable"
+            )
+    output_binding_point_ids = {
+        binding.point_id for binding in bindings if binding.direction == "output"
+    }
+    exposure_point_id_conflicts = sorted(
+        {exposure.point_id for exposure in input_exposures} & output_binding_point_ids
+    )
+    if exposure_point_id_conflicts:
+        raise ValueError(
+            f"Model {config['model_type']!r} has input exposure(s) targeting "
+            f"point(s) already claimed by an output mapping: {exposure_point_id_conflicts}"
+        )
+
     aggregate_member_point_ids = {
         pid
         for agg in aggregate_inputs
@@ -187,11 +234,7 @@ def _build_fmu_provider(
         for binding in bindings
         if binding.direction == "input"
     } | aggregate_member_point_ids
-    outputs = {
-        binding.point_id
-        for binding in bindings
-        if binding.direction == "output"
-    }
+    outputs = output_binding_point_ids | {exposure.point_id for exposure in input_exposures}
 
     initial_point_inputs = _resolve_initial_point_inputs(engine, inputs)
 
@@ -200,6 +243,7 @@ def _build_fmu_provider(
         model=runtime_model,
         bindings=bindings,
         aggregate_inputs=aggregate_inputs,
+        input_exposures=input_exposures,
         input_defaults=dict(parameters.get("input_defaults") or {}),
         timeout_s=timeout_s,
         input_variables={
@@ -235,10 +279,20 @@ def _build_fmu_provider(
         ]
     ]
 
+    exposure_device_ids = sorted({
+        int(exposure["device_id"])
+        for exposure in exposure_rows
+        if exposure.get("device_id") is not None
+    })
+    participant_device_ids = sorted(
+        set(_derive_participant_device_ids(mappings)) | set(exposure_device_ids)
+    )
+    output_device_ids = sorted(
+        set(_mapping_device_ids(mappings, direction="output")) | set(exposure_device_ids)
+    )
+
     context = SimulationContext(
-        participant_device_ids=_derive_participant_device_ids(
-            mappings
-        ),
+        participant_device_ids=participant_device_ids,
         point_configs=[],
         metadata={
             "simulation_model_id": int(config["id"]),
@@ -247,12 +301,23 @@ def _build_fmu_provider(
             "name": str(config["name"]),
             "runtime_url": runtime_url,
             "model": runtime_model,
-            "participant_device_ids": _derive_participant_device_ids(
-                mappings
-            ),
+            "participant_device_ids": participant_device_ids,
             "input_device_ids": _mapping_device_ids(mappings, direction="input"),
-            "output_device_ids": _mapping_device_ids(mappings, direction="output"),
+            "output_device_ids": output_device_ids,
             "initial_point_inputs": initial_point_inputs,
+            "input_exposures": [
+                {
+                    "point_id": int(exposure["point_id"]),
+                    "variable": str(exposure["variable"]),
+                    "point_name": exposure.get("point_name"),
+                    "device_name": exposure.get("device_name"),
+                    "device_id": exposure.get("device_id"),
+                    "object_type": exposure.get("object_type"),
+                    "object_instance": exposure.get("object_instance"),
+                    "units": exposure.get("units"),
+                }
+                for exposure in exposure_rows
+            ],
             "bindings": [
                 {
                     "point_id": int(mapping["point_id"]),
@@ -444,9 +509,38 @@ def recover_unhealthy_simulation_models(database: Any, engine: Any) -> dict[str,
     errors: list[dict[str, str]] = []
 
     for config in persisted:
+        model_id = int(config["id"])
+        failure_key = (id(engine), model_id)
         runtime_id = provider_runtime_id(config)
         status = current_providers.get(runtime_id, {}).get("status")
         if status == "running":
+            _recovery_failure_counts.pop(failure_key, None)
+            continue
+
+        consecutive_failures = _recovery_failure_counts.get(failure_key, 0)
+        if consecutive_failures >= _MAX_CONSECUTIVE_RECOVERY_FAILURES:
+            # Circuit open: this model has failed every sweep for a while
+            # (most likely a permanently-orphaned model_type, not a
+            # transient issue) -- stop retrying it, but keep surfacing it
+            # in `errors` so it stays visible rather than silently vanishing.
+            log.debug(
+                "FMU SESSION RECOVER circuit open, skipping retry: "
+                "model_id=%s name=%s consecutive_failures=%s -- fix via "
+                "PUT /simulation/models/%s to clear",
+                model_id,
+                config.get("name"),
+                consecutive_failures,
+                model_id,
+            )
+            errors.append({
+                "model_id": str(model_id),
+                "name": str(config["name"]),
+                "error": (
+                    f"Giving up after {consecutive_failures} consecutive "
+                    "recovery failures -- this model likely needs to be "
+                    "re-mapped to a current catalog model, not just retried"
+                ),
+            })
             continue
 
         reason = "missing" if runtime_id not in current_providers else str(status)
@@ -458,7 +552,7 @@ def recover_unhealthy_simulation_models(database: Any, engine: Any) -> dict[str,
             reason,
         )
         try:
-            reload_model(database, engine, int(config["id"]))
+            reload_model(database, engine, model_id)
             new_diagnostics = engine.get_simulation_providers().get(runtime_id, {})
             new_session = (new_diagnostics.get("diagnostics") or {}).get("session_id")
             log.info(
@@ -467,8 +561,10 @@ def recover_unhealthy_simulation_models(database: Any, engine: Any) -> dict[str,
                 runtime_id,
                 new_session,
             )
+            _recovery_failure_counts.pop(failure_key, None)
             recovered.append(runtime_id)
         except Exception as exc:
+            _recovery_failure_counts[failure_key] = consecutive_failures + 1
             log.warning(
                 "FMU SESSION RECOVER FAILED model_id=%s runtime_id=%s error=%s",
                 config["id"],
