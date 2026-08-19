@@ -387,10 +387,24 @@ async def delete_device(
         ),
     )
 
-    deleted = await asyncio.to_thread(
-        database.delete_device,
-        device_id,
-    )
+    try:
+        deleted = await asyncio.to_thread(
+            database.delete_device,
+            device_id,
+        )
+    except sqlite3.IntegrityError as exc:
+        # A cascade from this device's objects hit an aggregate member's
+        # ON DELETE RESTRICT (see model_store.ensure_simulation_model_schema).
+        # Coarser than delete_object's error (doesn't name the exact point/
+        # aggregate) since this is a safety-net path, not the primary one --
+        # the actionable error is delete_object's.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Device {device['name']!r} cannot be deleted: it owns one "
+                "or more points that are still aggregate-mapping members."
+            ),
+        ) from exc
 
     if not deleted:
         raise HTTPException(

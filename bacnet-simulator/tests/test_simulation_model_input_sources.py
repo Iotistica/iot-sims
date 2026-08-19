@@ -64,6 +64,7 @@ class _FakeFMUProvider:
         runtime_url,
         model,
         bindings,
+        aggregate_inputs=None,
         input_defaults,
         timeout_s,
         input_variables,
@@ -72,6 +73,7 @@ class _FakeFMUProvider:
         self.runtime_url = runtime_url
         self.model = model
         self.bindings = list(bindings)
+        self.aggregate_inputs = list(aggregate_inputs or [])
         self.input_defaults = dict(input_defaults)
         self.timeout_s = timeout_s
         self.input_variables = set(input_variables)

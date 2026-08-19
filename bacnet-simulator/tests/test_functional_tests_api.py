@@ -100,7 +100,8 @@ def test_invalid_equipment_type_rejected(client):
         (
             lambda d: d["nodes"].append(
                 {"id": "wu", "type": "wait_until", "params": {
-                    "point_type": "Run_Status", "operator": "roughly", "value": True, "timeout_seconds": 60,
+                    "point": {"device_id": 1, "object_id": 1}, "operator": "roughly",
+                    "value": {"kind": "constant", "value": True}, "timeout_seconds": 60,
                 }}
             ),
             "invalid operator",
@@ -111,9 +112,9 @@ def test_invalid_equipment_type_rejected(client):
         ),
         (
             lambda d: d["nodes"].append(
-                {"id": "c", "type": "capture", "params": {"point_type": "Not_A_Point_Type", "variable": "x"}}
+                {"id": "c", "type": "capture", "params": {"point": {"object_id": 1}, "variable": "x"}}
             ),
-            "unknown point_type",
+            "malformed point reference (missing device_id)",
         ),
         (
             lambda d: d["nodes"].append(
@@ -123,7 +124,23 @@ def test_invalid_equipment_type_rejected(client):
                     "right": {"kind": "constant", "value": 1},
                 }}
             ),
-            "malformed Operand (point missing point_type)",
+            "malformed Operand (point missing point ref)",
+        ),
+        (
+            lambda d: d["nodes"].append(
+                {"id": "s", "type": "set", "params": {"point": {"device_id": 1, "object_id": 1}, "priority": 99}}
+            ),
+            "Set missing value, priority out of range",
+        ),
+        (
+            lambda d: d["nodes"].append(
+                {"id": "v2", "type": "verify", "params": {
+                    "left": {"kind": "constant", "value": 1},
+                    "operator": "within_tolerance",
+                    "right": {"kind": "constant", "value": 1},
+                }}
+            ),
+            "within_tolerance missing tolerance",
         ),
         (
             lambda d: d["edges"].append({"source": "start", "target": "nonexistent", "source_handle": None}),

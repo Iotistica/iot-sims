@@ -1,7 +1,10 @@
 """Pure-function tests for GraphExecutor (src/functional_tests/executor.py)
--- no BACnet, no real time, no DB. FakeTestRuntime gives full control over
-values/clock/cancellation so waits resolve instantly and cancellation is
-deterministic rather than racy."""
+-- no BACnet, no real time (mostly), no DB. FakeTestRuntime gives full
+control over values/clock/cancellation so waits resolve instantly and
+cancellation is deterministic rather than racy. Points are concrete
+PointRef dicts ({device_id, object_id}) -- see PT() below -- matching the
+Functional Tests HVAC-regression schema (no more semantic point_type
+strings)."""
 from __future__ import annotations
 
 import asyncio
@@ -9,25 +12,46 @@ import copy
 
 import pytest
 
-from src.functional_tests.executor import GraphExecutor
+from src.functional_tests.executor import DEFAULT_SET_PRIORITY, GraphExecutor
 from src.functional_tests.operands import ExecutionError
-from src.functional_tests.runtime import TestRuntime
 
 
-class FakeTestRuntime(TestRuntime):
-    def __init__(self, resolution_map=None, values=None, on_wait=None, on_read=None):
-        super().__init__(resolution_map or {})
-        self.values = values or {}
+def PT(object_id: int, device_id: int = 1) -> dict:
+    return {"device_id": device_id, "object_id": object_id}
+
+
+def _pt_key(ref: dict) -> tuple:
+    return (ref["device_id"], ref["object_id"])
+
+
+class FakeTestRuntime:
+    """Duck-types TestRuntime's interface (read/write/snapshot_for_restore/
+    now/wait) -- not a subclass, since the real TestRuntime is constructed
+    from (engine, database, point_cache) and this needs full test control
+    instead."""
+
+    def __init__(self, values=None, on_wait=None, on_read=None):
+        self.values = dict(values or {})
         self._clock = 0.0
         self.on_wait = on_wait
         self.on_read = on_read
-        self.read_calls: list[str] = []
+        self.read_calls: list[tuple] = []
+        self.write_calls: list[tuple] = []
 
-    async def read(self, point_type):
-        self.read_calls.append(point_type)
+    async def read(self, point_ref):
+        key = _pt_key(point_ref)
+        self.read_calls.append(key)
         if self.on_read is not None:
             self.on_read(self)
-        return self.values.get(point_type)
+        return self.values.get(key)
+
+    async def write(self, point_ref, value, priority=None):
+        key = _pt_key(point_ref)
+        self.write_calls.append((key, value, priority))
+        self.values[key] = value
+
+    async def snapshot_for_restore(self, point_ref):
+        return {"commandable": True}
 
     def now(self) -> float:
         return self._clock
@@ -99,7 +123,7 @@ def _wait_until_def(timeout_seconds=60):
         nodes=[
             {"id": "start", "type": "start", "params": {}},
             {"id": "wu", "type": "wait_until", "params": {
-                "point_type": "Run_Status", "operator": "eq", "value": True,
+                "point": PT(1), "operator": "eq", "value": {"kind": "constant", "value": True},
                 "timeout_seconds": timeout_seconds,
             }},
             {"id": "end", "type": "end", "params": {"result": "pass"}},
@@ -112,7 +136,7 @@ def _wait_until_def(timeout_seconds=60):
 
 
 async def test_wait_until_succeeds():
-    runtime = FakeTestRuntime(values={"Run_Status": True})
+    runtime = FakeTestRuntime(values={_pt_key(PT(1)): True})
     executor = GraphExecutor(_wait_until_def(), runtime, asyncio.Event())
     result = await executor.run()
     assert result.state == "passed"
@@ -124,12 +148,75 @@ async def test_wait_until_times_out():
     # against an unset cancel_event just times out and loops, so this
     # advances real wall-clock slightly; timeout_seconds=0 makes it fail on
     # the very first check without needing to actually wait a full second).
-    runtime = FakeTestRuntime(values={"Run_Status": False})
+    runtime = FakeTestRuntime(values={_pt_key(PT(1)): False})
     executor = GraphExecutor(_wait_until_def(timeout_seconds=0), runtime, asyncio.Event())
     result = await executor.run()
     assert result.state == "failed"
     assert result.result == "fail"
     assert "timed out" in result.message
+
+
+# ─── Wait Until: value can reference a captured baseline ────────────────
+
+async def test_wait_until_value_from_captured_variable():
+    definition = _def(
+        nodes=[
+            {"id": "start", "type": "start", "params": {}},
+            {"id": "cap", "type": "capture", "params": {"point": PT(4), "variable": "baseline"}},
+            {"id": "wu", "type": "wait_until", "params": {
+                "point": PT(5), "operator": "lt",
+                "value": {"kind": "variable", "name": "baseline", "offset": -1},
+                "timeout_seconds": 600,
+            }},
+            {"id": "end", "type": "end", "params": {"result": "pass"}},
+        ],
+        edges=[
+            {"source": "start", "target": "cap", "source_handle": None},
+            {"source": "cap", "target": "wu", "source_handle": None},
+            {"source": "wu", "target": "end", "source_handle": None},
+        ],
+    )
+    # baseline captured = 100 -> threshold = 100 - 1 = 99; PT(5) reads 90 -> 90 < 99 -> pass immediately.
+    runtime = FakeTestRuntime(values={_pt_key(PT(4)): 100, _pt_key(PT(5)): 90})
+    executor = GraphExecutor(definition, runtime, asyncio.Event())
+    result = await executor.run()
+    assert result.state == "passed"
+    assert executor.variables["baseline"] == 100
+
+
+# ─── Wait Until: stable_for_seconds requires the condition to hold ──────
+
+async def test_wait_until_stable_for_requires_condition_to_hold():
+    # Read #1: condition already true, but stable_for hasn't elapsed yet
+    # (first_true_at == now == 0) -- must NOT pass yet. Read #2: clock has
+    # advanced past stable_for_seconds while still true -- must pass then.
+    calls = {"n": 0}
+
+    def _advance(runtime):
+        calls["n"] += 1
+        runtime.values[_pt_key(PT(1))] = True
+        if calls["n"] >= 2:
+            runtime._clock = 10.0
+
+    definition = _def(
+        nodes=[
+            {"id": "start", "type": "start", "params": {}},
+            {"id": "wu", "type": "wait_until", "params": {
+                "point": PT(1), "operator": "eq", "value": {"kind": "constant", "value": True},
+                "stable_for_seconds": 5, "timeout_seconds": 600,
+            }},
+            {"id": "end", "type": "end", "params": {"result": "pass"}},
+        ],
+        edges=[
+            {"source": "start", "target": "wu", "source_handle": None},
+            {"source": "wu", "target": "end", "source_handle": None},
+        ],
+    )
+    runtime = FakeTestRuntime(on_read=_advance)
+    executor = GraphExecutor(definition, runtime, asyncio.Event())
+    result = await executor.run()
+    assert result.state == "passed"
+    assert calls["n"] == 2  # would be 1 if stability wasn't enforced
 
 
 # ─── 5. Capture stores current value ────────────────────────────────────
@@ -138,7 +225,7 @@ async def test_capture_stores_current_value():
     definition = _def(
         nodes=[
             {"id": "start", "type": "start", "params": {}},
-            {"id": "cap", "type": "capture", "params": {"point_type": "Leaving_Hot_Water_Temperature_Sensor", "variable": "lwt"}},
+            {"id": "cap", "type": "capture", "params": {"point": PT(2), "variable": "lwt"}},
             {"id": "end", "type": "end", "params": {"result": "pass"}},
         ],
         edges=[
@@ -146,7 +233,7 @@ async def test_capture_stores_current_value():
             {"source": "cap", "target": "end", "source_handle": None},
         ],
     )
-    runtime = FakeTestRuntime(values={"Leaving_Hot_Water_Temperature_Sensor": 58.2})
+    runtime = FakeTestRuntime(values={_pt_key(PT(2)): 58.2})
     executor = GraphExecutor(definition, runtime, asyncio.Event())
     await executor.run()
     assert executor.variables["lwt"] == 58.2
@@ -189,7 +276,7 @@ async def test_verify_takes_fail_edge():
     assert result.result == "fail"
 
 
-# ─── 8. Compare supports all six operators ──────────────────────────────
+# ─── 8. Compare supports all six legacy operators ───────────────────────
 
 @pytest.mark.parametrize("operator,left,right,expected", [
     ("eq", 5, 5, "pass"),
@@ -221,13 +308,86 @@ async def test_compare_operators(operator, left, right, expected):
     assert result.state == "passed"  # compare doesn't branch -- always continues
 
 
+# ─── within_tolerance operator ───────────────────────────────────────────
+
+@pytest.mark.parametrize("left,right,tolerance,expected", [
+    (10.0, 10.4, 0.5, "pass"),
+    (10.0, 11.0, 0.5, "fail"),
+])
+async def test_within_tolerance_operator(left, right, tolerance, expected):
+    definition = _def(
+        nodes=[
+            {"id": "start", "type": "start", "params": {}},
+            {"id": "v", "type": "verify", "params": {
+                "left": {"kind": "constant", "value": left},
+                "operator": "within_tolerance",
+                "right": {"kind": "constant", "value": right},
+                "tolerance": tolerance,
+            }},
+            {"id": "end-pass", "type": "end", "params": {"result": "pass"}},
+            {"id": "end-fail", "type": "end", "params": {"result": "fail"}},
+        ],
+        edges=[
+            {"source": "start", "target": "v", "source_handle": None},
+            {"source": "v", "target": "end-pass", "source_handle": "pass"},
+            {"source": "v", "target": "end-fail", "source_handle": "fail"},
+        ],
+    )
+    executor = GraphExecutor(definition, FakeTestRuntime(), asyncio.Event())
+    result = await executor.run()
+    assert result.result == expected
+
+
+# ─── Set: writes via runtime.write() and records to executor.writes ─────
+
+async def test_set_writes_and_records():
+    definition = _def(
+        nodes=[
+            {"id": "start", "type": "start", "params": {}},
+            {"id": "set", "type": "set", "params": {"point": PT(3), "value": "OFF", "priority": 8}},
+            {"id": "end", "type": "end", "params": {"result": "pass"}},
+        ],
+        edges=[
+            {"source": "start", "target": "set", "source_handle": None},
+            {"source": "set", "target": "end", "source_handle": None},
+        ],
+    )
+    runtime = FakeTestRuntime()
+    executor = GraphExecutor(definition, runtime, asyncio.Event())
+    result = await executor.run()
+    assert result.state == "passed"
+    assert runtime.write_calls == [(_pt_key(PT(3)), "OFF", 8)]
+    assert len(executor.writes) == 1
+    assert executor.writes[0]["point"] == PT(3)
+    assert executor.writes[0]["priority"] == 8
+    assert executor.writes[0]["commandable"] is True
+
+
+async def test_set_defaults_priority_when_unset():
+    definition = _def(
+        nodes=[
+            {"id": "start", "type": "start", "params": {}},
+            {"id": "set", "type": "set", "params": {"point": PT(3), "value": "OFF"}},
+            {"id": "end", "type": "end", "params": {"result": "pass"}},
+        ],
+        edges=[
+            {"source": "start", "target": "set", "source_handle": None},
+            {"source": "set", "target": "end", "source_handle": None},
+        ],
+    )
+    runtime = FakeTestRuntime()
+    executor = GraphExecutor(definition, runtime, asyncio.Event())
+    await executor.run()
+    assert executor.writes[0]["priority"] == DEFAULT_SET_PRIORITY
+
+
 # ─── 9. Variable + offset evaluates correctly ───────────────────────────
 
 async def test_variable_with_offset():
     definition = _def(
         nodes=[
             {"id": "start", "type": "start", "params": {}},
-            {"id": "cap", "type": "capture", "params": {"point_type": "T", "variable": "lwt"}},
+            {"id": "cap", "type": "capture", "params": {"point": PT(6), "variable": "lwt"}},
             {"id": "v", "type": "verify", "params": {
                 "left": {"kind": "constant", "value": 62},
                 "operator": "gt",
@@ -243,7 +403,7 @@ async def test_variable_with_offset():
             {"source": "v", "target": "end-fail", "source_handle": "fail"},
         ],
     )
-    runtime = FakeTestRuntime(values={"T": 58})  # 62 > 58 + 2 == 60 -> pass
+    runtime = FakeTestRuntime(values={_pt_key(PT(6)): 58})  # 62 > 58 + 2 == 60 -> pass
     executor = GraphExecutor(definition, runtime, asyncio.Event())
     result = await executor.run()
     assert result.result == "pass"
@@ -299,11 +459,11 @@ async def test_cancel_interrupts_wait():
 
 async def test_cancel_interrupts_wait_until():
     def _cancel_on_first_read(runtime):
-        runtime.values["Run_Status"] = False
+        runtime.values[_pt_key(PT(1))] = False
         runtime._cancel_event_ref.set()
 
     cancel_event = asyncio.Event()
-    runtime = FakeTestRuntime(values={"Run_Status": False})
+    runtime = FakeTestRuntime(values={_pt_key(PT(1)): False})
     runtime._cancel_event_ref = cancel_event  # test-only wiring for the on_read hook
     runtime.on_read = _cancel_on_first_read
 

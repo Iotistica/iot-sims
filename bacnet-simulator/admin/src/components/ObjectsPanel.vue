@@ -83,6 +83,10 @@ const loading = ref(false)
 const hasDiscovered = computed(() => objects.value.length > 0)
 
 async function loadObjects() {
+  // Clear immediately -- otherwise the table keeps showing the PREVIOUS
+  // device's rows for the duration of the fetch, since only `objects`
+  // (not the `device` prop the header reads) is populated asynchronously.
+  objects.value = []
   loading.value = true
   try {
     objects.value = await api.objects.list(props.device.id)
@@ -518,7 +522,7 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
           </a-button>
           <a-button @click="openSimulationModel">
             <template #icon><ExperimentOutlined /></template>
-            Simulation
+            Simulation Model
           </a-button>
           <a-button :disabled="!objects.length" @click="saveTemplateOpen = true">Save as Template</a-button>
           <a-button @click="templateModalOpen = true">From Template</a-button>
@@ -552,6 +556,7 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
     <a-table
       :data-source="filteredObjects"
       :columns="columns"
+      :loading="loading"
       :pagination="false"
       :show-sorter-tooltip="false"
       size="small"

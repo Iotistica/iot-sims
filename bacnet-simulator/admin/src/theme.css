@@ -18,6 +18,7 @@
   --text-disabled: #cccccc;
   --icon-disabled: #d9d9d9;
   --selected-bg: #e6f7ff;
+  --card-shadow: 0 2px 8px rgb(0 0 0 / 6%);
 }
 
 html.dark {
@@ -33,6 +34,14 @@ html.dark {
   --text-disabled: rgba(255, 255, 255, 0.25);
   --icon-disabled: rgba(255, 255, 255, 0.2);
   --selected-bg: #111d2c;
+  /* The canvas backdrop behind cards (e.g. the Functional Test builder's
+     Vue Flow pane) stays light in both themes -- but a dark card on that
+     light backdrop already has strong fill contrast, so the same subtle
+     6% shadow used in light mode (where fill and backdrop are close in
+     tone, and the shadow is what visually lifts the card) reads as
+     basically invisible here. A stronger, more opaque shadow keeps the
+     same "lifted card" effect legible against a card that's already dark. */
+  --card-shadow: 0 2px 8px rgb(0 0 0 / 35%);
 }
 
 html.dark body {

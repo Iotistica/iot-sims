@@ -7,11 +7,10 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from ...bacnet.schemas import (
     FunctionalTestCreate,
-    FunctionalTestRunRequest,
     FunctionalTestUpdate,
 )
 from ...functional_tests import runs as ft_runs
-from ...functional_tests.resolution import build_resolution, collect_point_types
+from ...functional_tests.readiness import check_readiness
 
 
 router = APIRouter(
@@ -34,13 +33,6 @@ def get_database(request: Request) -> Any:
         )
 
     return database
-
-
-async def _require_target_device(database: Any, device_id: int) -> dict:
-    device = await asyncio.to_thread(database.get_device, device_id)
-    if device is None:
-        raise HTTPException(status_code=404, detail="Target device not found")
-    return device
 
 
 @router.get("")
@@ -97,70 +89,57 @@ async def get_functional_test(
 @router.post("/{test_id}/resolve")
 async def resolve_functional_test(
     test_id: int,
-    body: FunctionalTestRunRequest,
     request: Request,
 ):
-    """Read-only preview: resolves every semantic point the saved
-    definition references against a candidate target, powering the
-    pre-flight readiness UI. Never creates a run."""
+    """Read-only preview: checks every point the saved definition
+    references still exists (and, for Set nodes, is simulated), powering
+    the pre-flight readiness UI. Never creates a run. Bodyless -- every
+    point in the definition already carries its own device, so there is no
+    per-run target to supply."""
     database = get_database(request)
 
     test = await asyncio.to_thread(database.get_functional_test, test_id)
     if test is None:
         raise HTTPException(status_code=404, detail="Functional test not found")
 
-    device = await _require_target_device(database, body.target_device_id)
+    readiness = await asyncio.to_thread(check_readiness, database, test["definition"])
 
-    def _resolve() -> dict:
-        point_types = collect_point_types(test["definition"])
-        return build_resolution(database, device["id"], test["equipment_type"], point_types)
-
-    resolution = await asyncio.to_thread(_resolve)
-    execution_mode = "external" if device.get("source_type") == "external-bacnet" else "simulation"
-
-    return {
-        "execution_mode": execution_mode,
-        "points": {point_type: r.to_dict() for point_type, r in resolution.items()},
-    }
+    return {"points": [r.to_dict() for r in readiness]}
 
 
 @router.post("/{test_id}/runs", status_code=201)
 async def create_functional_test_run(
     test_id: int,
-    body: FunctionalTestRunRequest,
     request: Request,
 ):
-    """Only ever accepts a target_device_id -- the definition is always
-    loaded fresh from the DB (never from the request body), and semantic
-    resolution is always re-done server-side (never trusts whatever the
-    frontend's own /resolve preview already showed)."""
+    """Bodyless -- the definition is always loaded fresh from the DB
+    (never from the request body), and readiness is always re-checked
+    server-side (never trusts whatever the frontend's own /resolve preview
+    already showed)."""
     database = get_database(request)
 
     test = await asyncio.to_thread(database.get_functional_test, test_id)
     if test is None:
         raise HTTPException(status_code=404, detail="Functional test not found")
 
-    device = await _require_target_device(database, body.target_device_id)
-
     try:
-        run_row, resolution_map = await asyncio.to_thread(ft_runs.prepare_run, database, test, device)
-    except ft_runs.ResolutionError as exc:
+        run_row, point_cache = await asyncio.to_thread(ft_runs.prepare_run, database, test)
+    except ft_runs.ReadinessError as exc:
         raise HTTPException(
             status_code=400,
             detail={
-                "message": "Cannot run test -- one or more required points did not resolve",
-                "points": {point_type: r.to_dict() for point_type, r in exc.resolution.items()},
+                "message": "Cannot run test -- one or more required points are not ready",
+                "points": [r.to_dict() for r in exc.readiness],
             },
         )
     except ft_runs.ActiveRunExistsError:
         raise HTTPException(
             status_code=409,
-            detail="A run for this test and target is already active",
+            detail="A run for this test is already active",
         )
 
     ft_runs.start_execution(
-        request.app.state, database, run_row, device,
-        run_row["execution_mode"], test["definition"], resolution_map,
+        request.app.state, database, run_row, test["name"], test["definition"], point_cache,
     )
 
     return run_row

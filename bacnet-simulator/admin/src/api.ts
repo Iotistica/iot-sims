@@ -43,6 +43,7 @@ import type {
   FunctionalTestDefinition,
   FunctionalTestResolveResponse,
   FunctionalTestRun,
+  PointRow,
 } from './types'
 
 import { authToken, logout } from './auth'
@@ -117,7 +118,13 @@ function errorMessageFromDetail(detail: unknown): string {
 
   if (detail && typeof detail === 'object') {
     const message = (detail as { message?: unknown }).message
-    if (typeof message === 'string') return message
+    const runtimeError = (detail as { runtime_error?: unknown }).runtime_error
+    if (typeof message === 'string') {
+      return typeof runtimeError === 'string' && runtimeError
+        ? `${message}: ${runtimeError}`
+        : message
+    }
+    if (typeof runtimeError === 'string') return runtimeError
   }
 
   return ''
@@ -193,6 +200,13 @@ export interface SimulationModelParameterDefinition {
   maximum?: number | null
 }
 
+export interface SimulationModelMappingHints {
+  equipment_scope: 'self' | 'upstream' | 'downstream' | 'any'
+  preferred_equipment_types?: string[]
+  relationship?: 'feeds' | 'isPartOf' | null
+  signal_role?: string | null
+}
+
 export interface SimulationModelVariableDefinition {
   name: string
   label: string
@@ -201,6 +215,11 @@ export interface SimulationModelVariableDefinition {
   default?: unknown
   required?: boolean
   suggested_point_types?: string[]
+  /** Already present in the backend catalog response (VariableDefinition's
+   * mapping_hints, asdict()'d) -- this type just declares it. Used to rank
+   * an Aggregate input's point picker (equipment_scope/preferred_equipment_types/
+   * signal_role), never to hard-code any specific variable in the UI. */
+  mapping_hints?: SimulationModelMappingHints | null
 }
 
 export interface SimulationModelCatalogEntry {
@@ -228,6 +247,33 @@ export interface SimulationModelMapping {
   point_type?: string | null
 }
 
+/** point_metadata keys are point_ids -- always strings once this crosses
+ * the JSON wire, even though the backend builds the dict with int keys
+ * internally (see model_store._load_aggregate_mappings). Weight points
+ * (weighted_average only) share the same point_metadata dict as value
+ * points -- a lookup by point_id works identically for either. */
+export interface SimulationModelAggregateMapping {
+  id?: number
+  model_config_id?: number
+  variable: string
+  direction: 'input'
+  operation: 'max' | 'weighted_average'
+  point_ids: number[]
+  /** Positionally parallel to point_ids (index i's weight is
+   * weight_point_ids[i]). Only present/meaningful for
+   * operation='weighted_average' -- absent or all-null for 'max'. */
+  weight_point_ids?: (number | null)[]
+  point_metadata?: Record<string, {
+    point_name?: string
+    device_name?: string
+    device_id?: number
+    object_type?: string
+    object_instance?: number
+    units?: string
+    point_type?: string | null
+  }>
+}
+
 export interface SimulationModelConfig {
   id: number
   name: string
@@ -236,7 +282,10 @@ export interface SimulationModelConfig {
   enabled: boolean
   parameters: Record<string, unknown>
   created_from_device_id: number | null
-  mappings: SimulationModelMapping[]
+  /** A row is an aggregate mapping iff it has "point_ids" (plural) instead
+   * of "point_id" -- the same discriminator the backend's
+   * model_runtime._is_aggregate_row uses. */
+  mappings: Array<SimulationModelMapping | SimulationModelAggregateMapping>
   runtime_id?: string
   runtime?: unknown
 }
@@ -249,6 +298,7 @@ export interface SimulationModelPayload {
   parameters: Record<string, unknown>
   created_from_device_id?: number | null
   mappings: Array<Pick<SimulationModelMapping, 'variable' | 'direction' | 'point_id'>>
+  aggregate_mappings: Array<Pick<SimulationModelAggregateMapping, 'variable' | 'direction' | 'operation' | 'point_ids' | 'weight_point_ids'>>
 }
 
 export interface SimulationModelPointOption {
@@ -296,6 +346,28 @@ export interface MappingSuggestionEntry {
 
 export interface MappingSuggestionsResponse {
   variables: MappingSuggestionEntry[]
+}
+
+/** One ranked candidate from POST /simulation/models/variable-candidates --
+ * mirrors the backend's PointCandidate dataclass exactly (mapping_suggestions.py). */
+export interface VariableCandidateEntry {
+  id: number
+  name: string
+  description: string | null
+  units: string | null
+  object_type: string | null
+  device_id: number
+  device_name: string
+  point_type: string | null
+  equipment_class: string | null
+  location_match: boolean
+}
+
+export interface VariableCandidatesResponse {
+  variable: string
+  candidates: VariableCandidateEntry[]
+  equipment_scope_used: 'self' | 'upstream' | 'downstream' | 'any' | 'fallback'
+  related_equipment_name: string | null
 }
 
 export const api = {
@@ -358,6 +430,9 @@ export const api = {
       req<MappingSuggestionsResponse>('/simulation/models/mapping-suggestions', { method: 'POST', body: JSON.stringify(body) }),
     mappingSuggestionAi: (body: { model_type: string; variable: string; created_from_device_id: number | null; current_model_id?: number | null }) =>
       req<MappingSuggestionEntry>('/simulation/models/mapping-suggestions/ai', { method: 'POST', body: JSON.stringify(body) }),
+    variableCandidates: (body: { model_type: string; variable: string; created_from_device_id: number | null; current_model_id?: number | null; limit?: number }) =>
+      req<VariableCandidatesResponse>('/simulation/models/variable-candidates', { method: 'POST', body: JSON.stringify(body) }),
+    reconcile: () => req<Record<string, unknown>>('/simulation/models/reconcile', { method: 'POST' }),
   },
 
   settings: {
@@ -444,19 +519,29 @@ export const api = {
     update: (id: number, b: { name: string; description: string; equipment_type: string; definition: FunctionalTestDefinition }) =>
       req<FunctionalTest>(`/functional-tests/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
     del:    (id: number)                                           => req<null>(`/functional-tests/${id}`, { method: 'DELETE' }),
-    resolve: (id: number, targetDeviceId: number) =>
-      req<FunctionalTestResolveResponse>(`/functional-tests/${id}/resolve`, {
-        method: 'POST', body: JSON.stringify({ target_device_id: targetDeviceId }),
-      }),
-    createRun: (id: number, targetDeviceId: number) =>
-      req<FunctionalTestRun>(`/functional-tests/${id}/runs`, {
-        method: 'POST', body: JSON.stringify({ target_device_id: targetDeviceId }),
-      }),
+    // Bodyless -- every point in the saved definition already carries its
+    // own device, so there is no per-run target left to supply.
+    resolve: (id: number) =>
+      req<FunctionalTestResolveResponse>(`/functional-tests/${id}/resolve`, { method: 'POST' }),
+    createRun: (id: number) =>
+      req<FunctionalTestRun>(`/functional-tests/${id}/runs`, { method: 'POST' }),
   },
 
   functionalTestRuns: {
     get:    (runId: number) => req<FunctionalTestRun>(`/functional-test-runs/${runId}`),
     cancel: (runId: number) => req<FunctionalTestRun>(`/functional-test-runs/${runId}/cancel`, { method: 'POST' }),
+  },
+
+  points: {
+    list: (filters?: { search?: string; objectType?: string; deviceId?: number; pointType?: string }) => {
+      const params = new URLSearchParams()
+      if (filters?.search) params.set('search', filters.search)
+      if (filters?.objectType) params.set('object_type', filters.objectType)
+      if (filters?.deviceId != null) params.set('device_id', String(filters.deviceId))
+      if (filters?.pointType) params.set('point_type', filters.pointType)
+      const qs = params.toString()
+      return req<PointRow[]>(`/points${qs ? `?${qs}` : ''}`)
+    },
   },
 
   objects: {

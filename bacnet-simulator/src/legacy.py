@@ -12,6 +12,7 @@ import os
 import random
 import socket
 import sqlite3
+import threading
 import time
 import csv
 import io
@@ -214,6 +215,10 @@ from .api.routers.functional_test_runs import (
     router as functional_test_runs_router,
 )
 
+from .api.routers.points import (
+    router as points_router,
+)
+
 from .api.guards import reject_external_device
 
 # Simulation-provider runtime boundary. New provider implementations live in
@@ -223,6 +228,12 @@ from .simulation.providers import (
     PointConfig,
     ProviderStatus,
     SimulationContext,
+)
+from .simulation.model_runtime import recover_unhealthy_simulation_models
+from .simulation.model_store import (
+    ensure_simulation_model_schema,
+    insert_simulation_model,
+    list_all_simulation_models,
 )
 
 
@@ -434,7 +445,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS functional_test_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     functional_test_id INTEGER NOT NULL REFERENCES functional_tests(id) ON DELETE CASCADE,
-                    target_device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                    target_device_id INTEGER REFERENCES devices(id),
                     execution_mode TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'pending',
                     started_at TEXT,
@@ -759,6 +770,66 @@ class Database:
                 conn.execute(
                     "ALTER TABLE devices ADD COLUMN source_device_id INTEGER REFERENCES devices(id)"
                 )
+
+            # Schema migration: functional_test_runs.target_device_id becomes
+            # nullable with no ON DELETE CASCADE -- every point in a saved
+            # test definition now carries its own device (see the Functional
+            # Tests HVAC-regression plan), so a run no longer has one single
+            # target device to require or cascade from; new rows always
+            # insert NULL (see create_functional_test_run), old rows keep
+            # their historical value. Accepted trade-off: deleting a device
+            # no longer cascade-deletes runs that referenced it -- fine,
+            # since details_json already snapshots point/device identity as
+            # data, so an orphaned run stays meaningful. SQLite can't ALTER a
+            # NOT NULL/FK-cascade constraint in place, so this follows the
+            # same safe rebuild procedure as the devices/source_type
+            # migration above.
+            ftr_cols = {
+                row[1]: row for row in conn.execute("PRAGMA table_info(functional_test_runs)").fetchall()
+            }
+            target_device_col = ftr_cols.get("target_device_id")
+            if target_device_col is not None and target_device_col[3] == 1:  # notnull flag
+                conn.commit()  # flush any pending transaction -- foreign_keys can't be toggled mid-transaction
+                conn.execute("PRAGMA foreign_keys = OFF")
+                conn.execute("BEGIN")
+                conn.execute("""
+                    CREATE TABLE functional_test_runs_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        functional_test_id INTEGER NOT NULL REFERENCES functional_tests(id) ON DELETE CASCADE,
+                        target_device_id INTEGER REFERENCES devices(id),
+                        execution_mode TEXT NOT NULL,
+                        state TEXT NOT NULL DEFAULT 'pending',
+                        started_at TEXT,
+                        finished_at TEXT,
+                        result TEXT,
+                        result_message TEXT,
+                        current_node_id TEXT,
+                        error TEXT,
+                        details_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO functional_test_runs_new (
+                        id, functional_test_id, target_device_id, execution_mode, state,
+                        started_at, finished_at, result, result_message, current_node_id,
+                        error, details_json, created_at
+                    )
+                    SELECT
+                        id, functional_test_id, target_device_id, execution_mode, state,
+                        started_at, finished_at, result, result_message, current_node_id,
+                        error, details_json, created_at
+                    FROM functional_test_runs
+                """)
+                conn.execute("DROP TABLE functional_test_runs")
+                conn.execute("ALTER TABLE functional_test_runs_new RENAME TO functional_test_runs")
+                fk_problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if fk_problems:
+                    conn.rollback()
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    raise RuntimeError(f"functional_test_runs migration broke FK integrity: {fk_problems}")
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = ON")
 
             # Schema migration: semantic_entities gains an equipment_id FK
             # (physical equipment, see the new `equipment` table above) and
@@ -2066,6 +2137,49 @@ class Database:
             conn.commit()
             return entity
 
+    def get_all_points(
+        self,
+        object_type: Optional[str] = None,
+        device_id: Optional[int] = None,
+        point_type: Optional[str] = None,
+    ) -> list[dict]:
+        """Cross-device point listing for the Functional Test builder's
+        PointPicker (src/api/routers/points.py) -- every object on every
+        device, joined with its device's name/source_type, unlike
+        get_assignable_points_for_equipment/get_entity_points which are
+        both scoped to one equipment/entity. Live value is intentionally
+        NOT included here (this is a single indexed query, not per-row
+        engine calls) -- the router annotates it in afterward, for
+        simulated rows only, via engine.get_object_value()."""
+        clauses = []
+        params: list[Any] = []
+        if object_type:
+            clauses.append("o.object_type = ?")
+            params.append(object_type)
+        if device_id is not None:
+            clauses.append("o.device_id = ?")
+            params.append(device_id)
+        if point_type:
+            clauses.append("o.point_type = ?")
+            params.append(point_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    o.id AS object_id, o.device_id, d.name AS device_name,
+                    o.object_type, o.object_instance, o.name, o.units, o.point_type,
+                    d.source_type
+                FROM objects o
+                JOIN devices d ON d.id = o.device_id
+                {where}
+                ORDER BY d.name, o.object_type, o.object_instance
+                """,
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def get_objects(self, device_id: int) -> list[dict]:
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(
@@ -3323,9 +3437,9 @@ class Database:
     def create_functional_test_run(self, data: dict) -> dict:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO functional_test_runs (functional_test_id, target_device_id, execution_mode) "
-                "VALUES (?,?,?)",
-                (data["functional_test_id"], data["target_device_id"], data["execution_mode"]),
+                "INSERT INTO functional_test_runs (functional_test_id, execution_mode) "
+                "VALUES (?,?)",
+                (data["functional_test_id"], data["execution_mode"]),
             )
             conn.commit()
             return self._functional_test_run_row(conn, cur.lastrowid)
@@ -3334,12 +3448,12 @@ class Database:
         with self._conn() as conn:
             return self._functional_test_run_row(conn, run_id)
 
-    def find_active_functional_test_run(self, functional_test_id: int, target_device_id: int) -> Optional[dict]:
+    def find_active_functional_test_run(self, functional_test_id: int) -> Optional[dict]:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM functional_test_runs WHERE functional_test_id=? AND target_device_id=? "
+                "SELECT * FROM functional_test_runs WHERE functional_test_id=? "
                 "AND state IN ('pending','running') ORDER BY id DESC LIMIT 1",
-                (functional_test_id, target_device_id),
+                (functional_test_id,),
             ).fetchone()
             return self._functional_test_run_dict(row) if row else None
 
@@ -3390,6 +3504,11 @@ class Database:
         connection_config: Optional[dict] = None,
         discovery_connections: Optional[list[dict]] = None,
     ) -> dict:
+        # simulation_model_* tables are created lazily (see
+        # ensure_simulation_model_schema's own docstring), not by setup()'s
+        # own executescript -- must be ensured before the SELECT below on a
+        # database where no simulation model has ever been created yet.
+        ensure_simulation_model_schema(self)
         with self._conn() as conn:
             discovery_connections = self._normalize_discovery_connections(
                 discovery_connections,
@@ -3425,6 +3544,19 @@ class Database:
             # own comment), so this is stored/restored verbatim like the
             # other blob fields but with none of their remap bookkeeping.
             functional_tests = [dict(r) for r in conn.execute("SELECT * FROM functional_tests")]
+            # Stored verbatim, including the (soon-to-be-stale) id/
+            # created_from_device_id/mapping point_id values -- load_project()
+            # remaps these through dev_id_map/global_obj_id_map, the same
+            # pattern already used for energy_model_configs/semantic_entities
+            # above. Previously MISSING from this snapshot entirely -- a
+            # saved/reloaded project silently lost every simulation model
+            # (FMU provider configs, point mappings, aggregate mappings)
+            # even though the devices/objects they were attached to came
+            # back fine. list_all_simulation_models reuses the same
+            # assembly logic the /simulation/models API already returns
+            # (mappings + aggregate_mappings merged, matching
+            # model_runtime._is_aggregate_row's own "point_ids" discriminator).
+            simulation_models = list_all_simulation_models(conn)
             data = json.dumps({
                 "locations": locations,
                 "equipment": equipment,
@@ -3433,6 +3565,7 @@ class Database:
                 "semantic_relationships": semantic_relationships,
                 "energy_model_configs": energy_model_configs,
                 "functional_tests": functional_tests,
+                "simulation_models": simulation_models,
                 "connection_config": connection_config,
                 "discovery_connections": discovery_connections,
             })
@@ -3459,6 +3592,7 @@ class Database:
         connection_config_provided: bool = False,
         discovery_connections_provided: bool = False,
     ) -> bool:
+        ensure_simulation_model_schema(self)
         with self._conn() as conn:
             # Discovery connection settings aren't part of live device/location
             # state -- they only exist in this row's own stored data blob. An
@@ -3494,6 +3628,10 @@ class Database:
             semantic_relationships = [dict(r) for r in conn.execute("SELECT * FROM semantic_relationships")]
             energy_model_configs = [dict(r) for r in conn.execute("SELECT * FROM energy_model_configs")]
             functional_tests = [dict(r) for r in conn.execute("SELECT * FROM functional_tests")]
+            # See save_project's identical line for why this exists --
+            # previously missing entirely, silently losing every simulation
+            # model on save/reload.
+            simulation_models = list_all_simulation_models(conn)
             data = json.dumps({
                 "locations": locations,
                 "equipment": equipment,
@@ -3502,6 +3640,7 @@ class Database:
                 "semantic_relationships": semantic_relationships,
                 "energy_model_configs": energy_model_configs,
                 "functional_tests": functional_tests,
+                "simulation_models": simulation_models,
                 "connection_config": connection_config,
                 "discovery_connections": discovery_connections,
             })
@@ -3522,7 +3661,18 @@ class Database:
         semantic entity). Used by the "New Project" reset flow so it can't
         leave orphaned locations/semantic entities behind the way a pile of
         individual per-row API deletes could."""
+        ensure_simulation_model_schema(self)
         with self._conn() as conn:
+            # Must run BEFORE devices, not just before locations: a point
+            # that's a simulation_model_aggregate_members row (max or
+            # weighted_average) is ON DELETE RESTRICT (see
+            # model_store.ensure_simulation_model_schema's own comment on
+            # that table), so DELETE FROM devices below would otherwise
+            # cascade into deleting that point's object row and hit a
+            # foreign-key-constraint failure -- deleting the model config
+            # first cascades away its members before devices/objects are
+            # ever touched.
+            conn.execute("DELETE FROM simulation_model_configs")
             conn.execute("DELETE FROM semantic_relationships")
             conn.execute("DELETE FROM semantic_entities")
             conn.execute("DELETE FROM devices")
@@ -3532,6 +3682,7 @@ class Database:
             conn.commit()
 
     def load_project(self, project_id: int) -> Optional[dict]:
+        ensure_simulation_model_schema(self)
         with self._conn() as conn:
             row = conn.execute("SELECT data FROM profiles WHERE id=?", (project_id,)).fetchone()
             if not row:
@@ -3546,6 +3697,14 @@ class Database:
             # at one of those locations. This also guarantees no stale rows
             # survive to collide with the semantic_key values recomputed
             # below once ids are reassigned.
+            #
+            # simulation_model_configs must be wiped before devices for the
+            # identical reason (see clear_live_state's own comment): a
+            # simulation_model_aggregate_members row is ON DELETE RESTRICT
+            # on its point_id/weight_point_id, so DELETE FROM devices below
+            # would otherwise fail outright the moment it cascades into
+            # deleting an object that's still an aggregate member.
+            conn.execute("DELETE FROM simulation_model_configs")
             conn.execute("DELETE FROM semantic_relationships")
             conn.execute("DELETE FROM semantic_entities")
             conn.execute("DELETE FROM devices")
@@ -3789,6 +3948,74 @@ class Database:
                         cfg.get("enabled", 1),
                         cfg.get("parameters") or "{}",
                     ),
+                )
+
+            # Simulation models reference a device (created_from_device_id,
+            # via dev_id_map) and, per mapping, a point (point_id, via
+            # global_obj_id_map) -- both already fully populated by the
+            # devices loop above, same as energy_model_configs just above.
+            # created_from_device_id alone missing its device is tolerated
+            # (set to NULL, matching how the live create/update API already
+            # allows a null created_from_device_id) -- but a mapping/
+            # aggregate-member point that didn't come back is NOT silently
+            # kept with a stale id: that mapping (or, for weighted_average,
+            # that specific value/weight pair) is dropped instead, the same
+            # tolerance semantic_relationships uses below for an endpoint
+            # that didn't restore. A weighted_average pair missing its
+            # weight after remap is dropped as a whole pair (not left with
+            # a value point and no weight), mirroring validate()'s own
+            # "every value point needs a weight" rule -- never insert a
+            # structurally invalid aggregate row.
+            for model in payload.get("simulation_models", []):
+                old_created_from_device_id = model.get("created_from_device_id")
+                new_created_from_device_id = (
+                    dev_id_map.get(old_created_from_device_id)
+                    if old_created_from_device_id is not None else None
+                )
+                restored_mappings: list[dict] = []
+                restored_aggregate_mappings: list[dict] = []
+                for m in model.get("mappings", []):
+                    if "point_ids" in m:
+                        new_point_ids = [global_obj_id_map.get(pid) for pid in m["point_ids"]]
+                        if any(pid is None for pid in new_point_ids):
+                            continue
+                        operation = m.get("operation") or "max"
+                        weight_point_ids = None
+                        if operation == "weighted_average":
+                            raw_weights = m.get("weight_point_ids") or [None] * len(m["point_ids"])
+                            new_weight_ids = [
+                                (global_obj_id_map.get(w) if w is not None else None)
+                                for w in raw_weights
+                            ]
+                            if any(w is None for w in new_weight_ids):
+                                continue
+                            weight_point_ids = new_weight_ids
+                        restored_aggregate_mappings.append({
+                            "variable": m["variable"],
+                            "direction": m["direction"],
+                            "operation": operation,
+                            "point_ids": new_point_ids,
+                            "weight_point_ids": weight_point_ids,
+                        })
+                    else:
+                        new_point_id = global_obj_id_map.get(m["point_id"])
+                        if new_point_id is None:
+                            continue
+                        restored_mappings.append({
+                            "variable": m["variable"],
+                            "direction": m["direction"],
+                            "point_id": new_point_id,
+                        })
+                insert_simulation_model(
+                    conn,
+                    name=model["name"],
+                    provider_type=model["provider_type"],
+                    model_type=model["model_type"],
+                    enabled=bool(model.get("enabled")),
+                    parameters=model.get("parameters") or {},
+                    created_from_device_id=new_created_from_device_id,
+                    mappings=restored_mappings,
+                    aggregate_mappings=restored_aggregate_mappings,
                 )
 
             # No FK to device/object/location at all -- unlike everything
@@ -4052,6 +4279,9 @@ def _is_public_path(path: str) -> bool:
 
 TICK_SECONDS = 5.0  # cadence of the engine tick loop; see tick_loop()/tick()
 MIRROR_POLL_SECONDS = 3.0  # cadence of mirror_sync_loop; matches frontend 3 s external-device poll
+SIMULATION_RECOVERY_SECONDS = 30.0  # cadence of simulation_recovery_loop(); deliberately coarser
+# than TICK_SECONDS -- each recovery attempt can involve a real ~300s-simulated FMU warmup
+# (measured 250-800ms wall-clock per model), so this must not compete with tick timing.
 OBJECT_HISTORY_MAXLEN = 720  # per-object value-history ring buffer length; see tick()
 
 @dataclass
@@ -4110,17 +4340,36 @@ class RandomWalkBehavior(Behavior):
 
 
 class ManualBehavior(Behavior):
-    def __init__(self, params: dict, stored_value: Any = None):
-        raw = params.get("value", stored_value)
+    # Recognized boolean-ish string forms -- covers not just literal JSON
+    # true/false but also the ON/OFF vocabulary this app itself displays
+    # binary points as (see admin/src/format.ts's formatPresentValue) and
+    # BACnet's own active/inactive enumeration names. Anything NOT in this
+    # set falls through to float() -- correct for analog manual overrides
+    # (e.g. "72.5"), where treating "false"-shaped text as special would be
+    # wrong. Case/whitespace-insensitive since this can come from a free-
+    # text UI field, not just a typed API caller.
+    _TRUE_WORDS = ("true", "on", "active", "yes")
+    _FALSE_WORDS = ("false", "off", "inactive", "no")
+
+    @classmethod
+    def _coerce(cls, raw: Any) -> Any:
         if raw is None:
-            raw = 0
-        if isinstance(raw, bool) or str(raw).lower() in ("true", "false"):
-            self._value = raw if isinstance(raw, bool) else str(raw).lower() == "true"
-        else:
-            self._value = float(raw)
+            return 0
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            if normalized in cls._TRUE_WORDS:
+                return True
+            if normalized in cls._FALSE_WORDS:
+                return False
+        return float(raw)
+
+    def __init__(self, params: dict, stored_value: Any = None):
+        self._value = self._coerce(params.get("value", stored_value))
 
     def set(self, v: Any) -> None:
-        self._value = v
+        self._value = self._coerce(v)
 
     def compute(self, state: SimState) -> Any:
         return self._value
@@ -4830,6 +5079,30 @@ def _apply_polarity(bacnet_obj: Any, polarity_str: str) -> None:
         bacnet_obj.polarity = Polarity("normal")
 
 
+def coerce_binary_write_value(raw: Any) -> bool:
+    """Interprets a raw write value (a manual-override/priority-array write
+    request -- e.g. the Functional Test builder's Set block, or the admin
+    UI) as a BACnet binary state, for call sites that already know the
+    target object is binary. Plain `bool(raw)` on a string is always True
+    for any non-empty text -- bool("0") and bool("off") are BOTH True --
+    so writing the string "0" or "off" to mean inactive would silently
+    write active instead. Recognizes the same ON/OFF-ish vocabulary as
+    ManualBehavior._coerce, plus numeric strings ("0"/"1")."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in ManualBehavior._TRUE_WORDS:
+            return True
+        if normalized in ManualBehavior._FALSE_WORDS:
+            return False
+        try:
+            return bool(float(normalized))
+        except ValueError:
+            pass
+    return bool(raw)
+
+
 def normalize_present_value(object_type: str, val: Any) -> Any:
     """Canonicalizes a Behavior.compute() result before it's stored/served/
     logged anywhere (the tick loop's SimEngine._objects processing calls
@@ -4973,6 +5246,17 @@ class SimEngine:
         self._point_output_owner: dict[int, str] = {}
         self._provider_diagnostics: dict[str, dict[str, Any]] = {}
         self._model_input_shadow_values: dict[int, tuple[Any, str | None]] = {}
+        # Guards register_simulation_provider/unregister_simulation_provider.
+        # A plain threading.Lock (not asyncio.Lock) because the simulation
+        # recovery sweep runs its body in a worker thread via
+        # asyncio.to_thread -- there's no running event loop in that thread
+        # to await an asyncio.Lock against, only a real OS thread that can
+        # race the main thread's route handlers for the same registry dicts.
+        # Must be reentrant: register_simulation_provider calls
+        # unregister_simulation_provider internally when replacing an
+        # already-registered provider (the recovery sweep's main case), so a
+        # plain non-reentrant Lock would deadlock on that path.
+        self._simulation_registry_lock = threading.RLock()
 
     def _model_input_shadow_for_point(self, point_id: int) -> tuple[Any | None, str | None]:
         if point_id in self._model_input_shadow_values:
@@ -5080,74 +5364,76 @@ class SimEngine:
         inputs = {int(pid) for pid in (input_point_ids or ())}
         outputs = {int(pid) for pid in (output_point_ids or ())}
 
-        if provider_id in self._providers and not replace:
-            raise ValueError(f"Simulation provider {provider_id!r} is already registered")
+        with self._simulation_registry_lock:
+            if provider_id in self._providers and not replace:
+                raise ValueError(f"Simulation provider {provider_id!r} is already registered")
 
-        # If replacing an existing provider, release its old output claims first.
-        if provider_id in self._providers:
-            self.unregister_simulation_provider(provider_id)
+            # If replacing an existing provider, release its old output claims first.
+            if provider_id in self._providers:
+                self.unregister_simulation_provider(provider_id)
 
-        conflicts = {
-            point_id: self._point_output_owner[point_id]
-            for point_id in outputs
-            if point_id in self._point_output_owner
-        }
-        if conflicts:
-            details = ", ".join(
-                f"{point_id} -> {owner}"
-                for point_id, owner in sorted(conflicts.items())
+            conflicts = {
+                point_id: self._point_output_owner[point_id]
+                for point_id in outputs
+                if point_id in self._point_output_owner
+            }
+            if conflicts:
+                details = ", ".join(
+                    f"{point_id} -> {owner}"
+                    for point_id, owner in sorted(conflicts.items())
+                )
+                raise ValueError(
+                    f"Simulation output point(s) already owned by another provider: {details}"
+                )
+
+            validation = provider.validate()
+            if not validation.valid:
+                message = "; ".join(validation.errors) or "provider validation failed"
+                raise ValueError(
+                    f"Simulation provider {provider_id!r} is not valid: {message}"
+                )
+
+            context.metadata["provider_id"] = provider_id
+            provider.initialize(context)
+
+            self._providers[provider_id] = provider
+            self._provider_contexts[provider_id] = context
+            self._provider_input_points[provider_id] = inputs
+            self._provider_output_points[provider_id] = outputs
+            for point_id in outputs:
+                self._point_output_owner[point_id] = provider_id
+
+            if self.clock_state == "running":
+                provider.start()
+
+            log.info(
+                "Registered simulation provider %s (%s): %d inputs, %d outputs",
+                provider_id,
+                type(provider).__name__,
+                len(inputs),
+                len(outputs),
             )
-            raise ValueError(
-                f"Simulation output point(s) already owned by another provider: {details}"
-            )
-
-        validation = provider.validate()
-        if not validation.valid:
-            message = "; ".join(validation.errors) or "provider validation failed"
-            raise ValueError(
-                f"Simulation provider {provider_id!r} is not valid: {message}"
-            )
-
-        context.metadata["provider_id"] = provider_id
-        provider.initialize(context)
-
-        self._providers[provider_id] = provider
-        self._provider_contexts[provider_id] = context
-        self._provider_input_points[provider_id] = inputs
-        self._provider_output_points[provider_id] = outputs
-        for point_id in outputs:
-            self._point_output_owner[point_id] = provider_id
-
-        if self.clock_state == "running":
-            provider.start()
-
-        log.info(
-            "Registered simulation provider %s (%s): %d inputs, %d outputs",
-            provider_id,
-            type(provider).__name__,
-            len(inputs),
-            len(outputs),
-        )
 
     def unregister_simulation_provider(self, provider_id: str) -> bool:
         """Remove a non-built-in provider and release its point ownership."""
-        if provider_id == "builtin" or provider_id not in self._providers:
-            return False
+        with self._simulation_registry_lock:
+            if provider_id == "builtin" or provider_id not in self._providers:
+                return False
 
-        provider = self._providers.pop(provider_id)
-        try:
-            provider.stop()
-        except Exception:
-            log.exception("Failed to stop simulation provider %s", provider_id)
+            provider = self._providers.pop(provider_id)
+            try:
+                provider.stop()
+            except Exception:
+                log.exception("Failed to stop simulation provider %s", provider_id)
 
-        for point_id in self._provider_output_points.pop(provider_id, set()):
-            if self._point_output_owner.get(point_id) == provider_id:
-                self._point_output_owner.pop(point_id, None)
+            for point_id in self._provider_output_points.pop(provider_id, set()):
+                if self._point_output_owner.get(point_id) == provider_id:
+                    self._point_output_owner.pop(point_id, None)
 
-        for point_id in self._provider_input_points.pop(provider_id, set()):
-            self._model_input_shadow_values.pop(int(point_id), None)
-        self._provider_contexts.pop(provider_id, None)
-        self._provider_diagnostics.pop(provider_id, None)
+            for point_id in self._provider_input_points.pop(provider_id, set()):
+                self._model_input_shadow_values.pop(int(point_id), None)
+            self._provider_contexts.pop(provider_id, None)
+            self._provider_diagnostics.pop(provider_id, None)
 
         log.info("Unregistered simulation provider %s", provider_id)
         return True
@@ -5215,6 +5501,19 @@ class SimEngine:
             return None
         bacnet_obj, _ = runtime_entry
         return self._plain_present_value(getattr(bacnet_obj, "presentValue", None))
+
+    def resolve_provider_input_value(self, point_id: int) -> Any:
+        """Public counterpart of _provider_input_value for callers outside
+        the tick loop (provider registration/recovery), where no same-tick
+        generated_values exist yet. Read-only access to _prev_values/
+        _objects -- safe to call from a worker thread (e.g. the recovery
+        sweep's asyncio.to_thread body): dict reads are atomic under the
+        GIL, and the tick loop's own writes to these dicts happen on the
+        main event-loop thread, so at worst this returns a value that is one
+        tick stale, the same characteristic _provider_input_value already
+        has mid-tick.
+        """
+        return self._provider_input_value(point_id, {})
 
     def _run_registered_providers(
         self,
@@ -6309,11 +6608,13 @@ class SimEngine:
         bacnet_obj, behavior = self._objects[obj_id]
         if isinstance(behavior, ManualBehavior):
             behavior.set(value)
+            active_behavior = behavior
         else:
             # Keep the legacy tuple shape during migration; provider is the
             # authoritative behavior executor.
             new_b = ManualBehavior({"value": value})
             self._objects[obj_id] = (bacnet_obj, new_b)
+            active_behavior = new_b
 
         obj_row = self.db.get_object(obj_id)
         if obj_row:
@@ -6328,6 +6629,19 @@ class SimEngine:
                 self._builtin_provider.sync_point_config(manual_cfg)
                 self._builtin_provider.set_inputs({obj_id: value})
             self._update_value(bacnet_obj, obj_row["object_type"], value)
+            # _update_value() only touches the live BACnet presentValue --
+            # get_object_value() (what Functional Test Verify/Wait Until
+            # steps, the Energy Engine, etc. actually read) reads
+            # self._prev_values, which is otherwise only refreshed by the
+            # periodic tick loop. Without this, a manual override written
+            # and immediately read back (e.g. a Set block followed straight
+            # by a Verify, no Wait in between) sees the STALE pre-write
+            # value until the next tick happens to run -- this was the
+            # actual cause of a Set-then-Verify reporting the point's OLD
+            # state instead of what was just written.
+            self._prev_values[obj_id] = normalize_present_value(
+                obj_row["object_type"], active_behavior.compute(None)
+            )
         return True
 
     async def write_object(self, obj_id: int, value: Any, source: Optional[str] = None) -> bool:
@@ -6413,9 +6727,26 @@ class SimEngine:
         elif otype == "multi-state-output":
             pv = PriorityValue(unsigned=int(value))
         else:
-            active = bool(value) if not isinstance(value, bool) else value
+            active = coerce_binary_write_value(value)
             pv = PriorityValue(enumerated=BinaryPV("active" if active else "inactive"))
         bacnet_obj.priorityArray[priority - 1] = pv
+        # Same staleness gap as set_manual_value() above: writing into the
+        # priority array updates the live BACnet presentValue immediately
+        # (Commandable resolves it across all 16 slots on read), but
+        # self._prev_values -- what get_object_value() actually reads -- is
+        # otherwise only refreshed by the periodic tick loop, so a Set on a
+        # commandable point followed straight by a Verify/Wait Until would
+        # see the pre-write value until the next tick. Best-effort: a
+        # decode failure here must never fail the write itself.
+        try:
+            pv_out = bacnet_obj.presentValue
+            resolved = (
+                str(pv_out) == "active" if isinstance(pv_out, BinaryPV)
+                else (float(pv_out) if isinstance(pv_out, Real) else int(pv_out))
+            )
+            self._prev_values[obj_id] = normalize_present_value(otype, resolved)
+        except Exception:
+            log.exception("Failed to refresh cached value for object %s after a priority-array write", obj_id)
         return True
 
     def get_state(self) -> dict:
@@ -7175,6 +7506,50 @@ async def _mirror_sync_once(sim_engine: SimEngine, discovery_session_ctx: Any) -
             await sim_engine.inject_mirror_values(mirror_dev["id"], values, mirror_objects)
 
 
+# Guards simulation_recovery_loop() against overlapping sweeps -- if a cycle
+# is still running (e.g. several models each timing out before the sweep's
+# own health() probe short-circuits) when the next SIMULATION_RECOVERY_SECONDS
+# fires, skip that cycle instead of running two sweeps concurrently. Separate
+# from SimEngine._simulation_registry_lock, which route handlers must be
+# able to block on -- this one is deliberately non-blocking.
+_simulation_recovery_sweep_lock = threading.Lock()
+
+
+async def simulation_recovery_loop() -> None:
+    """Self-heals FMU simulation model sessions without requiring a human to
+    click Apply: every SIMULATION_RECOVERY_SECONDS, reload any enabled FMU
+    model config whose runtime registration is missing or in ERROR status
+    (session lost to an FMU runtime restart, or never established because a
+    configured Point input had no live value yet -- see
+    FMUInputResolutionError in simulation/providers/fmu.py). Runs its
+    blocking body via asyncio.to_thread so a slow/unreachable FMU runtime
+    never stalls tick_loop/mirror_sync_loop/websocket broadcasting.
+    """
+    while True:
+        await asyncio.sleep(SIMULATION_RECOVERY_SECONDS)
+        if not _simulation_recovery_sweep_lock.acquire(blocking=False):
+            log.debug(
+                "Simulation recovery sweep still in progress; skipping this cycle"
+            )
+            continue
+        try:
+            result = await asyncio.to_thread(
+                recover_unhealthy_simulation_models, db, engine
+            )
+            if result["recovered"] or result["errors"] or result["runtime_unreachable"]:
+                log.info(
+                    "Simulation recovery sweep: recovered=%s errors=%s "
+                    "runtime_unreachable=%s",
+                    result["recovered"],
+                    result["errors"],
+                    result["runtime_unreachable"],
+                )
+        except Exception as exc:
+            log.error("Simulation recovery sweep error: %s", exc)
+        finally:
+            _simulation_recovery_sweep_lock.release()
+
+
 async def metrics_loop() -> None:
     # Deliberately independent of TICK_SECONDS/tick_loop — device-value
     # simulation and analytics refresh are different concerns with different
@@ -7282,12 +7657,14 @@ async def lifespan(app: FastAPI):
     tick_task = asyncio.create_task(tick_loop(fault_detection_engine,energy_engine))
     mirror_task = asyncio.create_task(mirror_sync_loop())
     metrics_task = asyncio.create_task(metrics_loop())
+    simulation_recovery_task = asyncio.create_task(simulation_recovery_loop())
     log.info("BACnet Simulator API ready on port %d", SIM_API_PORT)
     yield
     log.info("Shutting down")
     tick_task.cancel()
     mirror_task.cancel()
     metrics_task.cancel()
+    simulation_recovery_task.cancel()
     try:
         await tick_task
     except asyncio.CancelledError:
@@ -7324,6 +7701,7 @@ api.include_router(external_objects_router)
 api.include_router(semantic_suggestions_router)
 api.include_router(functional_tests_router)
 api.include_router(functional_test_runs_router)
+api.include_router(points_router)
 
 api.add_middleware(
     CORSMiddleware,

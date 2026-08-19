@@ -5,6 +5,7 @@ import { api } from '../api'
 import type {
   SimulationModelCatalogEntry,
   SimulationModelConfig,
+  SimulationModelMappingHints,
   SimulationModelPayload,
   SimulationModelPointOption,
   SimulationProviderCatalogEntry,
@@ -31,7 +32,17 @@ interface CatalogVariable {
   unit?: string | null
   default?: unknown
   required?: boolean
+  mapping_hints?: SimulationModelMappingHints | null
 }
+
+// Mirrors src/core/config.py's BINARY_TYPES | MULTISTATE_TYPES -- a small,
+// stable enum duplicated client-side (same tradeoff already accepted by
+// matchingDevicePoint's hardcoded matcher table below), used as a hard
+// eligibility filter for Aggregate source points.
+const NON_NUMERIC_OBJECT_TYPES = new Set([
+  'binary-input', 'binary-output', 'binary-value',
+  'multi-state-input', 'multi-state-output', 'multi-state-value',
+])
 interface ModelCatalogEntry extends SimulationModelCatalogEntry {
   parameters: CatalogParameter[]
   inputs: CatalogVariable[]
@@ -51,6 +62,7 @@ const points = ref<PointOption[]>([])
 const advancedOpen = ref<string[]>([])
 const savedModelId = ref<number | null>(null)
 const mappingModalOpen = ref(false)
+const savingDraft = ref(false)
 
 const form = reactive({
   provider_type: 'fmu' as SimulationModelPayload['provider_type'],
@@ -59,9 +71,27 @@ const form = reactive({
   enabled: true,
   parameters: {} as Record<string, unknown>,
   mappings: {} as Record<string, number | undefined>,
-  inputSources: {} as Record<string, 'constant' | 'point'>,
+  inputSources: {} as Record<string, 'constant' | 'point' | 'aggregate'>,
   inputDefaults: {} as Record<string, unknown>,
+  /** Only used for operation='max' (the multi-select UI, unchanged). */
+  aggregatePoints: {} as Record<string, number[]>,
+  aggregateOperation: {} as Record<string, 'max' | 'weighted_average'>,
+  /** Only used for operation='weighted_average': independent paired rows,
+   * each a { value, weight } point-id pair -- NOT derived from
+   * aggregatePoints, so there's no multi-select/per-row duplication and no
+   * index-syncing between two separate arrays to get wrong. A row with
+   * either side unset is "in progress"; both sides must be set for the
+   * row to be valid (see validateMappings/buildPayload). */
+  aggregatePairs: {} as Record<string, Array<{ value?: number; weight?: number }>>,
 })
+
+// Per-variable ranked candidate order (point_id -> rank index, lower =
+// better match), populated on demand from POST
+// /simulation/models/variable-candidates. Advisory only -- see
+// aggregatePointOptions: a point missing from this map still sorts last,
+// it's never excluded, so the picker stays usable even when the hint
+// scoring doesn't have a strong match.
+const variableCandidateScores = ref<Record<string, Map<number, number>>>({})
 
 const providerOptions = computed(() => providers.value
   .filter(p => p.provider_type !== 'builtin' && p.provider_type !== 'learned')
@@ -78,10 +108,71 @@ const advancedParameters = computed(() => selectedModel.value?.parameters.filter
 const inputs = computed(() => selectedModel.value?.inputs ?? [])
 const outputs = computed(() => selectedModel.value?.outputs ?? [])
 const variables = computed(() => [...inputs.value, ...outputs.value])
+const primaryActionLabel = computed(() => savedModelId.value == null ? 'Create' : 'Apply')
 const pointOptions = computed(() => points.value.map(p => ({
   value: p.id,
   label: p.device_name ? `${p.device_name} / ${p.name}` : p.name,
 })))
+
+/** Aggregate source options: same label format as pointOptions, hard-
+ * filtered to numeric/analog-compatible points, soft-sorted by the ranked
+ * candidate order for this variable when available (a point outside the
+ * ranked shortlist still sorts last rather than being hidden). */
+function aggregatePointOptions(variableName: string) {
+  const ranked = variableCandidateScores.value[variableName]
+  return points.value
+    .filter(p => !NON_NUMERIC_OBJECT_TYPES.has(p.object_type ?? ''))
+    .map(p => ({
+      value: p.id,
+      label: p.device_name ? `${p.device_name} / ${p.name}` : p.name,
+      _rank: ranked?.get(p.id) ?? Number.POSITIVE_INFINITY,
+    }))
+    .sort((a, b) => a._rank - b._rank)
+}
+
+function addAggregatePair(variableName: string) {
+  const pairs = form.aggregatePairs[variableName] ?? []
+  form.aggregatePairs[variableName] = [...pairs, {}]
+}
+
+function removeAggregatePair(variableName: string, index: number) {
+  const pairs = form.aggregatePairs[variableName] ?? []
+  form.aggregatePairs[variableName] = pairs.filter((_pair, i) => i !== index)
+}
+
+function onAggregateOperationChange(variableName: string, operation: 'max' | 'weighted_average') {
+  form.aggregateOperation[variableName] = operation
+  if (operation === 'weighted_average' && !(form.aggregatePairs[variableName]?.length)) {
+    // First time switching to Weighted Average for this variable: seed one
+    // pair per point already selected in Maximum mode's multi-select (so
+    // toggling operation doesn't discard a selection the user already
+    // made), or a single empty row if nothing was selected yet.
+    const existingPoints = form.aggregatePoints[variableName] ?? []
+    form.aggregatePairs[variableName] = existingPoints.length
+      ? existingPoints.map(value => ({ value }))
+      : [{}]
+  }
+}
+
+/** Ranks candidates for one variable via the same discovery/scoring path
+ * Auto Map already uses server-side (mapping_hints/suggested_point_types),
+ * so the Aggregate picker can sort by relevance without duplicating any
+ * scoring logic client-side. Advisory only -- failure just leaves the
+ * picker in its default (unranked) order, never blocks selection. */
+async function loadVariableCandidates(v: CatalogVariable) {
+  if (!props.device) return
+  try {
+    const res = await api.simulationModels.variableCandidates({
+      model_type: form.model_type,
+      variable: v.name,
+      created_from_device_id: props.device.id,
+      current_model_id: savedModelId.value,
+    })
+    variableCandidateScores.value[v.name] = new Map(res.candidates.map((c, i) => [c.id, i]))
+  } catch {
+    // Ranking is advisory only -- fall back to unranked pointOptions order.
+  }
+}
 
 function normalizedText(value: unknown): string {
   return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
@@ -118,7 +209,7 @@ function configuredPointValue(point: PointOption | null): unknown {
 }
 
 function inputMismatch(v: CatalogVariable): { point: PointOption; pointValue: number; inputValue: number } | null {
-  if (form.provider_type !== 'fmu' || form.inputSources[v.name] === 'point') return null
+  if (form.provider_type !== 'fmu' || form.inputSources[v.name] === 'point' || form.inputSources[v.name] === 'aggregate') return null
   const point = matchingDevicePoint(v.name)
   const pointValue = numericValue(configuredPointValue(point))
   const inputValue = numericValue(form.inputDefaults[v.name])
@@ -148,6 +239,9 @@ function resetForModel(modelType: string) {
   form.mappings = {}
   form.inputSources = {}
   form.inputDefaults = {}
+  form.aggregatePoints = {}
+  form.aggregateOperation = {}
+  form.aggregatePairs = {}
   advancedOpen.value = []
   for (const p of model?.parameters ?? []) {
     if (p.default !== undefined) form.parameters[p.name] = p.default
@@ -157,6 +251,9 @@ function resetForModel(modelType: string) {
     form.inputSources[v.name] = matchingPoint ? 'point' : (form.provider_type === 'fmu' ? 'constant' : 'point')
     form.mappings[v.name] = matchingPoint?.id
     form.inputDefaults[v.name] = configuredPointValue(matchingPoint) ?? defaultForInput(v)
+    form.aggregatePoints[v.name] = []
+    form.aggregateOperation[v.name] = 'max'
+    form.aggregatePairs[v.name] = []
   }
   if (props.device && model) form.name = `${props.device.name} ${model.label}`
 }
@@ -179,22 +276,50 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
   delete parameters.runtime_url
   delete parameters.timeout_s
   const inputDefaults = { ...((parameters.input_defaults as Record<string, unknown> | undefined) ?? {}) }
-  const inputSources = { ...((parameters.input_sources as Record<string, 'constant' | 'point'> | undefined) ?? {}) }
+  const inputSources = { ...((parameters.input_sources as Record<string, 'constant' | 'point' | 'aggregate'> | undefined) ?? {}) }
+  const draftOutputMappings = { ...((parameters.draft_output_mappings as Record<string, number | undefined> | undefined) ?? {}) }
   delete parameters.input_defaults
   delete parameters.input_sources
+  delete parameters.draft_output_mappings
   form.parameters = parameters
   form.inputDefaults = inputDefaults
 
   const mappings: Record<string, number | undefined> = {}
-  for (const m of saved.mappings) mappings[m.variable] = m.point_id
+  const aggregatePoints: Record<string, number[]> = {}
+  const aggregateOperation: Record<string, 'max' | 'weighted_average'> = {}
+  const aggregatePairs: Record<string, Array<{ value?: number; weight?: number }>> = {}
+  for (const m of saved.mappings) {
+    // Same "point_ids" (plural) vs "point_id" discriminator model_runtime.
+    // _is_aggregate_row uses server-side -- keeps both ends of the contract
+    // lexically matched.
+    if ('point_ids' in m) {
+      aggregatePoints[m.variable] = [...m.point_ids]
+      aggregateOperation[m.variable] = m.operation === 'weighted_average' ? 'weighted_average' : 'max'
+      aggregatePairs[m.variable] = m.operation === 'weighted_average'
+        ? m.point_ids.map((pid, i) => ({ value: pid, weight: (m.weight_point_ids ?? [])[i] ?? undefined }))
+        : []
+    } else {
+      mappings[m.variable] = m.point_id
+    }
+  }
+  for (const [variable, pointId] of Object.entries(draftOutputMappings)) {
+    if (mappings[variable] == null) mappings[variable] = pointId
+  }
   form.mappings = mappings
+  form.aggregatePoints = aggregatePoints
+  form.aggregateOperation = aggregateOperation
+  form.aggregatePairs = aggregatePairs
   form.inputSources = {}
   for (const v of catalog.value.find(m => m.model_type === saved.model_type)?.inputs ?? []) {
     const savedSource = inputSources[v.name]
-    form.inputSources[v.name] = savedSource === 'constant' || savedSource === 'point'
+    form.inputSources[v.name] = savedSource === 'constant' || savedSource === 'point' || savedSource === 'aggregate'
       ? savedSource
-      : (mappings[v.name] != null ? 'point' : 'constant')
+      : (mappings[v.name] != null ? 'point' : (aggregatePoints[v.name]?.length ? 'aggregate' : 'constant'))
     if (form.inputDefaults[v.name] === undefined) form.inputDefaults[v.name] = defaultForInput(v)
+    if (form.aggregatePoints[v.name] === undefined) form.aggregatePoints[v.name] = []
+    if (form.aggregateOperation[v.name] === undefined) form.aggregateOperation[v.name] = 'max'
+    if (form.aggregatePairs[v.name] === undefined) form.aggregatePairs[v.name] = []
+    if (form.inputSources[v.name] === 'aggregate') void loadVariableCandidates(v)
   }
   advancedOpen.value = []
 }
@@ -247,22 +372,49 @@ watch(
   },
 )
 
-async function save() {
-  if (!props.device || !selectedModel.value) return
-  const modelName = `${props.device.name} ${selectedModel.value.label}`.trim()
+function validateMappings(requireComplete: boolean): boolean {
+  if (!requireComplete) return true
+  if (!selectedModel.value) return false
 
   for (const v of outputs.value) {
     if (v.required !== false && !form.mappings[v.name]) {
-      return void message.error(`${v.label} mapping is required`)
+      message.error(`${v.label} mapping is required`)
+      return false
     }
   }
   for (const v of inputs.value) {
     if (form.provider_type !== 'fmu' || form.inputSources[v.name] === 'point') {
       if (v.required !== false && !form.mappings[v.name]) {
-        return void message.error(`${v.label} mapping is required`)
+        message.error(`${v.label} mapping is required`)
+        return false
+      }
+    }
+    if (form.provider_type === 'fmu' && form.inputSources[v.name] === 'aggregate') {
+      const operation = form.aggregateOperation[v.name] ?? 'max'
+      if (operation === 'weighted_average') {
+        const pairs = form.aggregatePairs[v.name] ?? []
+        const incomplete = pairs.some(p => (p.value != null) !== (p.weight != null))
+        if (incomplete) {
+          message.error(`${v.label} has a Weighted Average row with only a value point or only a weight point selected -- complete or remove it`)
+          return false
+        }
+        const validPairs = pairs.filter(p => p.value != null && p.weight != null)
+        if (v.required !== false && !validPairs.length) {
+          message.error(`${v.label} requires at least one complete value/weight pair for the Weighted Average aggregate`)
+          return false
+        }
+      } else if (v.required !== false && !(form.aggregatePoints[v.name]?.length)) {
+        message.error(`${v.label} requires at least one source point for the Maximum aggregate`)
+        return false
       }
     }
   }
+  return true
+}
+
+function buildPayload(enabled: boolean): SimulationModelPayload | null {
+  if (!props.device || !selectedModel.value) return null
+  const modelName = `${props.device.name} ${selectedModel.value.label}`.trim()
 
   const parameters = { ...form.parameters }
   delete parameters.model
@@ -278,37 +430,91 @@ async function save() {
         .map(v => [v.name, form.inputDefaults[v.name]]),
     )
   }
+  if (!enabled) {
+    parameters.draft_output_mappings = Object.fromEntries(
+      outputs.value
+        .filter(v => form.mappings[v.name] != null)
+        .map(v => [v.name, form.mappings[v.name]]),
+    )
+  }
 
-  const payload = {
+  return {
     name: modelName,
     provider_type: form.provider_type,
     model_type: form.model_type,
-    enabled: form.enabled,
+    enabled,
     created_from_device_id: props.device.id,
     parameters,
     mappings: variables.value
+      .filter(v => enabled || v.direction !== 'output')
       .filter(v => v.direction === 'output' || form.inputSources[v.name] === 'point' || form.provider_type !== 'fmu')
       .filter(v => form.mappings[v.name] != null)
       .map(v => ({ variable: v.name, direction: v.direction, point_id: form.mappings[v.name]! })),
+    aggregate_mappings: inputs.value
+      .filter(v => form.provider_type === 'fmu' && form.inputSources[v.name] === 'aggregate')
+      // Only complete (value+weight) pairs are ever sent for
+      // weighted_average -- an in-progress/incomplete row is silently
+      // omitted here (mirroring how a zero-point Maximum aggregate is
+      // already omitted below), so "Save" tolerates a mid-edit draft the
+      // same way it already does for "Maximum"; "Apply" is the one that
+      // blocks with a clear message, via validateMappings above.
+      .filter(v => {
+        if ((form.aggregateOperation[v.name] ?? 'max') === 'weighted_average') {
+          return (form.aggregatePairs[v.name] ?? []).some(p => p.value != null && p.weight != null)
+        }
+        return (form.aggregatePoints[v.name]?.length ?? 0) > 0
+      })
+      .map(v => {
+        const operation = form.aggregateOperation[v.name] ?? 'max'
+        if (operation === 'weighted_average') {
+          const validPairs = (form.aggregatePairs[v.name] ?? []).filter(p => p.value != null && p.weight != null)
+          return {
+            variable: v.name,
+            direction: 'input' as const,
+            operation,
+            point_ids: validPairs.map(p => p.value!),
+            weight_point_ids: validPairs.map(p => p.weight!),
+          }
+        }
+        return {
+          variable: v.name,
+          direction: 'input' as const,
+          operation: 'max' as const,
+          point_ids: form.aggregatePoints[v.name]!,
+        }
+      }),
   }
+}
 
-  saving.value = true
+async function persist(apply: boolean) {
+  const payload = buildPayload(apply)
+  if (!payload) return
+  if (!validateMappings(apply)) return
+
+  const busy = apply ? saving : savingDraft
+  busy.value = true
   try {
+    let saved: SimulationModelConfig
     if (savedModelId.value != null) {
-      await api.simulationModels.update(savedModelId.value, payload)
-      message.success('Simulation model updated')
+      saved = await api.simulationModels.update(savedModelId.value, payload)
+      message.success(apply && payload.enabled ? 'Simulation model applied' : 'Simulation model saved')
     } else {
-      await api.simulationModels.create(payload)
-      message.success('Simulation model added')
+      saved = await api.simulationModels.create(payload)
+      message.success(apply && payload.enabled ? 'Simulation model added' : 'Simulation model saved')
     }
+    savedModelId.value = saved.id
+    form.enabled = saved.enabled
     emit('update:open', false)
     emit('saved')
   } catch (e: unknown) {
-    message.error((e as Error).message ?? 'Failed to add simulation model')
+    message.error((e as Error).message ?? 'Failed to save simulation model')
   } finally {
-    saving.value = false
+    busy.value = false
   }
 }
+
+const saveDraft = () => persist(false)
+const applyModel = () => persist(true)
 
 function onMappingsApplied({ mappings, switchToPoint }: { mappings: Record<string, number>; switchToPoint: string[] }) {
   Object.assign(form.mappings, mappings)
@@ -317,8 +523,9 @@ function onMappingsApplied({ mappings, switchToPoint }: { mappings: Record<strin
   }
 }
 
-function setInputSource(variableName: string, source: 'constant' | 'point') {
-  form.inputSources[variableName] = source
+function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggregate') {
+  form.inputSources[v.name] = source
+  if (source === 'aggregate') void loadVariableCandidates(v)
 }
 </script>
 
@@ -327,6 +534,7 @@ function setInputSource(variableName: string, source: 'constant' | 'point') {
     :open="open"
     :title="device ? `Simulation Model — ${device.name}` : 'Simulation Model'"
     width="520"
+    :z-index="1050"
     @close="emit('update:open', false)"
   >
     <a-spin :spinning="loading">
@@ -421,12 +629,13 @@ function setInputSource(variableName: string, source: 'constant' | 'point') {
               :options="[
                 { label: 'Constant', value: 'constant' },
                 { label: 'Point', value: 'point' },
+                { label: 'Aggregate', value: 'aggregate' },
               ]"
               style="margin-bottom:8px"
-              @change="value => setInputSource(v.name, value as 'constant' | 'point')"
+              @change="(value: string | number) => setInputSource(v, value as 'constant' | 'point' | 'aggregate')"
             />
             <a-input-number
-              v-if="form.inputSources[v.name] !== 'point'"
+              v-if="form.inputSources[v.name] !== 'point' && form.inputSources[v.name] !== 'aggregate'"
               v-model:value="(form.inputDefaults[v.name] as number)"
               :addon-after="v.unit ?? undefined"
               style="width:100%"
@@ -446,6 +655,88 @@ function setInputSource(variableName: string, source: 'constant' | 'point') {
               option-filter-prop="label"
               :placeholder="`Select ${v.label} point`"
             />
+            <template v-if="form.inputSources[v.name] === 'aggregate'">
+              <div style="margin-bottom:8px">
+                <span style="font-size:12px;color:var(--text-secondary);margin-right:8px">Operation:</span>
+                <a-segmented
+                  :value="form.aggregateOperation[v.name] ?? 'max'"
+                  :options="[
+                    { label: 'Maximum', value: 'max' },
+                    { label: 'Weighted Average', value: 'weighted_average' },
+                  ]"
+                  size="small"
+                  @change="(value: string | number) => onAggregateOperationChange(v.name, value as 'max' | 'weighted_average')"
+                />
+              </div>
+
+              <!-- Maximum (and any future non-weighted operation): unchanged multi-select UI. -->
+              <template v-if="(form.aggregateOperation[v.name] ?? 'max') === 'max'">
+                <a-select
+                  v-model:value="form.aggregatePoints[v.name]"
+                  mode="multiple"
+                  show-search allow-clear
+                  :options="aggregatePointOptions(v.name)"
+                  option-filter-prop="label"
+                  :placeholder="`Select ${v.label} source points`"
+                  style="width:100%"
+                />
+                <div
+                  v-if="(form.aggregatePoints[v.name] ?? []).length"
+                  style="font-size:12px;color:var(--text-muted);margin-top:4px"
+                >
+                  Maximum of {{ (form.aggregatePoints[v.name] ?? []).length }}
+                  point{{ (form.aggregatePoints[v.name] ?? []).length === 1 ? '' : 's' }}
+                </div>
+              </template>
+
+              <!-- Weighted Average: independent paired rows, no multi-select. -->
+              <template v-else>
+                <div style="display:flex;gap:8px;font-size:11px;color:var(--text-muted);margin-bottom:4px">
+                  <div style="flex:1">Value Point</div>
+                  <div style="flex:1">Weight Point</div>
+                  <div style="width:22px"></div>
+                </div>
+                <div
+                  v-for="(pair, i) in (form.aggregatePairs[v.name] ?? [])"
+                  :key="i"
+                  style="display:flex;gap:8px;align-items:center;margin-bottom:6px"
+                >
+                  <a-select
+                    v-model:value="pair.value"
+                    show-search allow-clear
+                    :options="aggregatePointOptions(v.name)"
+                    option-filter-prop="label"
+                    placeholder="Select value point"
+                    style="flex:1"
+                  />
+                  <a-select
+                    v-model:value="pair.weight"
+                    show-search allow-clear
+                    :options="aggregatePointOptions(v.name)"
+                    option-filter-prop="label"
+                    placeholder="Select weight point"
+                    style="flex:1"
+                  />
+                  <a-button
+                    type="text" danger size="small"
+                    style="width:22px;padding:0"
+                    :title="`Remove row ${i + 1}`"
+                    @click="removeAggregatePair(v.name, i)"
+                  >
+                    ×
+                  </a-button>
+                </div>
+                <a-button size="small" @click="addAggregatePair(v.name)">+ Add Pair</a-button>
+                <div
+                  v-if="(form.aggregatePairs[v.name] ?? []).some(p => p.value != null && p.weight != null)"
+                  style="font-size:12px;color:var(--text-muted);margin-top:6px"
+                >
+                  Weighted average of {{ (form.aggregatePairs[v.name] ?? []).filter(p => p.value != null && p.weight != null).length }}
+                  pair{{ (form.aggregatePairs[v.name] ?? []).filter(p => p.value != null && p.weight != null).length === 1 ? '' : 's' }}
+                  = sum(value × weight) / sum(weight)
+                </div>
+              </template>
+            </template>
           </a-form-item>
 
           <a-divider orientation="left">Output Mapping</a-divider>
@@ -469,8 +760,10 @@ function setInputSource(variableName: string, source: 'constant' | 'point') {
           </div>
         </a-form-item>
 
-        <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
-          <a-switch v-model:checked="form.enabled" />
+        <a-form-item label="Status" style="margin-top:16px;margin-bottom:0">
+          <a-tag :color="form.enabled ? 'green' : 'default'">
+            {{ form.enabled ? 'Applied' : 'Saved draft' }}
+          </a-tag>
         </a-form-item>
       </a-form>
     </a-spin>
@@ -478,8 +771,11 @@ function setInputSource(variableName: string, source: 'constant' | 'point') {
     <template #footer>
       <a-space>
         <a-button @click="emit('update:open', false)">Close</a-button>
-        <a-button type="primary" :loading="saving" :disabled="loading || !selectedModel" @click="save">
-          Create
+        <a-button :loading="savingDraft" :disabled="loading || !selectedModel || saving" @click="saveDraft">
+          Save
+        </a-button>
+        <a-button type="primary" :loading="saving" :disabled="loading || !selectedModel || savingDraft" @click="applyModel">
+          {{ primaryActionLabel }}
         </a-button>
       </a-space>
     </template>

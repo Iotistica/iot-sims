@@ -395,7 +395,3 @@ class FunctionalTestCreate(BaseModel):
 
 class FunctionalTestUpdate(FunctionalTestCreate):
     pass
-
-
-class FunctionalTestRunRequest(BaseModel):
-    target_device_id: int

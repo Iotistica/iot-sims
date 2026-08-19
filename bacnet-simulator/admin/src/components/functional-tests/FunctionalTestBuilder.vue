@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { EditOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import {
   VueFlow,
   Handle,
   Position,
+  useVueFlow,
   type Connection,
   type Edge,
   type Node,
@@ -17,14 +19,15 @@ import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 
 import { api } from '../../api'
-import type { FunctionalTest, FunctionalTestIssue, FunctionalTestNodeType, Meta } from '../../types'
+import type { FunctionalTest, FunctionalTestIssue, FunctionalTestNodeType, Meta, PointRow } from '../../types'
 import { hydrateFunctionalTest, serializeFunctionalTest } from '../../functionalTestSerializer'
 import { validateFunctionalTest } from '../../functionalTestValidation'
-import { boilerHeatingResponseExample } from '../../functionalTestExamples'
+import { buildPointLookup } from '../../pointLookup'
 import FunctionalTestPalette from './FunctionalTestPalette.vue'
 import FunctionalTestProperties from './FunctionalTestProperties.vue'
 import FunctionalTestNode from './FunctionalTestNode.vue'
-import FunctionalTestRunDialog from './FunctionalTestRunDialog.vue'
+import FunctionalTestRunPanel from './FunctionalTestRunPanel.vue'
+import FunctionalTestJsonPanel from './FunctionalTestJsonPanel.vue'
 
 const props = defineProps<{
   test: FunctionalTest | null
@@ -39,12 +42,26 @@ const emit = defineEmits<{
 const DEFAULT_PARAMS: Record<FunctionalTestNodeType, () => Record<string, any>> = {
   start: () => ({}),
   wait: () => ({ seconds: 30 }),
-  wait_until: () => ({ point_type: '', operator: 'eq', value: '', timeout_seconds: 300 }),
-  capture: () => ({ point_type: '', variable: '' }),
-  verify: () => ({ left: { kind: 'point', point_type: '' }, operator: 'eq', right: { kind: 'constant', value: '' } }),
-  compare: () => ({ left: { kind: 'point', point_type: '' }, operator: 'eq', right: { kind: 'constant', value: '' } }),
+  wait_until: () => ({ point: null, operator: 'eq', value: { kind: 'constant', value: '' }, timeout_seconds: 300 }),
+  capture: () => ({ point: null, variable: '' }),
+  verify: () => ({ left: { kind: 'point', point: null }, operator: 'eq', right: { kind: 'constant', value: '' } }),
+  compare: () => ({ left: { kind: 'point', point: null }, operator: 'eq', right: { kind: 'constant', value: '' } }),
+  set: () => ({ point: null, value: '' }),
   end: () => ({ result: 'pass' }),
 }
+
+// Fetched once per builder session (not per PointPicker instance) and
+// passed down to both the properties panel and every canvas node's summary
+// rendering, so opening the builder does one /points request, not many.
+const points = ref<PointRow[]>([])
+const pointLookup = computed(() => buildPointLookup(points.value))
+onMounted(async () => {
+  try {
+    points.value = await api.points.list()
+  } catch (e: any) {
+    message.error(e?.message || 'Failed to load points')
+  }
+})
 
 const testId = ref<number | null>(props.test?.id ?? null)
 const name = ref(props.test?.name ?? 'New Functional Test')
@@ -56,14 +73,41 @@ const equipmentType = ref(props.test?.equipment_type ?? '')
 // run saved test) -- kept separate from the editable name/description/
 // equipmentType/nodes/edges above.
 const savedTest = ref<FunctionalTest | null>(props.test ?? null)
-const runDialogOpen = ref(false)
+const showRunPanel = ref(false)
+const showJsonPanel = ref(false)
+
+function startRunPanel() {
+  // Validation issues are surfaced INSIDE the run panel now (right before
+  // the readiness-check/Run Test step), not a separate banner -- always
+  // open it and let it decide what to show.
+  runValidation()
+  selectedNodeId.value = null
+  showJsonPanel.value = false
+  showRunPanel.value = true
+}
+
+function selectIssue(issue: FunctionalTestIssue) {
+  if (!issue.nodeId) return
+  showRunPanel.value = false
+  showJsonPanel.value = false
+  selectedNodeId.value = issue.nodeId
+}
+
+function toggleJsonPanel() {
+  selectedNodeId.value = null
+  showRunPanel.value = false
+  showJsonPanel.value = true
+}
+
+function blankFlow(): { nodes: Node[]; edges: Edge[] } {
+  // Start is implicit -- an empty canvas, not a lone Start block. The
+  // first block the user adds automatically becomes the entry point (see
+  // functionalTestValidation.ts/functionalTestSerializer.ts).
+  return { nodes: [], edges: [] }
+}
 
 function initialFlow(): { nodes: Node[]; edges: Edge[] } {
-  if (props.test) return hydrateFunctionalTest(props.test.definition)
-  return {
-    nodes: [{ id: 'start', type: 'start', position: { x: 260, y: 40 }, data: {} }],
-    edges: [],
-  }
+  return props.test ? hydrateFunctionalTest(props.test.definition) : blankFlow()
 }
 
 // Vue Flow's Node/Edge types are discriminated unions with function-typed
@@ -82,8 +126,6 @@ const selectedNode = computed<Node | null>(() => {
   const found = nodes.value.find(n => n.id === selectedNodeId.value)
   return (found as Node | undefined) ?? null
 })
-const canDeleteSelected = computed(() => !!selectedNodeId.value)
-
 const issues = ref<FunctionalTestIssue[]>([])
 const saving = ref(false)
 
@@ -98,18 +140,42 @@ function onConnect(connection: Connection) {
 }
 
 function selectNode(node: Node) {
+  showRunPanel.value = false
+  showJsonPanel.value = false
   selectedNodeId.value = node.id
 }
 
-function addNode(type: FunctionalTestNodeType) {
+function addNode(type: FunctionalTestNodeType, position?: { x: number; y: number }) {
   const id = `${type}-${crypto.randomUUID()}`
   nodes.value.push({
     id,
     type,
-    position: { x: 150 + Math.random() * 250, y: 100 + nodes.value.length * 60 },
+    position: position ?? { x: 150 + Math.random() * 250, y: 100 + nodes.value.length * 60 },
     data: DEFAULT_PARAMS[type](),
   })
   selectedNodeId.value = id
+}
+
+const { screenToFlowCoordinate } = useVueFlow()
+
+function onCanvasDragOver(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes('application/vueflow')) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'move'
+}
+
+function onCanvasDrop(e: DragEvent) {
+  const type = e.dataTransfer?.getData('application/vueflow') as FunctionalTestNodeType | ''
+  if (!type) return
+  e.preventDefault()
+  const pos = screenToFlowCoordinate({ x: e.clientX, y: e.clientY })
+  // A node's position is its top-left corner, but the cursor drops from
+  // roughly the middle of the dragged block -- without this offset the
+  // block's corner lands exactly on the cursor, so the whole ~210x70px
+  // block visually appears down-and-right of where it was actually
+  // dropped. Pull it back by roughly half a block's size so it's centered
+  // under the cursor instead.
+  addNode(type, { x: pos.x - 100, y: pos.y - 30 })
 }
 
 function removeSelectedNode() {
@@ -120,24 +186,72 @@ function removeSelectedNode() {
   selectedNodeId.value = null
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable
+}
+
+// Delete key removes the selected block directly, no confirmation --
+// ignored while typing in a text field/select so it doesn't hijack normal
+// text editing (e.g. deleting characters in the description drawer).
+function onKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Delete' || isEditableTarget(e.target)) return
+  removeSelectedNode()
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+
 function runValidation(): FunctionalTestIssue[] {
   const result = validateFunctionalTest(nodes.value as Node[], edges.value as Edge[], props.meta, equipmentType.value)
   issues.value = result
   return result
 }
 
-function selectIssue(issue: FunctionalTestIssue) {
-  if (issue.nodeId) selectedNodeId.value = issue.nodeId
+// New Test / Edit share one drawer: New starts the draft blank and, on
+// Save, also resets the canvas/testId/savedTest (folding in what newTest()
+// used to do in place); Edit seeds the draft from the current values and,
+// on Save, only touches name/description/equipmentType -- the canvas is
+// left untouched either way until Save/Close decide what to commit.
+const metaDrawerOpen = ref(false)
+const metaDrawerMode = ref<'new' | 'edit'>('new')
+const draftName = ref('')
+const draftDescription = ref('')
+const draftEquipmentType = ref('')
+
+function openNewTestDrawer() {
+  metaDrawerMode.value = 'new'
+  draftName.value = 'New Functional Test'
+  draftDescription.value = ''
+  draftEquipmentType.value = ''
+  metaDrawerOpen.value = true
 }
 
-function loadExample() {
-  const hydrated = hydrateFunctionalTest(boilerHeatingResponseExample)
-  nodes.value = hydrated.nodes
-  edges.value = hydrated.edges
-  name.value = 'Boiler Heating Response'
-  equipmentType.value = 'Boiler'
-  selectedNodeId.value = null
-  issues.value = []
+function openEditDrawer() {
+  metaDrawerMode.value = 'edit'
+  draftName.value = name.value
+  draftDescription.value = description.value
+  draftEquipmentType.value = equipmentType.value
+  metaDrawerOpen.value = true
+}
+
+function saveMetaDrawer() {
+  if (metaDrawerMode.value === 'new') {
+    const blank = blankFlow()
+    testId.value = null
+    savedTest.value = null
+    nodes.value = blank.nodes
+    edges.value = blank.edges
+    selectedNodeId.value = null
+    showRunPanel.value = false
+    showJsonPanel.value = false
+    issues.value = []
+  }
+  name.value = draftName.value
+  description.value = draftDescription.value
+  equipmentType.value = draftEquipmentType.value
+  metaDrawerOpen.value = false
 }
 
 async function save() {
@@ -173,48 +287,26 @@ async function save() {
         &larr; Back
       </a-button>
 
-      <a-input v-model:value="name" placeholder="Test name" style="width:260px" />
+      <div class="ft-test-title">{{ name }}</div>
 
-      <a-select
-        v-model:value="equipmentType"
-        show-search
-        allow-clear
-        placeholder="Applies to equipment type"
-        :options="meta.equipment_types"
-        style="width:220px"
-      />
+      <div style="flex:1" />
 
-      <a-input v-model:value="description" placeholder="Description (optional)" style="flex:1;min-width:160px" />
-
-      <a-button @click="loadExample">Load Example</a-button>
-      <a-button @click="runValidation">Validate</a-button>
-      <a-tooltip :title="savedTest ? 'Run the last saved version of this test' : 'Save the test before running it'">
-        <a-button :disabled="!savedTest" @click="runDialogOpen = true">Run</a-button>
+      <a-button @click="openNewTestDrawer"><PlusOutlined /> New Test</a-button>
+      <a-button @click="openEditDrawer"><EditOutlined /> Edit</a-button>
+      <a-tooltip :title="savedTest ? 'View the last saved definition as JSON' : 'Save the test before viewing its JSON'">
+        <a-button :disabled="!savedTest" @click="toggleJsonPanel">View JSON</a-button>
       </a-tooltip>
-      <a-button type="primary" :loading="saving" @click="save">Save</a-button>
-    </div>
-
-    <div v-if="issues.length > 0" class="ft-issues">
-      <div class="ft-issues-title">{{ issues.length }} issue{{ issues.length === 1 ? '' : 's' }} found</div>
-      <div
-        v-for="(issue, idx) in issues"
-        :key="idx"
-        class="ft-issue"
-        :class="{ 'ft-issue--clickable': !!issue.nodeId }"
-        @click="selectIssue(issue)"
-      >
-        {{ issue.message }}
-      </div>
+      <a-tooltip :title="savedTest ? 'Run the last saved version of this test' : 'Save the test before running it'">
+        <a-button :disabled="!savedTest" @click="startRunPanel">Run</a-button>
+      </a-tooltip>
+      <a-divider type="vertical" style="height:24px;margin:0 2px" />
+      <a-button type="primary" :loading="saving" style="width:80px" @click="save">Save</a-button>
     </div>
 
     <div class="ft-body">
-      <FunctionalTestPalette
-        :can-delete-selected="canDeleteSelected"
-        @add="addNode"
-        @delete-selected="removeSelectedNode"
-      />
+      <FunctionalTestPalette @add="addNode" />
 
-      <main class="ft-canvas">
+      <main class="ft-canvas" @dragover="onCanvasDragOver" @drop="onCanvasDrop">
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"
@@ -243,32 +335,74 @@ async function save() {
           </template>
 
           <template #node-wait="nodeProps">
-            <FunctionalTestNode v-bind="nodeProps" :meta="meta" />
+            <FunctionalTestNode v-bind="nodeProps" :meta="meta" :point-lookup="pointLookup" />
           </template>
           <template #node-wait_until="nodeProps">
-            <FunctionalTestNode v-bind="nodeProps" :meta="meta" />
+            <FunctionalTestNode v-bind="nodeProps" :meta="meta" :point-lookup="pointLookup" />
           </template>
           <template #node-capture="nodeProps">
-            <FunctionalTestNode v-bind="nodeProps" :meta="meta" />
+            <FunctionalTestNode v-bind="nodeProps" :meta="meta" :point-lookup="pointLookup" />
           </template>
           <template #node-verify="nodeProps">
-            <FunctionalTestNode v-bind="nodeProps" :meta="meta" />
+            <FunctionalTestNode v-bind="nodeProps" :meta="meta" :point-lookup="pointLookup" />
           </template>
           <template #node-compare="nodeProps">
-            <FunctionalTestNode v-bind="nodeProps" :meta="meta" />
+            <FunctionalTestNode v-bind="nodeProps" :meta="meta" :point-lookup="pointLookup" />
+          </template>
+          <template #node-set="nodeProps">
+            <FunctionalTestNode v-bind="nodeProps" :meta="meta" :point-lookup="pointLookup" />
           </template>
         </VueFlow>
       </main>
 
-      <FunctionalTestProperties :node="selectedNode" :meta="meta" />
+      <FunctionalTestRunPanel
+        v-if="showRunPanel && savedTest"
+        :test="savedTest"
+        :issues="issues"
+        @close="showRunPanel = false"
+        @select-issue="selectIssue"
+      />
+      <FunctionalTestJsonPanel
+        v-else-if="showJsonPanel && savedTest"
+        :test="savedTest"
+        @close="showJsonPanel = false"
+      />
+      <FunctionalTestProperties v-else :node="selectedNode" :meta="meta" :points="points" />
     </div>
 
-    <FunctionalTestRunDialog
-      v-if="savedTest"
-      v-model:open="runDialogOpen"
-      :test="savedTest"
-      :meta="meta"
-    />
+    <a-drawer
+      :open="metaDrawerOpen"
+      :title="metaDrawerMode === 'new' ? 'New Test' : 'Edit Test'"
+      placement="right"
+      width="360"
+      @close="metaDrawerOpen = false"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="Name">
+          <a-input v-model:value="draftName" placeholder="Test name" />
+        </a-form-item>
+        <a-form-item label="Category">
+          <a-select
+            v-model:value="draftEquipmentType"
+            show-search
+            allow-clear
+            placeholder="Applies to equipment type"
+            :options="meta.equipment_types"
+            style="width:100%"
+          />
+        </a-form-item>
+        <a-form-item label="Description">
+          <a-textarea v-model:value="draftDescription" placeholder="Description (optional)" :rows="3" />
+        </a-form-item>
+      </a-form>
+
+      <template #footer>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <a-button @click="metaDrawerOpen = false">Close</a-button>
+          <a-button type="primary" :disabled="!draftName.trim()" @click="saveMetaDrawer">Save</a-button>
+        </div>
+      </template>
+    </a-drawer>
   </div>
 </template>
 
@@ -279,6 +413,14 @@ async function save() {
   height: 100%;
 }
 
+.ft-test-title {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ft-header {
   display: flex;
   align-items: center;
@@ -286,33 +428,6 @@ async function save() {
   padding: 10px 16px;
   border-bottom: 1px solid var(--border, #d9d9d9);
   background: var(--surface, #fff);
-}
-
-.ft-issues {
-  padding: 8px 16px;
-  background: #fffbe6;
-  border-bottom: 1px solid #ffe58f;
-  font-size: 12px;
-  max-height: 140px;
-  overflow-y: auto;
-}
-
-.ft-issues-title {
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.ft-issue {
-  padding: 2px 0;
-  color: #874d00;
-}
-
-.ft-issue--clickable {
-  cursor: pointer;
-}
-
-.ft-issue--clickable:hover {
-  text-decoration: underline;
 }
 
 .ft-body {
@@ -332,10 +447,10 @@ async function save() {
   min-width: 120px;
   padding: 10px 14px;
   text-align: center;
-  background: var(--surface, #fff);
-  border: 1px solid var(--border, #d9d9d9);
+  background: var(--surface-alt, #f5f5f5);
+  border: 1px solid #faad14;
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 6%);
+  box-shadow: var(--card-shadow, 0 2px 8px rgb(0 0 0 / 6%));
 }
 
 .ft-node--selected {

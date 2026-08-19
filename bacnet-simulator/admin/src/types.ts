@@ -643,11 +643,37 @@ export interface PacketCaptureFilters {
 // A constrained, BAS-commissioning-specific graph (NOT a general workflow
 // engine) -- see admin/src/functionalTestSerializer.ts and
 // admin/src/functionalTestValidation.ts. `params` per node type never
-// contains free-form strings or expressions, only structured fields
-// resolved against the existing meta.point_types/equipment_types
-// vocabulary (same one DeviceDrawer/ObjectDrawer already use).
+// contains free-form strings or expressions, only structured fields.
+// Every point reference is a concrete PointRef (a real device + a real
+// BACnet object, picked at authoring time via PointPicker.vue) -- Brick
+// semantic class (meta.point_types) is filter/display metadata only, never
+// the primary identity, and is never itself part of a node's params.
 
-export type FunctionalTestOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'
+/** A concrete BACnet point: one real object on one real device. Never a
+ * semantic/Brick class placeholder -- see the module comment above. */
+export interface PointRef {
+  device_id: number
+  object_id: number
+}
+
+/** One row from GET /points -- the cross-device listing PointPicker.vue
+ * searches/filters. Device/Point Name are the primary identity; semantic
+ * type/object type·instance/units/live value are secondary/display-only. */
+export interface PointRow {
+  object_id: number
+  device_id: number
+  device_name: string
+  object_type: string
+  object_instance: number
+  name: string
+  units: string | null
+  point_type: string | null
+  live_value: unknown
+  source_type: 'simulated' | 'external-bacnet'
+}
+
+export type FunctionalTestOperator =
+  | 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'within_tolerance'
 
 export type FunctionalTestNodeType =
   | 'start'
@@ -656,25 +682,54 @@ export type FunctionalTestNodeType =
   | 'capture'
   | 'verify'
   | 'compare'
+  | 'set'
   | 'end'
 
+// Additive-only discriminated union: a future `kind: 'aggregate'` variant
+// (min/max/avg/count over a PointRef[], for Guideline-36-style checks) must
+// be addable here without migrating existing saved operand JSON -- every
+// site that pattern-matches `kind` (operandLabel() below, backend
+// evaluate_operand()/_validate_operand()) must stay an exhaustive switch
+// with an explicit "unknown kind" rejection, never a permissive fallback,
+// so adding a new kind later is the only change required.
 export type FunctionalTestOperand =
-  | { kind: 'point'; point_type: string }
+  | { kind: 'point'; point: PointRef }
   | { kind: 'constant'; value: string | number | boolean }
   | { kind: 'variable'; name: string; offset?: number }
 
 export interface FunctionalTestNodeParams {
   start: Record<string, never>
-  wait: { seconds: number }
+  wait: { seconds: number; label?: string }
   wait_until: {
-    point_type: string
+    point: PointRef
     operator: FunctionalTestOperator
-    value: string | number | boolean
+    /** Was a flat literal -- now a full operand so it can reference a
+     * captured baseline (e.g. "decreases vs. baseline"). */
+    value: FunctionalTestOperand
+    /** Required iff operator === 'within_tolerance'. */
+    tolerance?: number
+    /** Condition must hold continuously for this many seconds, not just
+     * cross once -- guards against a single noisy simulation tick. */
+    stable_for_seconds?: number
     timeout_seconds: number
+    label?: string
   }
-  capture: { point_type: string; variable: string }
-  verify: { left: FunctionalTestOperand; operator: FunctionalTestOperator; right: FunctionalTestOperand }
-  compare: { left: FunctionalTestOperand; operator: FunctionalTestOperator; right: FunctionalTestOperand }
+  capture: { point: PointRef; variable: string; label?: string }
+  verify: {
+    left: FunctionalTestOperand
+    operator: FunctionalTestOperator
+    right: FunctionalTestOperand
+    tolerance?: number
+    label?: string
+  }
+  compare: {
+    left: FunctionalTestOperand
+    operator: FunctionalTestOperator
+    right: FunctionalTestOperand
+    tolerance?: number
+    label?: string
+  }
+  set: { point: PointRef; value: string | number | boolean; priority?: number; label?: string }
   end: { result: 'pass' | 'fail' | 'inconclusive'; message?: string }
 }
 
@@ -716,34 +771,52 @@ export interface FunctionalTestIssue {
   message: string
 }
 
-// ─── Functional Test execution (Phase 2) ────────────────────────────────
-// Read-only: target selection, semantic point resolution, and run state.
-// The graph itself is never sent to the run-creation endpoint -- only a
-// target_device_id; the backend always loads the saved definition fresh
-// and re-resolves every point itself (trust boundary).
+// ─── Functional Test execution ──────────────────────────────────────────
+// Read-only: point readiness and run state. The graph itself is never sent
+// to the run-creation endpoint, and neither is a target device -- every
+// point in the saved definition already carries its own device, so the
+// backend always loads the definition fresh and re-checks readiness itself
+// (trust boundary), with nothing left for the caller to supply.
 
 export type ExecutionMode = 'external' | 'simulation'
 
-export interface PointResolution {
-  status: 'resolved' | 'missing' | 'ambiguous' | 'inconsistent'
-  resolution_source: 'semantic_graph' | 'device_point_type'
-  object: { id: number; name: string; object_type: string; object_instance: number } | null
-  candidates: string[]
+export interface PointReadiness {
+  device_id: number | null
+  object_id: number | null
+  status: 'ok' | 'missing_device' | 'missing_object' | 'not_simulated'
+  device_name: string | null
+  object_name: string | null
   message: string | null
 }
 
 export interface FunctionalTestResolveResponse {
-  execution_mode: ExecutionMode
-  points: Record<string, PointResolution>
+  points: PointReadiness[]
 }
 
 export interface FunctionalTestRunDetail {
   node_id: string
-  type: FunctionalTestNodeType
+  /** Every real node type, plus the synthetic "restore" entries appended
+   * after the run ends (one per Set write undone). */
+  type: FunctionalTestNodeType | 'restore'
   outcome: string
   message: string | null
   started_at: string
   finished_at: string
+  // Structured fields, populated per node type (all optional so today's
+  // flat `${type} — ${message}` rendering keeps working unmodified) --
+  // enough to build a future trend/evidence view without another schema
+  // change. See functional_tests/executor.py's _record() extra payloads.
+  point?: PointRef
+  variable?: string
+  value?: string | number | boolean
+  operator?: FunctionalTestOperator
+  tolerance?: number
+  target?: FunctionalTestOperand
+  left?: FunctionalTestOperand & { resolved_value?: unknown }
+  right?: FunctionalTestOperand & { resolved_value?: unknown }
+  priority?: number
+  previous_state?: Record<string, unknown>
+  action?: 'relinquished' | 'restored_manual' | 'restored_behavior' | null
 }
 
 export type FunctionalTestRunState =
@@ -752,7 +825,10 @@ export type FunctionalTestRunState =
 export interface FunctionalTestRun {
   id: number
   functional_test_id: number
-  target_device_id: number
+  /** No longer a per-run selection -- every point already carries its own
+   * device. Historical value on runs created before this change; always
+   * null on new runs. */
+  target_device_id: number | null
   execution_mode: ExecutionMode
   state: FunctionalTestRunState
   started_at: string | null

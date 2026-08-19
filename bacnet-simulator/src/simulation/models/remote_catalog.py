@@ -149,6 +149,7 @@ def _variable(data: dict[str, Any], direction: str) -> VariableDefinition:
         label=str(data.get("label") or data["name"]),
         direction=direction,
         unit=_unit_label(data.get("unit")),
+        default=data.get("default"),
         required=bool(data.get("required", False)),
         suggested_point_types=_suggested_point_types(data),
         mapping_hints=_mapping_hints(data),

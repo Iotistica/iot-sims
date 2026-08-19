@@ -1,7 +1,14 @@
-"""Structured Operand evaluation for Verify/Compare nodes -- no eval(),
-no expression language. Mirrors the exact Operand shape the builder already
-persists (kind: point | constant | variable, with an optional numeric
-offset on variable), see validation.py's own operand checks."""
+"""Structured Operand evaluation for Verify/Compare/Wait Until nodes -- no
+eval(), no expression language. Mirrors the exact Operand shape the builder
+already persists (kind: point | constant | variable, with an optional
+numeric offset on variable; a `point` operand now carries a PointRef
+{device_id, object_id} rather than a semantic point_type string), see
+validation.py's own operand checks.
+
+Forward-compat note (see plan §8): a future `kind: 'aggregate'` variant is
+additive to this dispatch -- keep evaluate_operand/compare raising on
+unknown kind/operator rather than silently falling through, so adding a new
+branch later is the only change required, never a rewrite of this one."""
 from __future__ import annotations
 
 from typing import Any
@@ -20,7 +27,7 @@ async def evaluate_operand(operand: dict, variables: dict, runtime: Any) -> Any:
     kind = operand.get("kind")
 
     if kind == "point":
-        return await runtime.read(operand["point_type"])
+        return await runtime.read(operand["point"])
 
     if kind == "constant":
         return operand.get("value")
@@ -38,7 +45,7 @@ async def evaluate_operand(operand: dict, variables: dict, runtime: Any) -> Any:
     raise ExecutionError(f"Unknown operand kind: {kind!r}")
 
 
-def compare(operator: str, left: Any, right: Any) -> bool:
+def compare(operator: str, left: Any, right: Any, tolerance: Any = None) -> bool:
     if operator not in OPERATORS:
         raise ExecutionError(f"Unknown operator: {operator!r}")
 
@@ -54,5 +61,9 @@ def compare(operator: str, left: Any, right: Any) -> bool:
         return left < right
     if operator == "lte":
         return left <= right
+    if operator == "within_tolerance":
+        if tolerance is None:
+            raise ExecutionError("within_tolerance comparison requires a tolerance")
+        return abs(left - right) <= tolerance
 
     raise ExecutionError(f"Unhandled operator: {operator!r}")

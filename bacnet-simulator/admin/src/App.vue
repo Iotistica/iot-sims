@@ -257,6 +257,7 @@ const expandedKeys = ref<string[]>([])
 watch(locations, () => { expandedKeys.value = [...locations.value.map(l => `location-${l.id}`), 'discovered-group'] }, { immediate: true })
 
 const moveToOptions = computed(() => flattenLocationTree(buildLocationTreeOptions(locations.value)))
+const duplicateLocationOptions = computed(() => buildLocationTreeOptions(locations.value))
 
 async function assignDeviceToLocation(device: Device, locationId: number) {
   const { id, ...rest } = device as any
@@ -297,6 +298,15 @@ const addContextLocationId = ref<number | null>(null)
 const projectsDrawerOpen   = ref(false)
 const createCopyModalOpen  = ref(false)
 const createCopySource     = ref<Device | null>(null)
+const duplicateModalOpen   = ref(false)
+const duplicateSource      = ref<Device | null>(null)
+const duplicateLoading     = ref(false)
+const duplicateLocationId  = ref<number | null>(null)
+const duplicateName        = ref('')
+const duplicateOptions     = ref({
+  semantics: true,
+  simulation: true,
+})
 
 // Active project state — persisted to localStorage so a page reload (e.g.
 // after a frontend rebuild) doesn't lose track of which project "Save"
@@ -457,18 +467,49 @@ function onSelectController(deviceId: number) {
 function openAddDevice(locationId: number | null = null) { editingDevice.value = null; addContextLocationId.value = locationId; deviceDrawerOpen.value = true }
 function openEditDevice(d: Device) { editingDevice.value = d; deviceDrawerOpen.value = true }
 async function onDeviceSaved() { await loadDevices(); await loadHealth() }
-async function duplicateDevice(d: Device) {
+function duplicateDevice(d: Device) {
+  duplicateSource.value = d
+  duplicateName.value = `${d.name} Copy`
+  duplicateLocationId.value = d.location_id ?? null
+  duplicateOptions.value = { semantics: true, simulation: true }
+  duplicateModalOpen.value = true
+}
+
+async function confirmDuplicateDevice() {
+  const source = duplicateSource.value
+  if (!source) return
+  const name = duplicateName.value.trim()
+  if (!name) {
+    message.warning('Name is required')
+    return
+  }
   const nextInstance = devices.value.length
     ? Math.max(...devices.value.map(x => x.device_instance)) + 1
-    : d.device_instance + 1
+    : source.device_instance + 1
+  duplicateLoading.value = true
   try {
-    const srcObjects = await api.objects.list(d.id)
-    const { objectCount } = await copyDeviceAndObjects(d, srcObjects, { name: `${d.name} Copy`, deviceInstance: nextInstance })
+    const srcObjects = await api.objects.list(source.id)
+    const { device, objectCount, simulationModelCount } = await copyDeviceAndObjects(source, srcObjects, {
+      name,
+      deviceInstance: nextInstance,
+      locationId: duplicateLocationId.value,
+      copySemantics: duplicateOptions.value.semantics,
+      copySimulation: duplicateOptions.value.simulation,
+    })
     await loadDevices()
     await loadHealth()
-    message.success(`Duplicated "${d.name}" with ${objectCount} object${objectCount !== 1 ? 's' : ''}`)
+    const fresh = devices.value.find(d => d.id === device.id)
+    selectedEquipment.value = null
+    selectedDevice.value = fresh ?? device
+    duplicateModalOpen.value = false
+    message.success(
+      `Duplicated "${source.name}" with ${objectCount} object${objectCount !== 1 ? 's' : ''}`
+      + (simulationModelCount ? ` and ${simulationModelCount} simulation model${simulationModelCount !== 1 ? 's' : ''}` : '')
+    )
   } catch (e: unknown) {
     message.error((e as Error).message)
+  } finally {
+    duplicateLoading.value = false
   }
 }
 
@@ -578,6 +619,11 @@ const simulationModelDevice = ref<Device | null>(null)
 function openSimulationModel(d: Device) {
   simulationModelDevice.value = d
   simulationModelModalOpen.value = true
+}
+
+async function onSimulationModelSaved() {
+  await loadDevices()
+  objectsPanelRef.value?.reload()
 }
 
 const packetCaptureDeviceFilter = ref<number | null>(null)
@@ -1021,6 +1067,39 @@ onUnmounted(() => {
       @created="onSimulatedCopyCreated"
     />
 
+    <!-- Duplicate device modal -->
+    <a-modal
+      v-model:open="duplicateModalOpen"
+      title="Duplicate"
+      ok-text="OK"
+      cancel-text="Close"
+      width="320px"
+      :confirm-loading="duplicateLoading"
+      @ok="confirmDuplicateDevice"
+    >
+      <a-space direction="vertical" :size="8" style="width:100%;margin-top:4px">
+        <a-input
+          v-model:value="duplicateName"
+          placeholder="Device name"
+          @press-enter="confirmDuplicateDevice"
+        />
+        <a-tree-select
+          v-model:value="duplicateLocationId"
+          :tree-data="duplicateLocationOptions"
+          allow-clear
+          placeholder="No location"
+          style="width:100%"
+          tree-default-expand-all
+        />
+        <a-checkbox v-model:checked="duplicateOptions.semantics">
+          Semantics
+        </a-checkbox>
+        <a-checkbox v-model:checked="duplicateOptions.simulation">
+          Simulation
+        </a-checkbox>
+      </a-space>
+    </a-modal>
+
     <!-- Projects drawer -->
     <ProjectsDrawer
       v-model:open="projectsDrawerOpen"
@@ -1064,7 +1143,7 @@ onUnmounted(() => {
     <SimulationModelModal
       v-model:open="simulationModelModalOpen"
       :device="simulationModelDevice"
-      @saved="loadDevices"
+      @saved="onSimulationModelSaved"
     />
 
     <!-- Save project modal -->

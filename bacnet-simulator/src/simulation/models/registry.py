@@ -39,6 +39,7 @@ class VariableDefinition:
     label: str
     direction: str
     unit: str | None = None
+    default: Any = None
     required: bool = True
     suggested_point_types: tuple[str, ...] = ()
     mapping_hints: MappingHints | None = None

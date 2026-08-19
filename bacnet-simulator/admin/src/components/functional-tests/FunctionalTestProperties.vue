@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import type { Node } from '@vue-flow/core'
-import type { FunctionalTestOperand, Meta } from '../../types'
+import type { FunctionalTestOperand, Meta, PointRow } from '../../types'
+import PointPicker from '../PointPicker.vue'
 
 const props = defineProps<{
   node: Node | null
   meta: Meta
+  points: PointRow[]
 }>()
 
 const OPERATOR_OPTIONS = [
@@ -14,6 +16,7 @@ const OPERATOR_OPTIONS = [
   { value: 'gte', label: 'Greater than or equal' },
   { value: 'lt', label: 'Less than' },
   { value: 'lte', label: 'Less than or equal' },
+  { value: 'within_tolerance', label: 'Within tolerance of' },
 ]
 
 const END_RESULT_OPTIONS = [
@@ -28,15 +31,17 @@ const OPERAND_KIND_OPTIONS = [
   { value: 'variable', label: 'Captured variable' },
 ]
 
-function setOperandKind(operand: FunctionalTestOperand | undefined, data: Record<string, any>, side: 'left' | 'right', kind: FunctionalTestOperand['kind']) {
-  if (kind === 'point') data[side] = { kind: 'point', point_type: '' }
+const CAPTIONABLE_TYPES = new Set(['wait', 'wait_until', 'capture', 'verify', 'compare', 'set'])
+
+function setOperandKind(data: Record<string, any>, side: 'left' | 'right' | 'value', kind: FunctionalTestOperand['kind']) {
+  if (kind === 'point') data[side] = { kind: 'point', point: null }
   else if (kind === 'constant') data[side] = { kind: 'constant', value: '' }
   else data[side] = { kind: 'variable', name: '' }
 }
 
-function ensureOperand(data: Record<string, any>, side: 'left' | 'right') {
+function ensureOperand(data: Record<string, any>, side: 'left' | 'right' | 'value') {
   if (!data[side] || typeof data[side] !== 'object') {
-    data[side] = { kind: 'point', point_type: '' }
+    data[side] = { kind: 'point', point: null }
   }
   return data[side]
 }
@@ -48,6 +53,10 @@ function ensureOperand(data: Record<string, any>, side: 'left' | 'right') {
       <div class="ft-panel-title">{{ node.type }}</div>
 
       <a-form layout="vertical" size="small">
+        <a-form-item v-if="CAPTIONABLE_TYPES.has(node.type as string)" label="Label (optional)">
+          <a-input v-model:value="node.data.label" placeholder="e.g. Disable Chiller 2" />
+        </a-form-item>
+
         <template v-if="node.type === 'wait'">
           <a-form-item label="Seconds">
             <a-input-number v-model:value="node.data.seconds" :min="0" style="width:100%" />
@@ -56,19 +65,38 @@ function ensureOperand(data: Record<string, any>, side: 'left' | 'right') {
 
         <template v-if="node.type === 'wait_until'">
           <a-form-item label="Point">
-            <a-select
-              v-model:value="node.data.point_type"
-              show-search
-              allow-clear
-              placeholder="Select a point"
-              :options="meta.point_types"
-            />
+            <PointPicker v-model="node.data.point" :points="points" :meta="meta" />
           </a-form-item>
           <a-form-item label="Operator">
             <a-select v-model:value="node.data.operator" :options="OPERATOR_OPTIONS" />
           </a-form-item>
           <a-form-item label="Value">
-            <a-input v-model:value="node.data.value" />
+            <a-select
+              :value="ensureOperand(node.data, 'value').kind"
+              :options="OPERAND_KIND_OPTIONS"
+              style="margin-bottom:8px"
+              @change="(kind: any) => setOperandKind(node!.data, 'value', kind)"
+            />
+            <PointPicker
+              v-if="node.data.value?.kind === 'point'"
+              v-model="node.data.value.point"
+              :points="points"
+              :meta="meta"
+            />
+            <a-input v-else-if="node.data.value?.kind === 'constant'" v-model:value="node.data.value.value" placeholder="Value" />
+            <template v-else-if="node.data.value?.kind === 'variable'">
+              <a-input v-model:value="node.data.value.name" placeholder="Variable name" style="margin-bottom:8px" />
+              <a-input-number v-model:value="node.data.value.offset" placeholder="Offset (optional)" style="width:100%" />
+            </template>
+          </a-form-item>
+          <a-form-item v-if="node.data.operator === 'within_tolerance'" label="Tolerance">
+            <a-input-number v-model:value="node.data.tolerance" :min="0" style="width:100%" />
+          </a-form-item>
+          <a-form-item label="Stable for (seconds, optional)">
+            <a-input-number
+              v-model:value="node.data.stable_for_seconds" :min="0" style="width:100%"
+              placeholder="Condition must hold this long, not just cross once"
+            />
           </a-form-item>
           <a-form-item label="Timeout (seconds)">
             <a-input-number v-model:value="node.data.timeout_seconds" :min="1" style="width:100%" />
@@ -77,16 +105,22 @@ function ensureOperand(data: Record<string, any>, side: 'left' | 'right') {
 
         <template v-if="node.type === 'capture'">
           <a-form-item label="Point">
-            <a-select
-              v-model:value="node.data.point_type"
-              show-search
-              allow-clear
-              placeholder="Select a point"
-              :options="meta.point_types"
-            />
+            <PointPicker v-model="node.data.point" :points="points" :meta="meta" />
           </a-form-item>
           <a-form-item label="Variable name">
             <a-input v-model:value="node.data.variable" placeholder="t1" />
+          </a-form-item>
+        </template>
+
+        <template v-if="node.type === 'set'">
+          <a-form-item label="Point">
+            <PointPicker v-model="node.data.point" :points="points" :meta="meta" />
+          </a-form-item>
+          <a-form-item label="Value">
+            <a-input v-model:value="node.data.value" placeholder="e.g. OFF, 0, 72.5" />
+          </a-form-item>
+          <a-form-item label="Priority (optional, 1-16)">
+            <a-input-number v-model:value="node.data.priority" :min="1" :max="16" style="width:100%" placeholder="Defaults to 8" />
           </a-form-item>
         </template>
 
@@ -96,15 +130,13 @@ function ensureOperand(data: Record<string, any>, side: 'left' | 'right') {
               :value="ensureOperand(node.data, 'left').kind"
               :options="OPERAND_KIND_OPTIONS"
               style="margin-bottom:8px"
-              @change="(kind: any) => setOperandKind(node!.data.left, node!.data, 'left', kind)"
+              @change="(kind: any) => setOperandKind(node!.data, 'left', kind)"
             />
-            <a-select
+            <PointPicker
               v-if="node.data.left?.kind === 'point'"
-              v-model:value="node.data.left.point_type"
-              show-search
-              allow-clear
-              placeholder="Select a point"
-              :options="meta.point_types"
+              v-model="node.data.left.point"
+              :points="points"
+              :meta="meta"
             />
             <a-input v-else-if="node.data.left?.kind === 'constant'" v-model:value="node.data.left.value" placeholder="Value" />
             <template v-else-if="node.data.left?.kind === 'variable'">
@@ -122,21 +154,23 @@ function ensureOperand(data: Record<string, any>, side: 'left' | 'right') {
               :value="ensureOperand(node.data, 'right').kind"
               :options="OPERAND_KIND_OPTIONS"
               style="margin-bottom:8px"
-              @change="(kind: any) => setOperandKind(node!.data.right, node!.data, 'right', kind)"
+              @change="(kind: any) => setOperandKind(node!.data, 'right', kind)"
             />
-            <a-select
+            <PointPicker
               v-if="node.data.right?.kind === 'point'"
-              v-model:value="node.data.right.point_type"
-              show-search
-              allow-clear
-              placeholder="Select a point"
-              :options="meta.point_types"
+              v-model="node.data.right.point"
+              :points="points"
+              :meta="meta"
             />
             <a-input v-else-if="node.data.right?.kind === 'constant'" v-model:value="node.data.right.value" placeholder="Value" />
             <template v-else-if="node.data.right?.kind === 'variable'">
               <a-input v-model:value="node.data.right.name" placeholder="Variable name" style="margin-bottom:8px" />
               <a-input-number v-model:value="node.data.right.offset" placeholder="Offset (optional)" style="width:100%" />
             </template>
+          </a-form-item>
+
+          <a-form-item v-if="node.data.operator === 'within_tolerance'" label="Tolerance">
+            <a-input-number v-model:value="node.data.tolerance" :min="0" style="width:100%" />
           </a-form-item>
         </template>
 

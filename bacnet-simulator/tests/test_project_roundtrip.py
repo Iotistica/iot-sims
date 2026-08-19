@@ -10,6 +10,11 @@ semantic_relationships at the top of load_project()) were missing or wrong."""
 from __future__ import annotations
 
 from src.semantics.resolver import SemanticResolver
+from src.simulation.model_store import create_simulation_model, list_simulation_models
+
+
+def _object_id(seeded_database, device_id: int, name: str) -> int:
+    return next(o["id"] for o in seeded_database.get_objects(device_id) if o["name"] == name)
 
 
 def _ahu1_entities(database):
@@ -200,3 +205,140 @@ def test_no_semantic_key_collisions_on_repeated_reload(seeded_database):
     assert len(entities) > 0
     semantic_keys = [e["semantic_key"] for e in entities if e["semantic_key"] is not None]
     assert len(semantic_keys) == len(set(semantic_keys))
+
+
+def test_simulation_models_survive_project_reload(seeded_database):
+    """simulation_model_configs (and its mappings) was never part of
+    save_project()/update_project()'s exported JSON -- see
+    list_all_simulation_models()/insert_simulation_model() in
+    model_store.py and their use in legacy.py's save_project()/
+    update_project()/load_project(). Every project reload silently
+    deleted every simulation model and never recreated it, the same
+    class of bug as test_energy_model_configs_survive_project_reload
+    above, but for simulation models instead of energy models."""
+    devices = seeded_database.get_devices()
+    ahu1_id = next(d["id"] for d in devices if d["device_instance"] == 1003)
+    sat_point_id = _object_id(seeded_database, ahu1_id, "SAT")
+
+    created = create_simulation_model(
+        seeded_database,
+        name="AHU-1 Model",
+        provider_type="fmu",
+        model_type="SimpleAHU",
+        enabled=False,
+        parameters={"foo": "bar"},
+        created_from_device_id=ahu1_id,
+        mappings=[{"variable": "supply_air_temp_c", "direction": "output", "point_id": sat_point_id}],
+    )
+
+    project = seeded_database.save_project("Round-trip Test", "")
+    seeded_database.load_project(project["id"])
+
+    devices = seeded_database.get_devices()
+    new_ahu1_id = next(d["id"] for d in devices if d["device_instance"] == 1003)
+    assert new_ahu1_id != ahu1_id  # ids were actually reassigned
+
+    matches = [m for m in list_simulation_models(seeded_database) if m["name"] == created["name"]]
+    assert len(matches) == 1
+    reloaded = matches[0]
+
+    assert reloaded["id"] != created["id"]  # a genuinely new row, not the stale one
+    assert reloaded["created_from_device_id"] == new_ahu1_id
+    assert reloaded["parameters"] == {"foo": "bar"}
+    assert len(reloaded["mappings"]) == 1
+    mapping = reloaded["mappings"][0]
+    assert mapping["variable"] == "supply_air_temp_c"
+    assert mapping["direction"] == "output"
+    new_sat_point_id = _object_id(seeded_database, new_ahu1_id, "SAT")
+    assert mapping["point_id"] == new_sat_point_id
+    assert mapping["point_id"] != sat_point_id
+
+
+def test_simulation_model_weighted_average_mapping_survives_project_reload(seeded_database):
+    """Aggregate (weighted_average) mappings reference points on OTHER
+    devices (e.g. an RTU's return-air temp = weighted average of two VAV
+    zone temps, weighted by each zone's airflow) -- exactly the
+    cross-device-reference shape that made the plain-mapping bug above
+    dangerous to get wrong: point_ids/weight_point_ids must be remapped via
+    the SAME global_obj_id_map used for every other point-referencing
+    table, and must stay positionally aligned (value[i] <-> weight[i])
+    after the remap."""
+    devices = seeded_database.get_devices()
+    vav1_id = next(d["id"] for d in devices if d["device_instance"] == 1101)
+    vav2_id = next(d["id"] for d in devices if d["device_instance"] == 1102)
+
+    vav1_temp = _object_id(seeded_database, vav1_id, "Zone-Temp")
+    vav1_flow = _object_id(seeded_database, vav1_id, "Zone-Airflow")
+    vav2_temp = _object_id(seeded_database, vav2_id, "Zone-Temp")
+    vav2_flow = _object_id(seeded_database, vav2_id, "Zone-Airflow")
+
+    created = create_simulation_model(
+        seeded_database,
+        name="Floor-1 Weighted RAT",
+        provider_type="fmu",
+        model_type="SimpleAHU",
+        enabled=False,
+        parameters={},
+        created_from_device_id=None,
+        mappings=[],
+        aggregate_mappings=[{
+            "variable": "return_air_temp_c",
+            "direction": "input",
+            "operation": "weighted_average",
+            "point_ids": [vav1_temp, vav2_temp],
+            "weight_point_ids": [vav1_flow, vav2_flow],
+        }],
+    )
+
+    project = seeded_database.save_project("Round-trip Test", "")
+    seeded_database.load_project(project["id"])
+
+    matches = [m for m in list_simulation_models(seeded_database) if m["name"] == "Floor-1 Weighted RAT"]
+    assert len(matches) == 1
+    reloaded = matches[0]
+    assert reloaded["id"] != created["id"]
+
+    devices = seeded_database.get_devices()
+    new_vav1_id = next(d["id"] for d in devices if d["device_instance"] == 1101)
+    new_vav2_id = next(d["id"] for d in devices if d["device_instance"] == 1102)
+    new_vav1_temp = _object_id(seeded_database, new_vav1_id, "Zone-Temp")
+    new_vav1_flow = _object_id(seeded_database, new_vav1_id, "Zone-Airflow")
+    new_vav2_temp = _object_id(seeded_database, new_vav2_id, "Zone-Temp")
+    new_vav2_flow = _object_id(seeded_database, new_vav2_id, "Zone-Airflow")
+
+    assert len(reloaded["mappings"]) == 1
+    mapping = reloaded["mappings"][0]
+    assert mapping["operation"] == "weighted_average"
+    # Positional alignment survives the remap: value[i] still pairs with
+    # weight[i], not some other row's weight.
+    assert mapping["point_ids"] == [new_vav1_temp, new_vav2_temp]
+    assert mapping["weight_point_ids"] == [new_vav1_flow, new_vav2_flow]
+    # And the ids genuinely changed -- the stale ones must be gone.
+    assert set(mapping["point_ids"]).isdisjoint({vav1_temp, vav2_temp})
+    assert set(mapping["weight_point_ids"]).isdisjoint({vav1_flow, vav2_flow})
+
+
+def test_simulation_models_no_duplicates_on_repeated_project_reload(seeded_database):
+    devices = seeded_database.get_devices()
+    ahu1_id = next(d["id"] for d in devices if d["device_instance"] == 1003)
+    sat_point_id = _object_id(seeded_database, ahu1_id, "SAT")
+
+    create_simulation_model(
+        seeded_database,
+        name="AHU-1 Model",
+        provider_type="fmu",
+        model_type="SimpleAHU",
+        enabled=False,
+        parameters={},
+        created_from_device_id=ahu1_id,
+        mappings=[{"variable": "supply_air_temp_c", "direction": "output", "point_id": sat_point_id}],
+    )
+
+    project = seeded_database.save_project("Round-trip Test", "")
+
+    seeded_database.load_project(project["id"])
+    seeded_database.load_project(project["id"])
+    seeded_database.load_project(project["id"])
+
+    matches = [m for m in list_simulation_models(seeded_database) if m["name"] == "AHU-1 Model"]
+    assert len(matches) == 1

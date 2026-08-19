@@ -184,6 +184,7 @@ function apply() {
     ok-text="Apply Selected"
     :confirm-loading="applying"
     :ok-button-props="{ disabled: loading }"
+    :z-index="1060"
     @update:open="(v: boolean) => emit('update:open', v)"
     @ok="apply"
   >

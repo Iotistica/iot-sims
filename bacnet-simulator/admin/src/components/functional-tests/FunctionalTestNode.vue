@@ -2,15 +2,14 @@
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import type { FunctionalTestOperand, Meta } from '../../types'
+import type { PointLookup } from '../../pointLookup'
+import { lookupPoint, pointDisplayLabel } from '../../pointLookup'
 
 const props = defineProps<{
   type: string
   data: Record<string, any>
   meta: Meta
-  /** Optional run-mode overlay -- undefined leaves the builder's normal
-   * editing appearance untouched. Only FunctionalTestRunDialog's read-only
-   * canvas sets this. */
-  status?: 'pending' | 'running' | 'passed' | 'failed' | 'skipped'
+  pointLookup: PointLookup
   /** Vue Flow's own node-selected slot prop -- passed straight through via
    * v-bind="nodeProps" in the builder. */
   selected?: boolean
@@ -22,21 +21,38 @@ const KICKER: Record<string, string> = {
   capture: 'CAPTURE',
   verify: 'VERIFY',
   compare: 'COMPARE',
+  set: 'SET',
 }
 
-function pointLabel(pointType: unknown): string {
-  if (!pointType) return 'Select point'
-  const option = props.meta.point_types.find(o => o.value === pointType)
-  return option?.label ?? String(pointType)
+const OPERATOR_SYMBOL: Record<string, string> = {
+  eq: '=',
+  neq: '≠',
+  gt: '>',
+  gte: '≥',
+  lt: '<',
+  lte: '≤',
+}
+
+function pointLabel(pointRef: unknown): string {
+  if (!pointRef) return 'Select point'
+  return pointDisplayLabel(lookupPoint(props.pointLookup, pointRef as { device_id: number; object_id: number }))
 }
 
 function operandLabel(operand: unknown): string {
   const op = operand as Partial<FunctionalTestOperand> | undefined
   if (!op || !op.kind) return '?'
-  if (op.kind === 'point') return pointLabel(op.point_type)
+  if (op.kind === 'point') return pointLabel(op.point)
   if (op.kind === 'constant') return op.value === undefined || op.value === '' ? '?' : String(op.value)
   if (op.kind === 'variable') return op.name ? `{${op.name}}${op.offset ? ` +${op.offset}` : ''}` : '?'
   return '?'
+}
+
+function comparisonPhrase(operator: unknown, operand: unknown, tolerance: unknown): string {
+  if (operator === 'within_tolerance') {
+    return `within ${tolerance ?? '?'} of ${operandLabel(operand)}`
+  }
+  const symbol = OPERATOR_SYMBOL[operator as string] ?? (operator ?? '?')
+  return `${symbol} ${operandLabel(operand)}`
 }
 
 const main = computed(() => {
@@ -45,7 +61,8 @@ const main = computed(() => {
       return `${props.data.seconds ?? 0} seconds`
     case 'wait_until':
     case 'capture':
-      return pointLabel(props.data.point_type)
+    case 'set':
+      return pointLabel(props.data.point)
     case 'verify':
     case 'compare':
       return operandLabel(props.data.left)
@@ -56,13 +73,21 @@ const main = computed(() => {
 
 const detail = computed(() => {
   switch (props.type) {
-    case 'wait_until':
-      return `${props.data.operator ?? '?'} ${props.data.value ?? '?'} (timeout ${props.data.timeout_seconds ?? '?'}s)`
+    case 'wait_until': {
+      let text = comparisonPhrase(props.data.operator, props.data.value, props.data.tolerance)
+      if (props.data.stable_for_seconds) text += ` for ${props.data.stable_for_seconds}s`
+      return `${text} (timeout ${props.data.timeout_seconds ?? '?'}s)`
+    }
     case 'capture':
       return `Save as ${props.data.variable || '?'}`
     case 'verify':
     case 'compare':
-      return `${props.data.operator ?? '?'} ${operandLabel(props.data.right)}`
+      return comparisonPhrase(props.data.operator, props.data.right, props.data.tolerance)
+    case 'set': {
+      let text = `→ ${props.data.value ?? '?'}`
+      if (props.data.priority) text += ` (priority ${props.data.priority})`
+      return text
+    }
     default:
       return ''
   }
@@ -72,13 +97,11 @@ const detail = computed(() => {
 <template>
   <div
     class="ft-node"
-    :class="[
-      { 'ft-node--branching': type === 'verify', 'ft-node--selected': selected },
-      status ? `ft-node--status-${status}` : '',
-    ]"
+    :class="{ 'ft-node--branching': type === 'verify', 'ft-node--selected': selected }"
   >
     <Handle type="target" :position="Position.Top" />
 
+    <div v-if="data.label" class="ft-node-label">{{ data.label }}</div>
     <div class="ft-node-kicker">{{ KICKER[type] }}</div>
     <div class="ft-node-main">{{ main }}</div>
     <div v-if="detail" class="ft-node-detail">{{ detail }}</div>
@@ -100,10 +123,10 @@ const detail = computed(() => {
   position: relative;
   min-width: 210px;
   padding: 10px 12px;
-  background: var(--surface, #fff);
-  border: 1px solid var(--border, #d9d9d9);
+  background: var(--surface-alt, #f5f5f5);
+  border: 1px solid #faad14;
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 6%);
+  box-shadow: var(--card-shadow, 0 2px 8px rgb(0 0 0 / 6%));
   font-size: 12px;
 }
 
@@ -116,20 +139,11 @@ const detail = computed(() => {
   outline-offset: 3px;
 }
 
-.ft-node--status-running {
-  border-left: 3px solid #1677ff;
-}
-
-.ft-node--status-passed {
-  border-left: 3px solid #52c41a;
-}
-
-.ft-node--status-failed {
-  border-left: 3px solid #ff4d4f;
-}
-
-.ft-node--status-skipped {
-  opacity: 0.5;
+.ft-node-label {
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, #666);
 }
 
 .ft-node-kicker {

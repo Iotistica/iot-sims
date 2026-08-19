@@ -2,9 +2,11 @@
 
 Boundary (see plan): this module only answers "is this a well-formed
 FunctionalTestDefinition?" -- unsupported node types, malformed params,
-dangling edge references, unknown point_type/equipment_type vocabulary.
-It deliberately does NOT do graph-quality analysis (exactly-one-Start,
-reachability, unused captured variables, terminal-path existence) --
+dangling edge references, malformed point references. It deliberately does
+NOT check that a referenced device/object still exists (that's the
+readiness check, src/functional_tests/readiness.py -- a live-DB concern,
+not a shape concern) and does NOT do graph-quality analysis (exactly-one-
+Start, reachability, unused captured variables, terminal-path existence) --
 that stays in the frontend validator (admin/src/functionalTestValidation.ts)
 so it isn't built twice.
 """
@@ -13,10 +15,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..core.config import POINT_TYPES
-
-NODE_TYPES = {"start", "wait", "wait_until", "capture", "verify", "compare", "end"}
-OPERATORS = {"eq", "neq", "gt", "gte", "lt", "lte"}
+NODE_TYPES = {"start", "wait", "wait_until", "capture", "verify", "compare", "set", "end"}
+OPERATORS = {"eq", "neq", "gt", "gte", "lt", "lte", "within_tolerance"}
 END_RESULTS = {"pass", "fail", "inconclusive"}
 SOURCE_HANDLES = {None, "pass", "fail"}
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -95,10 +95,15 @@ def _validate_params(node_id: str, node_type: str, params: dict) -> None:
         return
 
     if node_type == "wait_until":
-        _validate_point_type(node_id, "wait_until", params.get("point_type"))
+        _validate_point_ref(node_id, "wait_until", params.get("point"))
         _validate_operator(node_id, "wait_until", params.get("operator"))
-        if "value" not in params:
-            raise ValueError(f"node {node_id!r}: wait_until.value is required")
+        _validate_operand(node_id, "wait_until", "value", params.get("value"))
+        _validate_tolerance(node_id, "wait_until", params)
+        stable_for_seconds = params.get("stable_for_seconds")
+        if stable_for_seconds is not None and (not _is_number(stable_for_seconds) or stable_for_seconds < 0):
+            raise ValueError(
+                f"node {node_id!r}: wait_until.stable_for_seconds must be a non-negative number"
+            )
         timeout_seconds = params.get("timeout_seconds")
         if not _is_number(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError(
@@ -107,7 +112,7 @@ def _validate_params(node_id: str, node_type: str, params: dict) -> None:
         return
 
     if node_type == "capture":
-        _validate_point_type(node_id, "capture", params.get("point_type"))
+        _validate_point_ref(node_id, "capture", params.get("point"))
         variable = params.get("variable")
         if not isinstance(variable, str) or not IDENTIFIER_RE.match(variable):
             raise ValueError(f"node {node_id!r}: capture.variable must be a valid identifier")
@@ -117,7 +122,27 @@ def _validate_params(node_id: str, node_type: str, params: dict) -> None:
         _validate_operator(node_id, node_type, params.get("operator"))
         _validate_operand(node_id, node_type, "left", params.get("left"))
         _validate_operand(node_id, node_type, "right", params.get("right"))
+        _validate_tolerance(node_id, node_type, params)
         return
+
+    if node_type == "set":
+        _validate_point_ref(node_id, "set", params.get("point"))
+        if "value" not in params:
+            raise ValueError(f"node {node_id!r}: set.value is required")
+        priority = params.get("priority")
+        if priority is not None and (not isinstance(priority, int) or isinstance(priority, bool) or not (1 <= priority <= 16)):
+            raise ValueError(f"node {node_id!r}: set.priority must be an integer between 1 and 16")
+        return
+
+
+def _validate_tolerance(node_id: str, node_type: str, params: dict) -> None:
+    if params.get("operator") != "within_tolerance":
+        return
+    tolerance = params.get("tolerance")
+    if not _is_number(tolerance) or tolerance < 0:
+        raise ValueError(
+            f"node {node_id!r}: {node_type}.tolerance must be a non-negative number when operator is 'within_tolerance'"
+        )
 
 
 def _validate_operator(node_id: str, node_type: str, operator: Any) -> None:
@@ -127,11 +152,15 @@ def _validate_operator(node_id: str, node_type: str, operator: Any) -> None:
         )
 
 
-def _validate_point_type(node_id: str, node_type: str, point_type: Any) -> None:
-    if not isinstance(point_type, str) or point_type not in POINT_TYPES:
-        raise ValueError(
-            f"node {node_id!r}: {node_type}.point_type {point_type!r} is not a recognized point class"
-        )
+def _validate_point_ref(node_id: str, node_type: str, point_ref: Any) -> None:
+    if not isinstance(point_ref, dict):
+        raise ValueError(f"node {node_id!r}: {node_type}.point must be an object")
+    device_id = point_ref.get("device_id")
+    object_id = point_ref.get("object_id")
+    if not isinstance(device_id, int) or isinstance(device_id, bool):
+        raise ValueError(f"node {node_id!r}: {node_type}.point.device_id must be an integer")
+    if not isinstance(object_id, int) or isinstance(object_id, bool):
+        raise ValueError(f"node {node_id!r}: {node_type}.point.object_id must be an integer")
 
 
 def _validate_operand(node_id: str, node_type: str, side: str, operand: Any) -> None:
@@ -140,7 +169,7 @@ def _validate_operand(node_id: str, node_type: str, side: str, operand: Any) -> 
 
     kind = operand.get("kind")
     if kind == "point":
-        _validate_point_type(node_id, f"{node_type}.{side}", operand.get("point_type"))
+        _validate_point_ref(node_id, f"{node_type}.{side}", operand.get("point"))
     elif kind == "constant":
         if "value" not in operand:
             raise ValueError(f"node {node_id!r}: {node_type}.{side} constant operand missing value")

@@ -1,24 +1,46 @@
 /** Pure, framework-free graph-quality validation for the Functional Test
  * builder canvas. Boundary (see plan/CLAUDE notes): this is the
  * "is this a complete, sensible, executable test graph?" half -- exactly
- * one Start, reachability, missing terminal path, unused/undefined capture
- * variables, friendly per-node issue navigation. The backend
+ * one entry point, reachability, unused/undefined capture variables,
+ * friendly per-node issue navigation. The backend
  * (src/functional_tests/validation.py) owns the other half -- "is this a
  * well-formed FunctionalTestDefinition?" (node types, params shapes,
  * dangling edge references) -- and deliberately does not duplicate this
- * graph analysis. */
+ * graph analysis.
+ *
+ * Start/End are implicit here, not dedicated block types the user places:
+ * the entry point is whichever block has no incoming edge, and termination
+ * is automatic wherever a block's output handle has no outgoing edge (see
+ * functionalTestSerializer.ts, which synthesizes the real Start/End nodes
+ * the backend still requires from exactly this shape) -- so there is no
+ * "must have a Start block" / "must have a reachable End block" check here
+ * anymore; any non-empty, single-entry, fully-connected graph is already
+ * complete by construction. */
 import type { Node, Edge } from '@vue-flow/core'
-import type { FunctionalTestIssue, FunctionalTestOperand, Meta } from './types'
+import type { FunctionalTestIssue, FunctionalTestOperand, Meta, PointRef } from './types'
 
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
-const OPERATORS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte'])
+const OPERATORS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'within_tolerance'])
 
-function isPointType(meta: Meta, value: unknown): boolean {
-  return typeof value === 'string' && meta.point_types.some(o => o.value === value)
+/** A concrete PointRef, not a Brick semantic class -- see types.ts's
+ * PointRef doc comment. Existence against the live device/object list is
+ * NOT checked here (that's the backend readiness check, a live-DB concern);
+ * this only checks shape. */
+function isPointRef(value: unknown): value is PointRef {
+  const ref = value as Partial<PointRef> | undefined
+  return !!ref && typeof ref === 'object'
+    && typeof ref.device_id === 'number' && typeof ref.object_id === 'number'
+}
+
+function toleranceIssues(nodeId: string, label: string, operator: unknown, tolerance: unknown): FunctionalTestIssue[] {
+  if (operator !== 'within_tolerance') return []
+  if (typeof tolerance !== 'number' || Number.isNaN(tolerance) || tolerance < 0) {
+    return [{ nodeId, message: `${label}: needs a non-negative tolerance` }]
+  }
+  return []
 }
 
 function operandIssues(
-  meta: Meta,
   nodeId: string,
   label: string,
   operand: unknown,
@@ -33,7 +55,7 @@ function operandIssues(
   }
 
   if (op.kind === 'point') {
-    if (!isPointType(meta, op.point_type)) {
+    if (!isPointRef(op.point)) {
       issues.push({ nodeId, message: `${label}: point is not set` })
     }
   } else if (op.kind === 'constant') {
@@ -65,15 +87,6 @@ export function validateFunctionalTest(
     issues.push({ nodeId: null, message: 'Choose an equipment type this test applies to' })
   }
 
-  const startNodes = nodes.filter(n => n.type === 'start')
-  if (startNodes.length === 0) {
-    issues.push({ nodeId: null, message: 'Add a Start block' })
-  } else if (startNodes.length > 1) {
-    for (const n of startNodes) {
-      issues.push({ nodeId: n.id, message: 'Only one Start block is allowed' })
-    }
-  }
-
   const nodesById = new Map(nodes.map(n => [n.id, n]))
 
   // Dangling edge endpoints.
@@ -86,11 +99,30 @@ export function validateFunctionalTest(
     }
   }
 
-  // Reachability from Start (breadth-first over outgoing edges).
+  // Entry point: the block nothing points to. Start is implicit now (see
+  // this file's module doc comment) -- the test begins at whichever block
+  // has no incoming edge, not a dedicated Start type.
+  const targeted = new Set(edges.map(e => e.target))
+  const entryNodes = nodes.filter(n => !targeted.has(n.id))
+
+  if (nodes.length === 0) {
+    issues.push({ nodeId: null, message: 'Add a block to build your test' })
+  } else if (entryNodes.length === 0) {
+    issues.push({ nodeId: null, message: 'The test has no starting block -- every block has something pointing into it (a cycle with no entry point)' })
+  } else if (entryNodes.length > 1) {
+    for (const n of entryNodes) {
+      issues.push({ nodeId: n.id, message: 'Disconnected from the rest of the test -- connect it into the flow' })
+    }
+  }
+
+  // Reachability from the entry block (breadth-first over outgoing edges) --
+  // only meaningful with exactly one entry point; with zero or multiple,
+  // that's already reported above and flooding every other block with a
+  // redundant "not reachable" issue wouldn't help.
   const reachable = new Set<string>()
-  if (startNodes.length > 0) {
-    const queue = [startNodes[0].id]
-    reachable.add(startNodes[0].id)
+  if (entryNodes.length === 1) {
+    const queue = [entryNodes[0].id]
+    reachable.add(entryNodes[0].id)
     while (queue.length > 0) {
       const current = queue.shift()!
       for (const edge of edges) {
@@ -100,17 +132,12 @@ export function validateFunctionalTest(
         }
       }
     }
-  }
 
-  for (const node of nodes) {
-    if (node.type !== 'start' && !reachable.has(node.id)) {
-      issues.push({ nodeId: node.id, message: 'This block is not reachable from Start' })
+    for (const node of nodes) {
+      if (!reachable.has(node.id)) {
+        issues.push({ nodeId: node.id, message: 'This block is not reachable from the start of the test' })
+      }
     }
-  }
-
-  const hasReachableEnd = nodes.some(n => n.type === 'end' && reachable.has(n.id))
-  if (startNodes.length > 0 && !hasReachableEnd) {
-    issues.push({ nodeId: null, message: 'No End block is reachable from Start' })
   }
 
   // Capture variable names: unique, and available to any reachable
@@ -127,8 +154,8 @@ export function validateFunctionalTest(
       seenVariableNames.add(variable)
     }
 
-    const pointType = (node.data as { point_type?: string } | undefined)?.point_type
-    if (!isPointType(meta, pointType)) {
+    const point = (node.data as { point?: unknown } | undefined)?.point
+    if (!isPointRef(point)) {
       issues.push({ nodeId: node.id, message: 'Capture needs a point selected' })
     }
   }
@@ -143,14 +170,16 @@ export function validateFunctionalTest(
     }
 
     if (node.type === 'wait_until') {
-      if (!isPointType(meta, data.point_type)) {
+      if (!isPointRef(data.point)) {
         issues.push({ nodeId: node.id, message: 'Wait Until needs a point selected' })
       }
       if (!OPERATORS.has(data.operator as string)) {
         issues.push({ nodeId: node.id, message: 'Wait Until needs an operator' })
       }
-      if (data.value === undefined || data.value === null || data.value === '') {
-        issues.push({ nodeId: node.id, message: 'Wait Until needs a value to compare against' })
+      issues.push(...operandIssues(node.id, 'Wait Until value', data.value, seenVariableNames))
+      issues.push(...toleranceIssues(node.id, 'Wait Until', data.operator, data.tolerance))
+      if (data.stable_for_seconds !== undefined && (typeof data.stable_for_seconds !== 'number' || data.stable_for_seconds < 0)) {
+        issues.push({ nodeId: node.id, message: 'Wait Until "stable for" must be a non-negative number of seconds' })
       }
       if (typeof data.timeout_seconds !== 'number' || data.timeout_seconds <= 0) {
         issues.push({ nodeId: node.id, message: 'Wait Until needs a timeout' })
@@ -162,8 +191,21 @@ export function validateFunctionalTest(
         issues.push({ nodeId: node.id, message: `${node.type === 'verify' ? 'Verify' : 'Compare'} needs an operator` })
       }
       const label = node.type === 'verify' ? 'Verify' : 'Compare'
-      issues.push(...operandIssues(meta, node.id, `${label} left side`, data.left, seenVariableNames))
-      issues.push(...operandIssues(meta, node.id, `${label} right side`, data.right, seenVariableNames))
+      issues.push(...operandIssues(node.id, `${label} left side`, data.left, seenVariableNames))
+      issues.push(...operandIssues(node.id, `${label} right side`, data.right, seenVariableNames))
+      issues.push(...toleranceIssues(node.id, label, data.operator, data.tolerance))
+    }
+
+    if (node.type === 'set') {
+      if (!isPointRef(data.point)) {
+        issues.push({ nodeId: node.id, message: 'Set needs a point selected' })
+      }
+      if (data.value === undefined || data.value === null || data.value === '') {
+        issues.push({ nodeId: node.id, message: 'Set needs a value to write' })
+      }
+      if (data.priority !== undefined && (typeof data.priority !== 'number' || data.priority < 1 || data.priority > 16)) {
+        issues.push({ nodeId: node.id, message: 'Set priority must be between 1 and 16' })
+      }
     }
 
     if (node.type === 'end') {

@@ -8,8 +8,9 @@ from dataclasses import asdict
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from ...core.config import BINARY_TYPES, MULTISTATE_TYPES
 from ...integrations.azure_openai import AzureStructuredClient
 from ...simulation.mapping_ai_suggestions import suggest_point_for_variable_via_ai
 from ...simulation.mapping_suggestions import (
@@ -81,6 +82,57 @@ class SimulationModelMappingPayload(BaseModel):
     source: Literal["point"] = "point"
 
 
+class SimulationModelAggregateMappingPayload(BaseModel):
+    """An FMU input driven by an operation ("max" or "weighted_average")
+    over several BACnet points, instead of exactly one point or a constant.
+    direction/operation are Literal so "direction must be input" and
+    "unsupported operation" are enforced structurally by Pydantic -- no
+    manual check needed, same as SimulationModelMappingPayload.direction
+    already does for point/output.
+
+    weight_point_ids is positionally parallel to point_ids (index i's
+    weight is weight_point_ids[i]) and is required -- every entry present,
+    same length as point_ids -- iff operation == "weighted_average"; it
+    must be omitted/None for "max" (and any future non-weighted
+    operation). This structurally blocks saving a Weighted Average
+    configuration with a missing weight mapping (task requirement), the
+    same way point_ids' own min_length=1 already structurally blocks an
+    empty aggregate -- both are enforced unconditionally, whether the
+    model is being saved as a draft or applied, mirroring the existing
+    point_ids convention rather than only checking on "apply". Each
+    weight_point_id is itself validated against the database (exists,
+    simulated device, numeric type) in _validate_mapping_contract below,
+    the same way point_ids' own points already are."""
+    variable: str = Field(min_length=1)
+    direction: Literal["input"] = "input"
+    operation: Literal["max", "weighted_average"] = "max"
+    point_ids: list[int] = Field(min_length=1)
+    weight_point_ids: list[int] | None = None
+
+    @field_validator("point_ids")
+    @classmethod
+    def _no_duplicate_points(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != len(value):
+            raise ValueError("Aggregate point_ids must not contain duplicates")
+        return value
+
+    @model_validator(mode="after")
+    def _weight_point_ids_match_operation(self) -> "SimulationModelAggregateMappingPayload":
+        if self.operation == "weighted_average":
+            if self.weight_point_ids is None or len(self.weight_point_ids) != len(self.point_ids):
+                raise ValueError(
+                    f"Weighted Average aggregate {self.variable!r} requires exactly "
+                    f"one weight point per value point ({len(self.point_ids)} value "
+                    f"point(s), {len(self.weight_point_ids or [])} weight point(s))"
+                )
+        elif self.weight_point_ids is not None:
+            raise ValueError(
+                f"weight_point_ids is only valid for operation='weighted_average', "
+                f"not {self.operation!r} (variable {self.variable!r})"
+            )
+        return self
+
+
 class SimulationModelPayload(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     provider_type: Literal["fmu", "learned"] = "fmu"
@@ -93,6 +145,9 @@ class SimulationModelPayload(BaseModel):
     created_from_device_id: int | None = None
 
     mappings: list[SimulationModelMappingPayload] = Field(
+        default_factory=list
+    )
+    aggregate_mappings: list[SimulationModelAggregateMappingPayload] = Field(
         default_factory=list
     )
 
@@ -128,6 +183,14 @@ class MappingSuggestionAiRequest(BaseModel):
     current_model_id: int | None = None
 
 
+class VariableCandidatesRequest(BaseModel):
+    model_type: str = Field(min_length=1)
+    variable: str = Field(min_length=1)
+    created_from_device_id: int | None = None
+    current_model_id: int | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
@@ -147,8 +210,34 @@ def _mapping_dicts(
         if not (
             payload.provider_type == "fmu"
             and mapping.direction == "input"
-            and input_sources.get(mapping.variable) == "constant"
+            and input_sources.get(mapping.variable) in ("constant", "aggregate")
         )
+    ]
+
+
+def _aggregate_mapping_dicts(
+    payload: SimulationModelPayload,
+) -> list[dict[str, Any]]:
+    """Mirrors _mapping_dicts: builds the persistence-ready dict shape from
+    payload.aggregate_mappings, filtered to variables input_sources
+    currently marks "aggregate" (same filter-at-serialization-boundary
+    philosophy as the constant/point split above)."""
+    if payload.provider_type != "fmu":
+        return []
+    parameters = payload.parameters if isinstance(payload.parameters, dict) else {}
+    input_sources = parameters.get("input_sources") or {}
+    return [
+        {
+            "variable": aggregate.variable,
+            "direction": aggregate.direction,
+            "operation": aggregate.operation,
+            "point_ids": list(aggregate.point_ids),
+            "weight_point_ids": (
+                list(aggregate.weight_point_ids) if aggregate.weight_point_ids is not None else None
+            ),
+        }
+        for aggregate in payload.aggregate_mappings
+        if input_sources.get(aggregate.variable) == "aggregate"
     ]
 
 
@@ -180,18 +269,23 @@ def _normalized_parameters(
         for mapping in payload.mappings
         if mapping.direction == "input"
     }
+    aggregate_mapped_inputs = {
+        aggregate.variable for aggregate in payload.aggregate_mappings
+    }
     input_sources: dict[str, str] = {}
     for name in input_names:
         explicit_source = raw_sources.get(name)
         if explicit_source is not None:
-            if explicit_source not in ("constant", "point"):
+            if explicit_source not in ("constant", "point", "aggregate"):
                 raise HTTPException(
                     status_code=422,
                     detail=f"Invalid FMU input source for {name!r}: {explicit_source!r}",
                 )
             input_sources[name] = str(explicit_source)
-        elif name in input_defaults and name not in mapped_inputs:
+        elif name in input_defaults and name not in mapped_inputs and name not in aggregate_mapped_inputs:
             input_sources[name] = "constant"
+        elif name in aggregate_mapped_inputs:
+            input_sources[name] = "aggregate"
         elif name in mapped_inputs:
             input_sources[name] = "point"
         else:
@@ -234,6 +328,86 @@ def _point_detail(point: dict[str, Any], device: dict[str, Any]) -> dict[str, An
         "object_type": point.get("object_type"),
         "object_instance": point.get("object_instance"),
     }
+
+
+_AGGREGATE_OPERATION_LABELS = {"max": "Maximum", "weighted_average": "Weighted Average"}
+
+
+def _validate_aggregate_source_point(
+    database: Any,
+    *,
+    point_id: int,
+    role: str,
+    operation: str,
+    variable_name: str,
+    variable: Any,
+) -> None:
+    """Validates one aggregate source point (a value point, or a
+    weighted_average weight point) against the database: exists, belongs to
+    a simulated device, and is numeric (analog) -- the exact three checks
+    the original Maximum-only validation loop already did for value points,
+    now shared so weight points get the identical treatment rather than a
+    second hand-copied block. `role` distinguishes the two in error
+    messages ("value point" / "weight point") without changing the
+    Maximum-only wording that existing tests already assert on."""
+    point = database.get_object(point_id)
+    if point is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Point {point_id} does not exist",
+        )
+
+    device = database.get_device(int(point["device_id"]))
+    if device is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Point {point_id} belongs to a missing device",
+        )
+
+    op_label = _AGGREGATE_OPERATION_LABELS.get(operation, operation)
+    aggregate_label = f"{op_label} aggregate" if role == "value point" else f"{op_label} aggregate weight point"
+
+    if device.get("source_type", "simulated") != "simulated":
+        point_label = _format_point_label(point, device)
+        variable_label = _format_variable_label(variable)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    f"{variable_label} ({aggregate_label}) is mapped to "
+                    f"{point_label}, which belongs to an external "
+                    "device. Simulation-model mappings currently "
+                    "require simulated points."
+                ),
+                "variable": {
+                    "name": variable_name,
+                    "label": getattr(variable, "label", None),
+                    "direction": "input",
+                },
+                "point": _point_detail(point, device),
+            },
+        )
+
+    if point.get("object_type") in (BINARY_TYPES | MULTISTATE_TYPES):
+        point_label = _format_point_label(point, device)
+        variable_label = _format_variable_label(variable)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    f"{variable_label} ({aggregate_label}) cannot use "
+                    f"{point_label}: aggregate {role}s must be "
+                    f"numeric (analog) points, not "
+                    f"{point.get('object_type')!r}."
+                ),
+                "variable": {
+                    "name": variable_name,
+                    "label": getattr(variable, "label", None),
+                    "direction": "input",
+                },
+                "point": _point_detail(point, device),
+            },
+        )
 
 
 def _format_variable_label(variable: Any) -> str:
@@ -294,6 +468,28 @@ def _validate_mapping_contract(
 ) -> None:
     if payload.provider_type == "learned":
         return
+
+    # A variable declared in BOTH raw lists is a structural conflict, not
+    # the harmless single-list staleness the constant/point filters above
+    # tolerate (that's the SAME list carrying a stale entry for a variable
+    # now sourced differently). Two different top-level lists both
+    # claiming a variable can only come from a UI bug or a hand-crafted
+    # payload -- the frontend's own buildPayload never sends both for one
+    # variable -- so this is rejected outright, checked before either list
+    # gets filtered down to "effective" entries.
+    point_mapped_inputs = {
+        mapping.variable for mapping in payload.mappings if mapping.direction == "input"
+    }
+    aggregate_mapped = {aggregate.variable for aggregate in payload.aggregate_mappings}
+    conflicting = sorted(point_mapped_inputs & aggregate_mapped)
+    if conflicting:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Duplicate mapping for input:{conflicting[0]}: both a Point "
+                "mapping and an Aggregate mapping were provided"
+            ),
+        )
 
     definition = _runtime_definition(database, payload.model_type)
     variable_defs = {
@@ -386,6 +582,54 @@ def _validate_mapping_contract(
                     },
                 )
 
+    effective_aggregates = _aggregate_mapping_dicts(payload)
+
+    for aggregate in effective_aggregates:
+        key = (aggregate["variable"], "input")
+
+        if key not in variable_defs:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{aggregate['variable']!r} is not a declared input for "
+                    f"model {payload.model_type!r}"
+                ),
+            )
+        variable = variable_defs[key]
+
+        if key in seen:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Duplicate mapping for input:{aggregate['variable']}",
+            )
+        seen.add(key)
+
+        weight_point_ids = aggregate.get("weight_point_ids") or [None] * len(aggregate["point_ids"])
+        for point_id, weight_point_id in zip(aggregate["point_ids"], weight_point_ids):
+            _validate_aggregate_source_point(
+                database,
+                point_id=point_id,
+                role="value point",
+                operation=aggregate["operation"],
+                variable_name=aggregate["variable"],
+                variable=variable,
+            )
+            # weight_point_id is None only for a non-weighted operation --
+            # SimulationModelAggregateMappingPayload's own model_validator
+            # already guarantees every value point has a real weight point
+            # id for operation="weighted_average" before this code runs.
+            if weight_point_id is not None:
+                _validate_aggregate_source_point(
+                    database,
+                    point_id=weight_point_id,
+                    role="weight point",
+                    operation=aggregate["operation"],
+                    variable_name=aggregate["variable"],
+                    variable=variable,
+                )
+        # No output-ownership check -- aggregates are direction="input"
+        # only (structurally enforced by SimulationModelAggregateMappingPayload).
+
     required = {
         (variable.name, variable.direction)
         for variable in definition.variables
@@ -398,7 +642,9 @@ def _validate_mapping_contract(
                 required.discard((variable.name, variable.direction))
     missing = sorted(required - seen)
 
-    if missing:
+    # Disabled models are saved drafts: validate any mappings the caller did
+    # provide, but do not require the full runtime contract until activation.
+    if missing and payload.enabled:
         raise HTTPException(
             status_code=422,
             detail={
@@ -724,6 +970,53 @@ async def simulation_mapping_suggestion_ai(
     }
 
 
+@router.post("/simulation/models/variable-candidates")
+async def simulation_variable_candidates(
+    payload: VariableCandidatesRequest,
+    request: Request,
+):
+    """Read-only ranked shortlist for ONE variable, reusing the exact same
+    discovery/scoring path as Auto Map (mapping_suggestions.build_shortlist)
+    -- used by the Aggregate multi-select picker to sort compatible points
+    by mapping_hints/suggested_point_types relevance instead of duplicating
+    that scoring logic client-side (the equipment_scope="downstream"
+    topology traversal needs server-side access to the semantic-relationship
+    graph, which the frontend has no client-side equivalent for). Never
+    mutates anything."""
+    database = get_database(request)
+
+    definition = _runtime_definition(database, payload.model_type)
+
+    variable = next(
+        (v for v in definition.variables if v.name == payload.variable),
+        None,
+    )
+    if variable is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{payload.variable!r} is not a declared variable for "
+                f"model {payload.model_type!r}"
+            ),
+        )
+
+    candidates, scope_used, related_name = await asyncio.to_thread(
+        build_shortlist,
+        variable,
+        payload.created_from_device_id,
+        database,
+        limit=payload.limit,
+        excluding_model_id=payload.current_model_id,
+    )
+
+    return {
+        "variable": variable.name,
+        "candidates": [asdict(c) for c in candidates],
+        "equipment_scope_used": scope_used,
+        "related_equipment_name": related_name,
+    }
+
+
 def _list_simulation_point_options(database: Any) -> list[dict[str, Any]]:
     with database._conn() as conn:
         rows = conn.execute(
@@ -839,6 +1132,7 @@ async def add_simulation_model(
             parameters=payload.parameters,
             created_from_device_id=payload.created_from_device_id,
             mappings=_mapping_dicts(payload),
+            aggregate_mappings=_aggregate_mapping_dicts(payload),
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
@@ -854,6 +1148,14 @@ async def add_simulation_model(
             reload_model(database, engine, int(model["id"]))
         except Exception as exc:
             # Persisted config is retained so the user can correct it.
+            log.exception(
+                "Simulation model activation failed: model_id=%s name=%s "
+                "provider_type=%s model_type=%s",
+                model["id"],
+                model.get("name"),
+                model.get("provider_type"),
+                model.get("model_type"),
+            )
             raise HTTPException(
                 status_code=422,
                 detail={
@@ -919,6 +1221,7 @@ async def edit_simulation_model(
             parameters=payload.parameters,
             created_from_device_id=payload.created_from_device_id,
             mappings=_mapping_dicts(payload),
+            aggregate_mappings=_aggregate_mapping_dicts(payload),
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
@@ -942,6 +1245,14 @@ async def edit_simulation_model(
         try:
             reload_model(database, engine, model_id)
         except Exception as exc:
+            log.exception(
+                "Simulation model activation failed: model_id=%s name=%s "
+                "provider_type=%s model_type=%s",
+                model["id"],
+                model.get("name"),
+                model.get("provider_type"),
+                model.get("model_type"),
+            )
             raise HTTPException(
                 status_code=422,
                 detail={

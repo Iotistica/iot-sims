@@ -14,7 +14,7 @@ from ...bacnet.schemas import (
     SetValueRequest,
 )
 from ...core.config import COMMANDABLE_TYPES
-from ...simulation.model_store import get_output_owners_by_point
+from ...simulation.model_store import get_aggregate_membership_owner, get_output_owners_by_point
 from ..guards import reject_external_device, reject_external_object_source_mutation
 
 
@@ -377,6 +377,21 @@ async def delete_object(
         device_id,
         object_id,
     )
+
+    aggregate_owner = await asyncio.to_thread(get_aggregate_membership_owner, database, object_id)
+    if aggregate_owner is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Point {obj['name']!r} is a source member of the "
+                    f"{aggregate_owner['variable']!r} aggregate mapping on "
+                    f"simulation model {aggregate_owner['model_name']!r}. "
+                    "Remove it from the aggregate first."
+                ),
+                "owner": aggregate_owner,
+            },
+        )
 
     log_event(
         request,

@@ -5,7 +5,7 @@ import {
   DownloadOutlined, EditOutlined, EllipsisOutlined, FolderAddOutlined,
   FolderOutlined, LineChartOutlined, PlusOutlined, SearchOutlined,
   AlertOutlined, CalendarOutlined, DownOutlined, ScheduleOutlined, ThunderboltOutlined,
-  ExperimentOutlined, ClusterOutlined, UploadOutlined,
+  ExperimentOutlined, ClusterOutlined, UploadOutlined, ApartmentOutlined,
 } from '@ant-design/icons-vue'
 import type { BACnetDiscoveryConnection, Device, Equipment, Location, Meta } from '../types'
 import { buildLocationTreeOptions, flattenLocationTree } from '../locationTree'
@@ -155,6 +155,23 @@ const selectedTreeKeys = computed<string[]>(() => {
   if (props.selectedEquipment) return ['equipment-' + props.selectedEquipment.id]
   return []
 })
+const expandableTreeKeys = computed<string[]>(() => {
+  const keys: string[] = []
+  const walk = (nodes: SidebarTreeNode[]) => {
+    for (const node of nodes) {
+      if (node.children?.length) {
+        keys.push(node.key)
+        walk(node.children)
+      }
+    }
+  }
+  walk(sidebarTree.value)
+  return keys
+})
+const isTreeFullyExpanded = computed(() =>
+  expandableTreeKeys.value.length > 0 &&
+  expandableTreeKeys.value.every(key => expandedKeys.value.includes(key))
+)
 
 const equipmentTypeLabel = computed(() => {
   const map: Record<string,string> = {}
@@ -209,6 +226,30 @@ function deviceHealthTitle(device: Device): string {
     : `External device stale; last seen ${seen}`
 }
 
+function simulationProviderLabel(device: Device): string | null {
+  const provider = device.active_simulation_model?.provider_type
+  if (!provider) return null
+  if (provider === 'fmu') return 'FMU'
+  if (provider === 'learned') return 'Learned'
+  return provider
+}
+
+function simulationProviderColor(device: Device): string {
+  const provider = device.active_simulation_model?.provider_type
+  if (provider === 'fmu') return 'purple'
+  if (provider === 'learned') return 'cyan'
+  return 'default'
+}
+
+function simulationProviderTitle(device: Device): string {
+  const model = device.active_simulation_model
+  if (!model) return ''
+  const suffix = model.model_count && model.model_count > 1
+    ? ` plus ${model.model_count - 1} more`
+    : ''
+  return `${model.name} (${model.model_type})${suffix}`
+}
+
 onMounted(() => {
   healthClock = setInterval(() => { now.value = Date.now() }, 30_000)
 })
@@ -247,11 +288,18 @@ const openCalendars = (d: Device) => emit('calendars', d)
 const openEnergyModel = (d: Device) => emit('energy-model', d)
 const openSimulationModel = (d: Device) => emit('simulation-model', d)
 const viewTraffic = (d: Device) => emit('view-traffic', d)
+const toggleTreeExpansion = () => {
+  expandedKeys.value = isTreeFullyExpanded.value ? [] : expandableTreeKeys.value
+}
 </script>
 
 <template>
         <!-- Sidebar: devices -->
-        <a-layout-sider :width="width" style="background:var(--surface);border-right:1px solid var(--border);overflow:auto">
+        <a-layout-sider
+          class="inventory-sider"
+          :width="width"
+          style="background:var(--surface);border-right:1px solid var(--border)"
+        >
           <div style="padding:10px 12px 10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
             <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px">Items ({{ sidebarRawCount }})</span>
             <a-space :size="4">
@@ -321,24 +369,41 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
               <template #prefix><SearchOutlined style="color:var(--text-placeholder)" /></template>
             </a-input>
           </div>
-
-          <div v-if="!sidebarRawCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
-            Nothing here yet — use "+ Add" to create a Location, Equipment, or Controller
-          </div>
-          <div v-else-if="!sidebarFilteredCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
-            No devices match "{{ deviceSearch }}"
-          </div>
-
-          <a-tree
-            v-else
-            v-model:expanded-keys="expandedKeys"
-            :tree-data="sidebarTree"
-            :selected-keys="selectedTreeKeys"
-            :field-names="{ children: 'children', title: 'key', key: 'key' }"
-            block-node
-            style="padding:6px 4px"
-            @select="onTreeSelect"
+          <div
+            v-if="sidebarRawCount"
+            style="height:32px;padding:4px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:flex-start"
           >
+            <a-button
+              size="small"
+              :type="isTreeFullyExpanded ? 'primary' : 'text'"
+              :ghost="isTreeFullyExpanded"
+              :title="isTreeFullyExpanded ? 'Collapse tree' : 'Expand tree'"
+              @click="toggleTreeExpansion"
+            >
+              <template #icon><ApartmentOutlined /></template>
+            </a-button>
+          </div>
+
+          <div class="sidebar-tree-pane">
+            <div v-if="!sidebarRawCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
+              Nothing here yet — use "+ Add" to create a Location, Equipment, or Controller
+            </div>
+            <div v-else-if="!sidebarFilteredCount" style="padding:24px 16px;color:var(--text-placeholder);text-align:center;font-size:13px">
+              No devices match "{{ deviceSearch }}"
+            </div>
+
+            <a-tree
+              v-else
+              class="sidebar-tree"
+              v-model:expanded-keys="expandedKeys"
+              :tree-data="sidebarTree"
+              :selected-keys="selectedTreeKeys"
+              :field-names="{ children: 'children', title: 'key', key: 'key' }"
+              :show-line="{ showLeafIcon: false }"
+              block-node
+              style="padding:6px 4px"
+              @select="onTreeSelect"
+            >
             <template #title="node">
               <!-- Location row -->
               <div v-if="node.kind === 'location'" style="display:flex;align-items:center;gap:6px;padding:2px 0">
@@ -454,6 +519,11 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
                     <span style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</span>
                     <a-tag v-if="node.device.simulation_mode !== 'mirror'" color="green" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
                     <a-tag v-if="node.device.simulation_mode === 'mirror'" color="blue" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Twin</a-tag>
+                    <a-tooltip v-if="simulationProviderLabel(node.device)" :title="simulationProviderTitle(node.device)">
+                      <a-tag :color="simulationProviderColor(node.device)" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">
+                        {{ simulationProviderLabel(node.device) }}
+                      </a-tag>
+                    </a-tooltip>
                   </div>
                   <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-secondary)">
                     <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
@@ -514,6 +584,41 @@ const viewTraffic = (d: Device) => emit('view-traffic', d)
                 </a-space>
               </div>
             </template>
-          </a-tree>
+            </a-tree>
+          </div>
         </a-layout-sider>
 </template>
+
+<style scoped>
+.inventory-sider {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.inventory-sider :deep(.ant-layout-sider-children) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-tree-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #141414;
+}
+
+.sidebar-tree {
+  background: transparent;
+}
+
+.sidebar-tree :deep(.ant-tree-indent-unit::before) {
+  border-color: var(--border);
+}
+
+.sidebar-tree :deep(.ant-tree-switcher-leaf-line::before),
+.sidebar-tree :deep(.ant-tree-switcher-leaf-line::after) {
+  border-color: var(--border);
+}
+</style>

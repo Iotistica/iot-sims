@@ -13,10 +13,17 @@ def _definition():
         "nodes": [
             {"id": "start", "type": "start", "params": {}},
             {"id": "wait-run", "type": "wait_until", "params": {
-                "point_type": "Run_Status", "operator": "eq", "value": True, "timeout_seconds": 600,
+                "point": {"device_id": 1, "object_id": 1}, "operator": "eq",
+                "value": {"kind": "constant", "value": True}, "timeout_seconds": 600,
             }},
             {"id": "capture-lwt", "type": "capture", "params": {
-                "point_type": "Leaving_Hot_Water_Temperature_Sensor", "variable": "lwt",
+                "point": {"device_id": 1, "object_id": 2}, "variable": "lwt",
+            }},
+            # Included specifically to prove the new "set" node type
+            # survives a full save/reload cycle, not just the pre-existing
+            # node types.
+            {"id": "set-run", "type": "set", "params": {
+                "point": {"device_id": 1, "object_id": 3}, "value": "OFF", "priority": 8,
             }},
             {"id": "verify-lwt", "type": "verify", "params": {
                 "left": {"kind": "variable", "name": "lwt"},
@@ -29,7 +36,8 @@ def _definition():
         "edges": [
             {"source": "start", "target": "wait-run", "source_handle": None},
             {"source": "wait-run", "target": "capture-lwt", "source_handle": None},
-            {"source": "capture-lwt", "target": "verify-lwt", "source_handle": None},
+            {"source": "capture-lwt", "target": "set-run", "source_handle": None},
+            {"source": "set-run", "target": "verify-lwt", "source_handle": None},
             {"source": "verify-lwt", "target": "end-pass", "source_handle": "pass"},
             {"source": "verify-lwt", "target": "end-fail", "source_handle": "fail"},
         ],
@@ -37,6 +45,7 @@ def _definition():
             "start": {"x": 250, "y": 40},
             "wait-run": {"x": 220, "y": 160},
             "capture-lwt": {"x": 220, "y": 280},
+            "set-run": {"x": 220, "y": 340},
             "verify-lwt": {"x": 220, "y": 400},
             "end-pass": {"x": 120, "y": 520},
             "end-fail": {"x": 320, "y": 520},
