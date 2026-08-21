@@ -57,7 +57,7 @@ def ensure_simulation_model_schema(database: Any) -> None:
                 ON simulation_model_mappings(point_id)
                 WHERE direction='output';
 
-            -- An FMU input driven by an operation ("max" or
+            -- An FMU input driven by an operation ("max", "min", or
             -- "weighted_average") over several BACnet points' live values,
             -- rather than exactly one point or a constant. Kept as separate
             -- tables (rather than widening simulation_model_mappings.point_id
@@ -65,7 +65,7 @@ def ensure_simulation_model_schema(database: Any) -> None:
             -- -- changing that would need SQLite's risky rename/rebuild
             -- migration path. `operation` has no CHECK constraint: its
             -- vocabulary is enforced at the Pydantic layer so adding
-            -- min/avg/sum later needs no schema change.
+            -- avg/sum later needs no schema change.
             CREATE TABLE IF NOT EXISTS simulation_model_aggregate_mappings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 model_config_id INTEGER NOT NULL
@@ -506,6 +506,31 @@ def get_active_simulation_models_by_device(database: Any) -> dict[int, dict]:
     return result
 
 
+def get_devices_with_disabled_simulation_model(database: Any) -> set[int]:
+    """
+    Return device ids whose explicit simulation model exists but is
+    currently disabled (stopped).
+
+    Used only to distinguish, in the admin UI's device badge, "device has
+    no explicit simulation model at all" from "device's simulation model
+    is configured but not running" -- devices with an *enabled* model are
+    already covered by get_active_simulation_models_by_device.
+    """
+    ensure_simulation_model_schema(database)
+    with database._conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT o.device_id
+            FROM simulation_model_configs c
+            JOIN simulation_model_mappings m ON m.model_config_id=c.id
+            JOIN objects o ON o.id=m.point_id
+        WHERE c.enabled=0 AND m.direction='output'
+            AND c.provider_type<>'system'
+            """
+        ).fetchall()
+    return {int(row["device_id"]) for row in rows}
+
+
 def get_output_owners_by_point(
     database: Any,
     point_ids: list[int] | set[int] | tuple[int, ...] | None = None,
@@ -599,6 +624,62 @@ def get_exposure_owners_by_point(
             }
             for row in rows
         }
+
+
+def reconcile_provider_owned_raw_behavior(database: Any) -> None:
+    """Relabel every currently provider (FMU/learned model)-owned point
+    still showing the legacy `behavior='constant'` default to the clearer
+    'raw' (see VALID_BEHAVIORS in src/core/config.py). The two mean exactly
+    the same thing for a provider-owned point -- a pure passthrough of the
+    live value; see SimEngine._apply_fmu_behavior -- so this only changes
+    what's displayed in the admin UI, never runtime behavior.
+
+    Called unconditionally from Database.setup() on every app boot -- NOT a
+    one-time schema_migrations-tracked migration. That's deliberate: a
+    point can become provider-owned at any time after the app first
+    started (a user maps a new output on an existing or new simulation
+    model), and a one-time historical fixup can never catch those going
+    forward. Re-running this on every boot means the very next restart
+    after mapping a new point relabels it too, with no per-mapping-
+    creation-code-path hook needed. Uses the exact same ownership filters
+    as get_output_owners_by_point/get_exposure_owners_by_point above, so a
+    point this leaves alone is never one that's actually provider-owned
+    today.
+
+    Deliberately does NOT call ensure_simulation_model_schema() -- that
+    would unconditionally CREATE the simulation_model_* tables on every
+    boot, even for a database that has never used a simulation model at
+    all, breaking the fresh-install-vs-migrated-upgrade schema symmetry
+    tests/test_db_migrations.py checks. Checking sqlite_master first keeps
+    "these tables only ever get created on first real use" intact; a
+    database that HAS used simulation models already has them, and one
+    that hasn't has nothing for this function to reconcile anyway.
+    """
+    with database._conn() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('simulation_model_mappings','simulation_model_configs','simulation_model_input_exposures')"
+            )
+        }
+        if len(tables) < 3:
+            return
+        conn.execute(
+            """
+            UPDATE objects SET behavior='raw'
+            WHERE behavior='constant' AND id IN (
+                SELECT m.point_id FROM simulation_model_mappings m
+                JOIN simulation_model_configs c ON c.id=m.model_config_id
+                WHERE c.enabled=1 AND m.direction='output' AND c.provider_type<>'system'
+                UNION
+                SELECT e.point_id FROM simulation_model_input_exposures e
+                JOIN simulation_model_configs c ON c.id=e.model_config_id
+                WHERE c.enabled=1 AND c.provider_type<>'system'
+            )
+            """
+        )
+        conn.commit()
 
 
 def _replace_mappings(
@@ -834,6 +915,29 @@ def update_simulation_model(
         _replace_input_exposures(conn, model_id, input_exposures or [])
         conn.commit()
 
+    return get_simulation_model(database, model_id)
+
+
+def set_simulation_model_enabled(database: Any, model_id: int, enabled: bool) -> dict | None:
+    """Flips ONLY the enabled column -- unlike update_simulation_model, never
+    touches simulation_model_mappings/simulation_model_aggregate_mappings/
+    simulation_model_input_exposures, so toggling this can never perturb a
+    model's saved configuration (the dedicated ON/OFF control in the
+    Simulation Model drawer's footer relies on this: "disabled" must mean
+    "not participating in SimEngine", never "mappings reset/lost"). Pairs
+    with model_runtime.reload_model, which already implements the correct
+    runtime lifecycle for either direction (unregister always, re-register
+    only if enabled) -- see src/api/routers/simulation.py's
+    PUT .../enabled route, which calls this then reload_model()."""
+    ensure_simulation_model_schema(database)
+    with database._conn() as conn:
+        cur = conn.execute(
+            "UPDATE simulation_model_configs SET enabled=?, updated_at=datetime('now') WHERE id=?",
+            (int(enabled), model_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
     return get_simulation_model(database, model_id)
 
 

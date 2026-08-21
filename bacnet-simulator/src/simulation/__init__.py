@@ -9,10 +9,12 @@ def __getattr__(name: str) -> Any:
     """
     Lazy compatibility exports.
 
-    Keep package initialization lightweight because src.legacy imports
-    src.simulation.providers while src.legacy itself is still initializing.
-    Eagerly importing .engine or .state here would re-enter src.legacy and
-    create a circular import.
+    Keep package initialization lightweight: src.db.database reaches this
+    package (via simulation.model_store -> simulation.models ->
+    simulation.providers) while it's still initializing itself. Eagerly
+    importing .engine or .state here -- both of which pull in
+    src.dependencies, which imports src.db -- would re-enter that partially
+    initialized chain and create a circular import.
     """
     if name == "SimEngine":
         from .engine import SimEngine

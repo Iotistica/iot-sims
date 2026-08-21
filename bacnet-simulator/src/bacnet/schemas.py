@@ -395,3 +395,61 @@ class FunctionalTestCreate(BaseModel):
 
 class FunctionalTestUpdate(FunctionalTestCreate):
     pass
+
+
+_CUSTOM_GRAPH_AXES = {"left", "right"}
+# Only legal value this iteration -- see CustomGraphModal's plan/comments
+# for why there's no real range selector yet (the /history endpoint has no
+# server-side range query behind it, only a ~1h ring buffer; a preset
+# picker would misrepresent what's actually available). Kept as a field,
+# not omitted, so a real range control has somewhere to go later without a
+# schema migration.
+_CUSTOM_GRAPH_TIME_RANGES = {"live"}
+
+
+def validate_custom_graph_definition(definition: dict) -> None:
+    if not isinstance(definition, dict):
+        raise ValueError("definition must be an object")
+
+    series = definition.get("series")
+    if not isinstance(series, list) or not series:
+        raise ValueError("definition.series must be a non-empty list")
+
+    seen: set[tuple[int, int]] = set()
+    for i, entry in enumerate(series):
+        if not isinstance(entry, dict):
+            raise ValueError(f"definition.series[{i}] must be an object")
+        device_id = entry.get("device_id")
+        object_id = entry.get("object_id")
+        if not isinstance(device_id, int) or isinstance(device_id, bool):
+            raise ValueError(f"definition.series[{i}].device_id must be an integer")
+        if not isinstance(object_id, int) or isinstance(object_id, bool):
+            raise ValueError(f"definition.series[{i}].object_id must be an integer")
+        key = (device_id, object_id)
+        if key in seen:
+            raise ValueError(f"definition.series[{i}] duplicates an already-listed point ({device_id}, {object_id})")
+        seen.add(key)
+        if not isinstance(entry.get("color"), str) or not entry["color"]:
+            raise ValueError(f"definition.series[{i}].color must be a non-empty string")
+        if entry.get("axis") not in _CUSTOM_GRAPH_AXES:
+            raise ValueError(f"definition.series[{i}].axis must be one of: {sorted(_CUSTOM_GRAPH_AXES)}")
+        if not isinstance(entry.get("visible"), bool):
+            raise ValueError(f"definition.series[{i}].visible must be a boolean")
+
+    if definition.get("time_range") not in _CUSTOM_GRAPH_TIME_RANGES:
+        raise ValueError(f"definition.time_range must be one of: {sorted(_CUSTOM_GRAPH_TIME_RANGES)}")
+
+
+class CustomGraphCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    definition: dict
+
+    def validate_definition(self) -> None:
+        try:
+            validate_custom_graph_definition(self.definition)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+
+class CustomGraphUpdate(CustomGraphCreate):
+    pass

@@ -1,16 +1,45 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { ClearOutlined, DownOutlined, UpOutlined } from '@ant-design/icons-vue'
-import type { LogEntry } from '../types'
+import type { Device, LogEntry } from '../types'
 import { api } from '../api'
+
+const props = defineProps<{ device?: Device | null }>()
+
+type FilterKey = 'all' | 'simulation' | 'changes' | 'errors'
+const FILTERS: { key: FilterKey; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'simulation', label: 'Simulation' },
+  { key: 'changes', label: 'Changes' },
+  { key: 'errors', label: 'Errors' },
+]
+const activeFilter = ref<FilterKey>('all')
 
 const entries = ref<LogEntry[]>([])
 const scrollEl = ref<HTMLElement | null>(null)
 const collapsed = ref(false)
 
+const filteredEntries = computed(() => {
+  switch (activeFilter.value) {
+    case 'simulation':
+      return entries.value.filter(e => e.category === 'simulation')
+    case 'changes':
+      return entries.value.filter(e => e.category !== 'simulation')
+    case 'errors':
+      return entries.value.filter(e => e.level === 'warn' || e.level === 'error')
+    default:
+      return entries.value
+  }
+})
+
 async function fetchLogs() {
+  const deviceId = props.device?.id
+  if (!deviceId) {
+    entries.value = []
+    return
+  }
   try {
-    entries.value = await api.logs(200)
+    entries.value = await api.devices.logs(deviceId, 200)
     if (!collapsed.value && scrollEl.value) {
       await new Promise(r => requestAnimationFrame(r))
       scrollEl.value.scrollTop = scrollEl.value.scrollHeight
@@ -18,12 +47,20 @@ async function fetchLogs() {
   } catch { /* swallow */ }
 }
 
+watch(() => props.device?.id, () => { fetchLogs() })
+
 function clearLogs() {
   entries.value = []
 }
 
 function fmtTime(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function badgeText(e: LogEntry): string {
+  if (e.level === 'warn') return 'WARN'
+  if (e.level === 'error') return 'ERROR'
+  return e.category === 'simulation' ? 'SIM' : 'INFO'
 }
 
 // ── Resize handle ─────────────────────────────────────────────────────────────
@@ -72,8 +109,18 @@ onUnmounted(() => {
       <div class="drag-grip" />
     </div>
     <div class="log-header" @click="collapsed = !collapsed">
-      <span class="log-title">Activity Log</span>
-      <div style="display:flex;align-items:center;gap:4px" @click.stop>
+      <span class="log-title">
+        Activity Log<template v-if="device"> — {{ device.name }}</template>
+      </span>
+      <div style="display:flex;align-items:center;gap:8px" @click.stop>
+        <a-radio-group
+          v-if="!collapsed && device"
+          v-model:value="activeFilter"
+          size="small"
+          button-style="solid"
+        >
+          <a-radio-button v-for="f in FILTERS" :key="f.key" :value="f.key">{{ f.label }}</a-radio-button>
+        </a-radio-group>
         <a-button type="text" size="small" title="Clear" style="color:#666" @click="clearLogs">
           <template #icon><ClearOutlined /></template>
         </a-button>
@@ -83,11 +130,11 @@ onUnmounted(() => {
       </div>
     </div>
     <div v-show="!collapsed" ref="scrollEl" class="log-body">
-      <div v-if="!entries.length" class="log-empty">No events yet</div>
-      <div v-for="(e, i) in entries" :key="i" class="log-row">
+      <div v-if="!device" class="log-empty">Select a controller to view its activity</div>
+      <div v-else-if="!filteredEntries.length" class="log-empty">No events yet</div>
+      <div v-for="(e, i) in filteredEntries" :key="i" class="log-row">
         <span class="log-ts">{{ fmtTime(e.ts) }}</span>
-        <span :class="['log-level', `log-level--${e.level}`]">{{ e.level.toUpperCase() }}</span>
-        <span v-if="e.device_name" class="log-device">{{ e.device_name }}</span>
+        <span :class="['log-level', `log-level--${e.level}`]">{{ badgeText(e) }}</span>
         <span class="log-msg">{{ e.message }}</span>
       </div>
     </div>
@@ -177,13 +224,5 @@ onUnmounted(() => {
 .log-level--info  { color: #58a6ff; background: rgba(88,166,255,.12); }
 .log-level--warn  { color: #e3b341; background: rgba(227,179,65,.12); }
 .log-level--error { color: #f85149; background: rgba(248,81,73,.12); }
-.log-device {
-  color: #7ee787;
-  background: rgba(126,231,135,.1);
-  border-radius: 3px;
-  padding: 0 4px;
-  font-size: 10px;
-  white-space: nowrap;
-}
 .log-msg { color: #cdd9e5; word-break: break-word; }
 </style>

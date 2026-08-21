@@ -31,4 +31,4 @@ ENV DATA_DIR=/data
 ENV SIM_API_PORT=47900
 ENV BACNET_PORT=47808
 
-CMD ["python", "-u", "-m", "src.legacy"]
+CMD ["python", "-u", "-m", "src.main"]

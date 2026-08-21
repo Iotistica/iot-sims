@@ -69,7 +69,39 @@ const emit = defineEmits<{
   'energy-model': [device: Device]
   'simulation-model': [device: Device]
   'view-traffic': [device: Device]
+  'update:width': [value: number]
 }>()
+
+// ─── Sidebar resize ─────────────────────────────────────────────────────
+// Width itself is owned by the parent (v-model:width, same pattern as
+// search/expandedKeys above) -- this component only owns the drag
+// gesture and emits the live value as the pointer moves, so the parent
+// can persist it (e.g. to localStorage) however it likes.
+const MIN_SIDEBAR_WIDTH = 220
+const MAX_SIDEBAR_WIDTH = 560
+const resizingSidebar = ref(false)
+
+function startSidebarResize(event: MouseEvent) {
+  const startX = event.clientX
+  const startWidth = props.width
+  resizingSidebar.value = true
+
+  function onMouseMove(moveEvent: MouseEvent) {
+    const next = Math.min(
+      MAX_SIDEBAR_WIDTH,
+      Math.max(MIN_SIDEBAR_WIDTH, startWidth + (moveEvent.clientX - startX)),
+    )
+    emit('update:width', next)
+  }
+  function onMouseUp() {
+    resizingSidebar.value = false
+    window.removeEventListener('mousemove', onMouseMove)
+    window.removeEventListener('mouseup', onMouseUp)
+  }
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
+  event.preventDefault()
+}
 
 const deviceSearch = computed({
   get: () => props.search,
@@ -208,7 +240,9 @@ function formatRelativeAge(ageMs: number): string {
 
 function deviceHealthStatus(device: Device): 'success' | 'warning' | 'default' {
   if (!device.enabled) return 'default'
-  if (device.source_type !== 'external-bacnet') return 'success'
+  if (device.source_type !== 'external-bacnet') {
+    return device.simulation_model_stopped ? 'default' : 'success'
+  }
   const lastSeen = externalLastSeenMs(device)
   if (lastSeen === null) return 'default'
   return now.value - lastSeen <= EXTERNAL_HEALTH_STALE_MS ? 'success' : 'warning'
@@ -216,7 +250,9 @@ function deviceHealthStatus(device: Device): 'success' | 'warning' | 'default' {
 
 function deviceHealthTitle(device: Device): string {
   if (!device.enabled) return 'Device disabled'
-  if (device.source_type !== 'external-bacnet') return 'Simulation enabled'
+  if (device.source_type !== 'external-bacnet') {
+    return device.simulation_model_stopped ? 'Simulation stopped — model disabled' : 'Simulation enabled'
+  }
   const lastSeen = externalLastSeenMs(device)
   if (lastSeen === null) return 'External device has not been seen yet'
   const age = now.value - lastSeen
@@ -517,7 +553,10 @@ const toggleTreeExpansion = () => {
                 <div style="flex:1;min-width:0">
                   <div style="display:flex;align-items:center;gap:4px;overflow:hidden">
                     <span style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</span>
-                    <a-tag v-if="node.device.simulation_mode !== 'mirror'" color="green" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
+                    <a-tooltip v-if="node.device.simulation_mode !== 'mirror' && node.device.simulation_model_stopped" title="Simulation stopped — model disabled">
+                      <a-tag color="default" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
+                    </a-tooltip>
+                    <a-tag v-else-if="node.device.simulation_mode !== 'mirror'" color="green" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
                     <a-tag v-if="node.device.simulation_mode === 'mirror'" color="blue" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Twin</a-tag>
                     <a-tooltip v-if="simulationProviderLabel(node.device)" :title="simulationProviderTitle(node.device)">
                       <a-tag :color="simulationProviderColor(node.device)" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">
@@ -587,6 +626,12 @@ const toggleTreeExpansion = () => {
             </a-tree>
           </div>
         </a-layout-sider>
+        <div
+          class="sidebar-resize-handle"
+          :class="{ 'is-resizing': resizingSidebar }"
+          title="Drag to resize"
+          @mousedown="startSidebarResize"
+        ></div>
 </template>
 
 <style scoped>
@@ -620,5 +665,30 @@ const toggleTreeExpansion = () => {
 .sidebar-tree :deep(.ant-tree-switcher-leaf-line::before),
 .sidebar-tree :deep(.ant-tree-switcher-leaf-line::after) {
   border-color: var(--border);
+}
+
+.sidebar-resize-handle {
+  flex-shrink: 0;
+  width: 5px;
+  margin-left: -3px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 1;
+}
+
+.sidebar-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: transparent;
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle.is-resizing::after {
+  background: #1890ff;
 }
 </style>

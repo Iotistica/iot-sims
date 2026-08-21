@@ -188,7 +188,7 @@ def _log_detail(point_cache: dict, log_event: Optional[LogFn], test_name: str, e
 
     label = f"{node_type.upper()} {point_name}" if point_name else node_type.upper()
     text = f'Functional Test "{test_name}": {label} — {message}' if message else f'Functional Test "{test_name}": {label}'
-    level = "warning" if entry.get("outcome") in ("fail", "error") else "info"
+    level = "warn" if entry.get("outcome") in ("fail", "error") else "info"
 
     for device_id in device_ids:
         log_event(device_id, level, text)

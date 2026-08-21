@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.legacy import Database
+from src.db import Database
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

@@ -51,7 +51,17 @@ VALID_RELIABILITY = {
 # object_type is binary-input or binary-output.
 VALID_POLARITY = {"normal", "reverse"}
 
-VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault"}
+VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault", "raw"}
+# "raw" is only meaningful for a provider (FMU/learned model)-owned point --
+# an explicit, clearly-named way to reset out of whatever Behavior is
+# currently configured, back to just following the model's live raw output
+# (see SimEngine._apply_fmu_behavior). Functionally identical to "constant"
+# there (both pass the raw value through untouched), but far more
+# discoverable than relying on a user to already know "constant" happens to
+# mean "no transformation" for an FMU point. Not offered in the UI for a
+# normal (non-provider-owned) point, since it has no meaning there; if ever
+# stored on one anyway, make_behavior()'s unrecognized-type fallback treats
+# it as an inert constant(0), same as any other unknown string.
 
 VALID_SEGMENTATION = {"segmented-both", "segmented-transmit", "segmented-receive", "no-segmentation"}
 

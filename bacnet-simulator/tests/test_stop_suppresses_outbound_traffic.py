@@ -3,7 +3,7 @@ the simulator must stop RESPONDING on the network -- no outbound BACnet
 traffic at all -- while still being allowed to receive (a real paused/
 stopped controller can't stop other devices broadcasting Who-Is at it,
 it just doesn't answer). See install_bacpypes_packet_capture_hooks() in
-src/legacy.py, which is the single choke point every outbound byte
+src/bacnet/app.py, which is the single choke point every outbound byte
 passes through regardless of what generated it. Pause and Stop still
 differ elsewhere (Stop rewinds elapsed_seconds/time_of_day to 0, Pause
 leaves them in place so Resume picks up without losing simulated time)
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from src import legacy
+from src.bacnet import app as bacnet_app
 
 
 class _FakePDU:
@@ -32,7 +32,7 @@ class _FakePDU:
 
 @pytest.mark.asyncio
 async def test_outbound_suppressed_while_paused_or_stopped():
-    assert not legacy._bacpypes_capture_hooks_installed, (
+    assert not bacnet_app._bacpypes_capture_hooks_installed, (
         "hook already installed by another test -- this test must be the "
         "sole installer to control get_clock_state; see module docstring"
     )
@@ -40,18 +40,18 @@ async def test_outbound_suppressed_while_paused_or_stopped():
     state = {"clock_state": "running"}
     sent: list[bytes] = []
 
-    original_indication = legacy.IPv4DatagramServer.indication
+    original_indication = bacnet_app.IPv4DatagramServer.indication
 
     async def fake_original_indication(transport_self, pdu):
         sent.append(bytes(pdu.pduData))
 
-    legacy.IPv4DatagramServer.indication = fake_original_indication
+    bacnet_app.IPv4DatagramServer.indication = fake_original_indication
     try:
-        legacy.install_bacpypes_packet_capture_hooks(
+        bacnet_app.install_bacpypes_packet_capture_hooks(
             local_ip="127.0.0.1", local_port=47808,
             get_clock_state=lambda: state["clock_state"],
         )
-        patched_indication = legacy.IPv4DatagramServer.indication
+        patched_indication = bacnet_app.IPv4DatagramServer.indication
 
         # Running -- outbound goes through normally.
         state["clock_state"] = "running"
@@ -76,4 +76,4 @@ async def test_outbound_suppressed_while_paused_or_stopped():
     finally:
         # Restore so this monkey-patch doesn't leak into whatever bacpypes3
         # machinery a later test/process might rely on.
-        legacy.IPv4DatagramServer.indication = original_indication
+        bacnet_app.IPv4DatagramServer.indication = original_indication

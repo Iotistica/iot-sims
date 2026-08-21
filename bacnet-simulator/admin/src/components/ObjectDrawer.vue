@@ -24,6 +24,7 @@ const emit = defineEmits<{
 }>()
 
 const DEFAULT_PARAMS: Record<string, any> = {
+  raw:         {},
   constant:    { value: 0 },
   manual:      { value: 0 },
   sine:        { base: 20, amplitude: 5, period_hours: 24, phase_hours: 0 },
@@ -175,7 +176,21 @@ async function removeAlarmConfig() {
 const COMMANDABLE_TYPES = ['analog-output', 'binary-output', 'multi-state-output']
 const showPriorityArraySection = computed(() => !props.draftMode && !!props.object && COMMANDABLE_TYPES.includes(form.object_type))
 const simulationOutputOwner = computed(() => props.object?.simulation_output_owner ?? null)
-const behaviorEditable = computed(() => !simulationOutputOwner.value)
+// Read-only display for the FMU/model's current raw value, wherever a
+// Behavior's own "baseline" field (Base/Initial Value/From/Default/Base
+// Behavior) is replaced with the live provider value instead of an
+// editable one -- see SimEngine._apply_fmu_behavior() for the matching
+// backend semantics this UI must stay in sync with.
+const fmuBaseDisplay = computed(() => {
+  if (!props.object || props.object.raw_provider_value == null) return '—'
+  return formatPresentValue(props.object.object_type, props.object.raw_provider_value)
+})
+// "raw" (reset to the FMU/model's raw value) only means anything for a
+// provider-owned point -- hidden for a normal point rather than offering a
+// no-op choice with no explanation there.
+const availableBehaviors = computed(() =>
+  simulationOutputOwner.value ? props.meta.behaviors : props.meta.behaviors.filter((b: string) => b !== 'raw')
+)
 
 const priorityArray = ref<PriorityArrayInfo | null>(null)
 const paLoading = ref(false)
@@ -306,13 +321,6 @@ async function save() {
     return
   }
   if (!props.deviceId) return
-  if (simulationOutputOwner.value && props.object) {
-    form.behavior = props.object.behavior
-    try {
-      const raw = props.object.behavior_params
-      params.value = { ...(typeof raw === 'string' ? JSON.parse(raw) : raw) }
-    } catch { params.value = { value: 0 } }
-  }
   if (props.mirrorMode && props.object && form.behavior !== props.object.behavior) {
     if (props.onBeforeSaveBehaviorChange) {
       const proceed = await props.onBeforeSaveBehaviorChange()
@@ -409,12 +417,7 @@ function doDelete() {
         </a-select>
       </a-form-item>
 
-      <a-form-item v-if="behaviorEditable" label="Behavior">
-        <a-select v-model:value="form.behavior">
-          <a-select-option v-for="b in meta.behaviors" :key="b" :value="b">{{ b }}</a-select-option>
-        </a-select>
-      </a-form-item>
-      <a-form-item v-else label="Provider">
+      <a-form-item v-if="simulationOutputOwner" label="Provider">
         <a-tag :color="simulationOutputOwner?.provider_type === 'fmu' ? 'purple' : 'cyan'">
           {{ simulationOutputOwner?.provider_type === 'fmu' ? 'FMU' : 'Learned' }}
         </a-tag>
@@ -423,26 +426,52 @@ function doDelete() {
         </span>
       </a-form-item>
 
+      <a-form-item
+        label="Behavior"
+        :help="simulationOutputOwner ? 'Applied on top of the model\'s live value every tick.' : undefined"
+      >
+        <a-select v-model:value="form.behavior">
+          <a-select-option v-for="b in availableBehaviors" :key="b" :value="b">{{ b }}</a-select-option>
+        </a-select>
+      </a-form-item>
+
       <!-- Behavior params -->
-      <div v-if="behaviorEditable" style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:14px">
+      <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:14px">
+        <!-- raw (FMU-owned points only) -->
+        <div v-if="form.behavior === 'raw'" style="font-size:12px;color:var(--text-secondary)">
+          No perturbation or override — Present Value tracks the model's live output directly. Select this to reset out of any other configured Behavior.
+        </div>
+
         <!-- constant -->
-        <a-form-item v-if="form.behavior === 'constant'" label="Value" style="margin-bottom:0">
-          <a-input-number v-model:value="params.value" style="width:100%" :step="0.1" />
-        </a-form-item>
+        <template v-else-if="form.behavior === 'constant'">
+          <div v-if="simulationOutputOwner" style="font-size:12px;color:var(--text-secondary)">
+            No transformation — Present Value follows the model's live output directly.
+          </div>
+          <a-form-item v-else label="Value" style="margin-bottom:0">
+            <a-input-number v-model:value="params.value" style="width:100%" :step="0.1" />
+          </a-form-item>
+        </template>
 
         <!-- manual -->
         <template v-else-if="form.behavior === 'manual'">
-          <a-form-item label="Initial Value" style="margin-bottom:4px">
+          <a-form-item :label="simulationOutputOwner ? 'Override Value' : 'Initial Value'" style="margin-bottom:4px">
             <a-input-number v-model:value="params.value" style="width:100%" :step="0.1" />
           </a-form-item>
-          <div style="font-size:11px;color:var(--text-secondary)">Can be overridden at runtime via "Set Value"</div>
+          <div style="font-size:11px;color:var(--text-secondary)">
+            {{ simulationOutputOwner
+              ? 'Overrides the model\'s live value while this Behavior is set; changing Behavior returns the point to the model value.'
+              : 'Can be overridden at runtime via "Set Value"' }}
+          </div>
         </template>
 
         <!-- sine -->
         <template v-else-if="form.behavior === 'sine'">
           <a-row :gutter="12">
             <a-col :span="12">
-              <a-form-item label="Base">
+              <a-form-item v-if="simulationOutputOwner" label="Base (FMU)">
+                <a-input :value="fmuBaseDisplay" disabled style="width:100%;font-family:monospace" />
+              </a-form-item>
+              <a-form-item v-else label="Base">
                 <a-input-number v-model:value="params.base" style="width:100%" :step="0.1" />
               </a-form-item>
             </a-col>
@@ -470,7 +499,10 @@ function doDelete() {
         <template v-else-if="form.behavior === 'noise'">
           <a-row :gutter="12">
             <a-col :span="12">
-              <a-form-item label="Base" style="margin-bottom:0">
+              <a-form-item v-if="simulationOutputOwner" label="Base (FMU)" style="margin-bottom:0">
+                <a-input :value="fmuBaseDisplay" disabled style="width:100%;font-family:monospace" />
+              </a-form-item>
+              <a-form-item v-else label="Base" style="margin-bottom:0">
                 <a-input-number v-model:value="params.base" style="width:100%" :step="0.1" />
               </a-form-item>
             </a-col>
@@ -486,7 +518,10 @@ function doDelete() {
         <template v-else-if="form.behavior === 'random_walk'">
           <a-row :gutter="12">
             <a-col :span="12">
-              <a-form-item label="Initial Value">
+              <a-form-item v-if="simulationOutputOwner" label="Base (FMU)">
+                <a-input :value="fmuBaseDisplay" disabled style="width:100%;font-family:monospace" />
+              </a-form-item>
+              <a-form-item v-else label="Initial Value">
                 <a-input-number v-model:value="params.value" style="width:100%" :step="1" />
               </a-form-item>
             </a-col>
@@ -498,12 +533,12 @@ function doDelete() {
           </a-row>
           <a-row :gutter="12">
             <a-col :span="12">
-              <a-form-item label="Min" style="margin-bottom:0">
+              <a-form-item :label="simulationOutputOwner ? 'Min Offset' : 'Min'" style="margin-bottom:0">
                 <a-input-number v-model:value="params.min" style="width:100%" :step="1" />
               </a-form-item>
             </a-col>
             <a-col :span="12">
-              <a-form-item label="Max" style="margin-bottom:0">
+              <a-form-item :label="simulationOutputOwner ? 'Max Offset' : 'Max'" style="margin-bottom:0">
                 <a-input-number v-model:value="params.max" style="width:100%" :step="1" />
               </a-form-item>
             </a-col>
@@ -512,7 +547,10 @@ function doDelete() {
 
         <!-- schedule -->
         <template v-else-if="form.behavior === 'schedule'">
-          <a-form-item label="Default value (before first block)" style="margin-bottom:10px">
+          <a-form-item v-if="simulationOutputOwner" label="Default" style="margin-bottom:10px">
+            <a-input value="FMU / Model Value" disabled style="width:100%" />
+          </a-form-item>
+          <a-form-item v-else label="Default value (before first block)" style="margin-bottom:10px">
             <a-input-number v-model:value="params.default" style="width:100%" :step="1" />
           </a-form-item>
           <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px">Time Blocks</div>
@@ -539,12 +577,15 @@ function doDelete() {
         <template v-else-if="form.behavior === 'ramp'">
           <a-row :gutter="12">
             <a-col :span="12">
-              <a-form-item label="From">
+              <a-form-item v-if="simulationOutputOwner" label="Base (FMU)">
+                <a-input :value="fmuBaseDisplay" disabled style="width:100%;font-family:monospace" />
+              </a-form-item>
+              <a-form-item v-else label="From">
                 <a-input-number v-model:value="params.from" style="width:100%" :step="1" />
               </a-form-item>
             </a-col>
             <a-col :span="12">
-              <a-form-item label="To">
+              <a-form-item :label="simulationOutputOwner ? 'Offset To' : 'To'">
                 <a-input-number v-model:value="params.to" style="width:100%" :step="1" />
               </a-form-item>
             </a-col>
@@ -561,12 +602,20 @@ function doDelete() {
               </a-form-item>
             </a-col>
           </a-row>
+          <div v-if="simulationOutputOwner" style="font-size:11px;color:var(--text-secondary);margin-top:6px">
+            Drifts from the model's live value toward model + Offset To over the configured duration.
+          </div>
         </template>
 
         <!-- fault -->
         <template v-else-if="form.behavior === 'fault'">
           <a-row :gutter="12" style="margin-bottom:2px">
-            <a-col :span="12">
+            <a-col :span="12" v-if="simulationOutputOwner">
+              <a-form-item label="Base">
+                <a-input value="FMU / Model Value" disabled style="width:100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :span="12" v-else>
               <a-form-item label="Base Behavior">
                 <a-select v-model:value="params.base_behavior" @change="onFaultBaseChange">
                   <a-select-option value="constant">constant</a-select-option>
@@ -587,7 +636,7 @@ function doDelete() {
             </a-col>
           </a-row>
 
-          <div style="background:var(--surface-alt);border-radius:4px;padding:10px;margin-bottom:10px">
+          <div v-if="!simulationOutputOwner" style="background:var(--surface-alt);border-radius:4px;padding:10px;margin-bottom:10px">
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;font-weight:600">Base behavior params</div>
             <template v-if="params.base_behavior === 'constant'">
               <a-form-item label="Value" style="margin-bottom:0">
@@ -664,6 +713,9 @@ function doDelete() {
           </a-form-item>
           <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">
             spike = one bad reading; stuck = freeze at fault value; offline = drop to zero
+          </div>
+          <div v-if="simulationOutputOwner" style="font-size:11px;color:var(--text-secondary);margin-top:2px">
+            Outside a fault window, Present Value follows the model's live output directly.
           </div>
         </template>
       </div>

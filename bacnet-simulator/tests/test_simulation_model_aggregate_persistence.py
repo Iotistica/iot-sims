@@ -258,7 +258,11 @@ def test_create_aggregate_rejects_unsupported_operation(client, database, monkey
     _patch_definition(monkeypatch)
     device, points = _make_device_and_points(client, count=1)
     payload = _aggregate_payload(device["id"], [points[0]["id"]])
-    payload["aggregate_mappings"][0]["operation"] = "min"
+    # "min" is a real, supported operation as of this task -- use a genuinely
+    # unsupported one (avg is not implemented) so this test still exercises
+    # the "unsupported operation" rejection path rather than accidentally
+    # asserting min itself is rejected.
+    payload["aggregate_mappings"][0]["operation"] = "avg"
     resp = client.post("/simulation/models", json=payload)
     assert resp.status_code == 422
 

@@ -710,17 +710,21 @@ function doDelete() {
         </a-button>
       </a-form-item>
 
-      <a-form-item v-if="!isExternal" label="Enabled" style="margin-top:16px;margin-bottom:0">
-        <a-switch v-model:checked="form.enabled" />
-      </a-form-item>
     </a-form>
 
     <template #footer>
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <a-button v-if="device && !draftMode" danger :loading="deleting" @click="doDelete">
-          {{ isExternal ? 'Remove' : 'Delete' }}
-        </a-button>
-        <div v-else></div>
+        <div style="display:flex;align-items:center;gap:16px">
+          <div v-if="!isExternal" style="display:flex;align-items:center;gap:8px">
+            <a-switch v-model:checked="form.enabled" />
+            <span style="font-size:12.5px;color:var(--text-secondary)">
+              {{ form.enabled ? 'Enabled' : 'Disabled' }}
+            </span>
+          </div>
+          <a-button v-if="device && !draftMode" danger :loading="deleting" @click="doDelete">
+            {{ isExternal ? 'Remove' : 'Delete' }}
+          </a-button>
+        </div>
         <a-space>
           <a-button @click="emit('update:open', false)">Cancel</a-button>
           <a-button type="primary" :loading="loading" @click="save">

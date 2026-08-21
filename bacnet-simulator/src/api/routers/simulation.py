@@ -5,7 +5,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import asdict
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.error import HTTPError
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -32,6 +32,7 @@ from ...simulation.model_store import (
     get_explicit_output_owner,
     get_simulation_model,
     list_simulation_models,
+    set_simulation_model_enabled,
     update_simulation_model,
 )
 from ...simulation.models.remote_catalog import (
@@ -73,6 +74,26 @@ def get_energy_engine(request: Request) -> Any | None:
     return getattr(request.app.state, "energy_engine", None)
 
 
+def get_event_logger(
+    request: Request,
+) -> Callable[..., None] | None:
+    return getattr(request.app.state, "log_event", None)
+
+
+def log_event(
+    request: Request,
+    device_id: int | None,
+    level: str,
+    message: str,
+) -> None:
+    """Same local-helper pattern as devices.py/objects.py, defaulting to
+    category="simulation" since every call site in this router is a
+    simulation-lifecycle event, not a config/audit change."""
+    callback = get_event_logger(request)
+    if callback is not None:
+        callback(device_id, level, message, category="simulation")
+
+
 # ---------------------------------------------------------------------------
 # API schemas
 # ---------------------------------------------------------------------------
@@ -85,17 +106,17 @@ class SimulationModelMappingPayload(BaseModel):
 
 
 class SimulationModelAggregateMappingPayload(BaseModel):
-    """An FMU input driven by an operation ("max" or "weighted_average")
-    over several BACnet points, instead of exactly one point or a constant.
-    direction/operation are Literal so "direction must be input" and
-    "unsupported operation" are enforced structurally by Pydantic -- no
-    manual check needed, same as SimulationModelMappingPayload.direction
-    already does for point/output.
+    """An FMU input driven by an operation ("max", "min", or
+    "weighted_average") over several BACnet points, instead of exactly one
+    point or a constant. direction/operation are Literal so "direction must
+    be input" and "unsupported operation" are enforced structurally by
+    Pydantic -- no manual check needed, same as
+    SimulationModelMappingPayload.direction already does for point/output.
 
     weight_point_ids is positionally parallel to point_ids (index i's
     weight is weight_point_ids[i]) and is required -- every entry present,
     same length as point_ids -- iff operation == "weighted_average"; it
-    must be omitted/None for "max" (and any future non-weighted
+    must be omitted/None for "max"/"min" (and any future non-weighted
     operation). This structurally blocks saving a Weighted Average
     configuration with a missing weight mapping (task requirement), the
     same way point_ids' own min_length=1 already structurally blocks an
@@ -107,7 +128,7 @@ class SimulationModelAggregateMappingPayload(BaseModel):
     the same way point_ids' own points already are."""
     variable: str = Field(min_length=1)
     direction: Literal["input"] = "input"
-    operation: Literal["max", "weighted_average"] = "max"
+    operation: Literal["max", "min", "weighted_average"] = "max"
     point_ids: list[int] = Field(min_length=1)
     weight_point_ids: list[int] | None = None
 
@@ -168,6 +189,15 @@ class SimulationModelPayload(BaseModel):
     input_exposures: list[SimulationModelInputExposurePayload] = Field(
         default_factory=list
     )
+
+
+class SimulationModelEnabledPayload(BaseModel):
+    """Body for PUT .../enabled -- the ON/OFF SimEngine-participation
+    control in the Simulation Model drawer's footer. Deliberately just this
+    one field: unlike SimulationModelPayload, this never touches mappings/
+    aggregate_mappings/input_exposures, so toggling it can never perturb a
+    model's saved configuration."""
+    enabled: bool
 
 
 def _runtime_definition(database: Any, model_type: str):
@@ -383,7 +413,7 @@ def _point_detail(point: dict[str, Any], device: dict[str, Any]) -> dict[str, An
     }
 
 
-_AGGREGATE_OPERATION_LABELS = {"max": "Maximum", "weighted_average": "Weighted Average"}
+_AGGREGATE_OPERATION_LABELS = {"max": "Maximum", "min": "Minimum", "weighted_average": "Weighted Average"}
 
 
 def _validate_aggregate_source_point(
@@ -1376,6 +1406,18 @@ async def edit_simulation_model(
     model_id: int,
     payload: SimulationModelPayload,
     request: Request,
+    apply: bool = Query(
+        False,
+        description=(
+            "False (default, plain Save): persist configuration only -- "
+            "never touches the runtime engine, regardless of the model's "
+            "enabled state. True (Apply): also push the saved configuration "
+            "to the runtime (reload if enabled; no-op registration-wise if "
+            "disabled). Either way, the model's enabled/disabled state is "
+            "whatever payload.enabled says -- this endpoint never flips it; "
+            "see PUT .../enabled for the dedicated ON/OFF control."
+        ),
+    ),
 ):
     database = get_database(request)
     engine = get_engine(request)
@@ -1435,31 +1477,129 @@ async def edit_simulation_model(
             detail="Simulation model not found",
         )
 
-    # Provider/model type can change, so explicitly release the old key.
-    engine.unregister_simulation_provider(old_runtime_id)
+    # Everything below touches the running engine -- gated on `apply` so a
+    # plain Save is pure persistence (see the `apply` param's own docstring
+    # above). A Save must not start, stop, enable, disable, reload, or step
+    # the FMU, whether the model is currently enabled or disabled.
+    if apply:
+        # Provider/model type can change, so explicitly release the old key
+        # -- but only if it actually changed. reload_model() below already
+        # unregisters the (possibly new) runtime_id itself before
+        # re-registering, so doing it here too when the id is unchanged
+        # would just be a redundant no-op call.
+        new_runtime_id = provider_runtime_id(model)
+        if old_runtime_id != new_runtime_id:
+            engine.unregister_simulation_provider(old_runtime_id)
 
-    if model["enabled"]:
-        try:
-            reload_model(database, engine, model_id)
-        except Exception as exc:
-            log.exception(
-                "Simulation model activation failed: model_id=%s name=%s "
-                "provider_type=%s model_type=%s",
-                model["id"],
-                model.get("name"),
-                model.get("provider_type"),
-                model.get("model_type"),
-            )
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": (
-                        "Model was updated but could not be activated"
-                    ),
-                    "model": model,
-                    "runtime_error": str(exc),
-                },
-            ) from exc
+        if model["enabled"]:
+            try:
+                reload_model(database, engine, model_id)
+            except Exception as exc:
+                log.exception(
+                    "Simulation model activation failed: model_id=%s name=%s "
+                    "provider_type=%s model_type=%s",
+                    model["id"],
+                    model.get("name"),
+                    model.get("provider_type"),
+                    model.get("model_type"),
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": (
+                            "Model was updated but could not be activated"
+                        ),
+                        "model": model,
+                        "runtime_error": str(exc),
+                    },
+                ) from exc
+
+    model["runtime_id"] = provider_runtime_id(model)
+    model["runtime"] = engine.get_simulation_providers().get(
+        model["runtime_id"]
+    )
+
+    return model
+
+
+@router.put("/simulation/models/{model_id}/enabled")
+async def set_simulation_model_enabled_route(
+    model_id: int,
+    payload: SimulationModelEnabledPayload,
+    request: Request,
+):
+    """Dedicated ON/OFF SimEngine-participation control -- see
+    SimulationModelEnabledPayload's docstring for why this exists
+    separately from the full PUT .../{model_id} update: it never touches
+    mappings/aggregate_mappings/input_exposures, so a model's full
+    configuration is guaranteed preserved whether enabled or disabled.
+    Reuses the exact same runtime lifecycle edit_simulation_model already
+    relies on (reload_model: unregister always, register only if enabled),
+    and the persisted config is retained even if activation fails on
+    enable, same as create/update -- the operator can correct the
+    underlying issue and retry via reload."""
+    database = get_database(request)
+    engine = get_engine(request)
+
+    existing = await asyncio.to_thread(
+        get_simulation_model,
+        database,
+        model_id,
+    )
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Simulation model not found",
+        )
+
+    model = await asyncio.to_thread(
+        set_simulation_model_enabled,
+        database,
+        model_id,
+        payload.enabled,
+    )
+    if model is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Simulation model not found",
+        )
+
+    try:
+        # log_success=False: this route logs its own "simulation
+        # enabled"/"disabled" event below on success, so reload_model()'s
+        # generic "FMU model started" would just be a second line for the
+        # same click. Failure still logs from inside reload_model() either
+        # way, since that's the only place it's ever recorded.
+        reload_model(database, engine, model_id, log_success=False)
+    except Exception as exc:
+        log.exception(
+            "Simulation model enable/disable failed: model_id=%s name=%s "
+            "provider_type=%s model_type=%s enabled=%s",
+            model["id"],
+            model.get("name"),
+            model.get("provider_type"),
+            model.get("model_type"),
+            payload.enabled,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    "Model was enabled but could not be activated"
+                    if payload.enabled
+                    else "Model could not be disabled"
+                ),
+                "model": model,
+                "runtime_error": str(exc),
+            },
+        ) from exc
+
+    log_event(
+        request,
+        model.get("created_from_device_id"),
+        "info",
+        f"Simulation {'enabled' if payload.enabled else 'disabled'}",
+    )
 
     model["runtime_id"] = provider_runtime_id(model)
     model["runtime"] = engine.get_simulation_providers().get(

@@ -36,6 +36,8 @@ export interface Device {
     model_type: string
     model_count?: number
   } | null
+  /** Server-computed: true when this device has an explicit simulation model configured but currently disabled (stopped). */
+  simulation_model_stopped?: boolean
 }
 
 export interface Location {
@@ -89,7 +91,7 @@ export interface SimObject {
   polarity: string
   point_type?: string | null
   description?: string | null
-  /** Explicit model output owner. When present, built-in behavior is inactive for this point. */
+  /** Explicit model output owner. When present, the provider (FMU/learned model) generates this point's raw value; `behavior` is applied on top of it every tick (see SimEngine._apply_fmu_behavior). */
   simulation_output_owner?: {
     id: number
     name: string
@@ -97,6 +99,8 @@ export interface SimObject {
     model_type: string
     variable: string
   } | null
+  /** Diagnostics: the provider's raw, unmodified value, before the configured Behavior is applied. Only populated for provider-owned points. */
+  raw_provider_value?: number | boolean | null
 }
 
 /** SimObject shape plus a live-read value, returned by the external-device
@@ -430,6 +434,7 @@ export interface BackupEntry {
 export interface LogEntry {
   ts: number
   level: 'info' | 'warn' | 'error'
+  category?: 'audit' | 'simulation'
   device_id?: number
   device_name?: string
   message: string
@@ -769,6 +774,35 @@ export interface FunctionalTest {
 export interface FunctionalTestIssue {
   nodeId: string | null
   message: string
+}
+
+// ─── Custom Graph ─────────────────────────────────────────────────────────
+
+export interface CustomGraphSeries {
+  device_id: number
+  object_id: number
+  color: string
+  axis: 'left' | 'right'
+  visible: boolean
+}
+
+export interface CustomGraphDefinition {
+  version: 1
+  series: CustomGraphSeries[]
+  /** Only 'live' exists this iteration -- there is no server-side history
+   * range query behind /history (just a ~1h ring buffer per point), so a
+   * preset picker would misrepresent what's actually available. Kept as a
+   * field (not omitted) so a real range control has somewhere to go later
+   * without a schema migration -- see CustomGraphModal.vue. */
+  time_range: 'live'
+}
+
+export interface SavedGraph {
+  id: number
+  name: string
+  definition: CustomGraphDefinition
+  created_at: string
+  updated_at: string
 }
 
 // ─── Functional Test execution ──────────────────────────────────────────

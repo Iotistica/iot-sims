@@ -7,7 +7,7 @@ last-write-wins contract wasn't silently altered. SemanticResolver.
 resolve_device_points() is the new, additive, multi-match replacement."""
 from __future__ import annotations
 
-from src.legacy import SimEngine
+from src.simulation.engine import SimEngine
 from src.semantics.resolver import SemanticResolver
 
 

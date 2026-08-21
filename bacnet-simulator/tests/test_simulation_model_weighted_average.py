@@ -796,11 +796,14 @@ def test_existing_max_aggregate_create_and_reload_unaffected(client, database, m
 
 def test_existing_max_aggregate_rejects_unsupported_operation_still_works(client, database, monkeypatch):
     """Regression: the pre-existing "unsupported operation" rejection (now
-    guarding a two-member set {max, weighted_average} instead of a
-    one-member set {max}) still rejects anything outside it."""
+    guarding a three-member set {max, min, weighted_average} instead of a
+    two-member set {max, weighted_average}) still rejects anything outside
+    it. "min" is itself a real, supported operation as of the Minimum
+    aggregate task, so it can no longer stand in for "unsupported" here --
+    "avg" is not implemented, so it still exercises this rejection path."""
     _patch_definition(monkeypatch)
     device, value_points, _weight_points = _make_device_with_value_and_weight_points(client, count=1)
     payload = _max_payload(device["id"], [value_points[0]["id"]])
-    payload["aggregate_mappings"][0]["operation"] = "min"
+    payload["aggregate_mappings"][0]["operation"] = "avg"
     resp = client.post("/simulation/models", json=payload)
     assert resp.status_code == 422

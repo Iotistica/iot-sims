@@ -353,17 +353,22 @@ async function save() {
           </a-collapse-panel>
         </a-collapse>
 
-        <a-form-item label="Enabled" style="margin-top:16px;margin-bottom:0">
-          <a-switch v-model:checked="form.enabled" />
-        </a-form-item>
       </a-form>
     </template>
 
     <template #footer>
-      <a-space v-if="formOpen">
-        <a-button @click="formOpen = false">Cancel</a-button>
-        <a-button type="primary" :loading="saving" @click="save">{{ editing ? 'Save' : 'Create' }}</a-button>
-      </a-space>
+      <div v-if="formOpen" style="display:flex;justify-content:space-between;align-items:center;width:100%">
+        <div style="display:flex;align-items:center;gap:8px">
+          <a-switch v-model:checked="form.enabled" />
+          <span style="font-size:12.5px;color:var(--text-secondary)">
+            {{ form.enabled ? 'Enabled' : 'Disabled' }}
+          </span>
+        </div>
+        <a-space>
+          <a-button @click="formOpen = false">Cancel</a-button>
+          <a-button type="primary" :loading="saving" @click="save">{{ editing ? 'Save' : 'Create' }}</a-button>
+        </a-space>
+      </div>
       <a-button v-else @click="emit('update:open', false)">Close</a-button>
     </template>
   </a-drawer>

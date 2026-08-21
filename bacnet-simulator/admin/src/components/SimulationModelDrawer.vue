@@ -73,9 +73,9 @@ const form = reactive({
   mappings: {} as Record<string, number | undefined>,
   inputSources: {} as Record<string, 'constant' | 'point' | 'aggregate'>,
   inputDefaults: {} as Record<string, unknown>,
-  /** Only used for operation='max' (the multi-select UI, unchanged). */
+  /** Only used for operation='max'/'min' (the multi-select UI, unchanged). */
   aggregatePoints: {} as Record<string, number[]>,
-  aggregateOperation: {} as Record<string, 'max' | 'weighted_average'>,
+  aggregateOperation: {} as Record<string, 'max' | 'min' | 'weighted_average'>,
   /** Only used for operation='weighted_average': independent paired rows,
    * each a { value, weight } point-id pair -- NOT derived from
    * aggregatePoints, so there's no multi-select/per-row duplication and no
@@ -163,17 +163,17 @@ function removeAggregatePair(variableName: string, index: number) {
  * value isn't already sitting on a single BACnet point somewhere (a plain
  * Point input already IS a point; Constant has no upstream reading at
  * all). Showing it on every input was reported as visual clutter, so it's
- * now gated to Aggregate (both Maximum and Weighted Average) here. */
+ * now gated to Aggregate (Maximum, Minimum, and Weighted Average alike) here. */
 function exposureApplicable(variableName: string): boolean {
   return form.inputSources[variableName] === 'aggregate'
 }
 
-function onAggregateOperationChange(variableName: string, operation: 'max' | 'weighted_average') {
+function onAggregateOperationChange(variableName: string, operation: 'max' | 'min' | 'weighted_average') {
   form.aggregateOperation[variableName] = operation
   if (operation === 'weighted_average' && !(form.aggregatePairs[variableName]?.length)) {
     // First time switching to Weighted Average for this variable: seed one
-    // pair per point already selected in Maximum mode's multi-select (so
-    // toggling operation doesn't discard a selection the user already
+    // pair per point already selected in the Maximum/Minimum multi-select
+    // (so toggling operation doesn't discard a selection the user already
     // made), or a single empty row if nothing was selected yet.
     const existingPoints = form.aggregatePoints[variableName] ?? []
     form.aggregatePairs[variableName] = existingPoints.length
@@ -316,7 +316,7 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
 
   const mappings: Record<string, number | undefined> = {}
   const aggregatePoints: Record<string, number[]> = {}
-  const aggregateOperation: Record<string, 'max' | 'weighted_average'> = {}
+  const aggregateOperation: Record<string, 'max' | 'min' | 'weighted_average'> = {}
   const aggregatePairs: Record<string, Array<{ value?: number; weight?: number }>> = {}
   for (const m of saved.mappings) {
     // Same "point_ids" (plural) vs "point_id" discriminator model_runtime.
@@ -324,7 +324,8 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
     // lexically matched.
     if ('point_ids' in m) {
       aggregatePoints[m.variable] = [...m.point_ids]
-      aggregateOperation[m.variable] = m.operation === 'weighted_average' ? 'weighted_average' : 'max'
+      aggregateOperation[m.variable] =
+        m.operation === 'weighted_average' ? 'weighted_average' : m.operation === 'min' ? 'min' : 'max'
       aggregatePairs[m.variable] = m.operation === 'weighted_average'
         ? m.point_ids.map((pid, i) => ({ value: pid, weight: (m.weight_point_ids ?? [])[i] ?? undefined }))
         : []
@@ -439,7 +440,8 @@ function validateMappings(requireComplete: boolean): boolean {
           return false
         }
       } else if (v.required !== false && !(form.aggregatePoints[v.name]?.length)) {
-        message.error(`${v.label} requires at least one source point for the Maximum aggregate`)
+        const opLabel = operation === 'min' ? 'Minimum' : 'Maximum'
+        message.error(`${v.label} requires at least one source point for the ${opLabel} aggregate`)
         return false
       }
     }
@@ -447,9 +449,17 @@ function validateMappings(requireComplete: boolean): boolean {
   return true
 }
 
-function buildPayload(enabled: boolean): SimulationModelPayload | null {
+function buildPayload(apply: boolean): SimulationModelPayload | null {
   if (!props.device || !selectedModel.value) return null
   const modelName = `${props.device.name} ${selectedModel.value.label}`.trim()
+
+  // Enabled/disabled is a persisted-state field, deliberately independent
+  // of Save vs Apply (see toggleEnabled() below, the only thing allowed to
+  // change it): editing an existing model always preserves its current
+  // state; a brand-new model has no prior state to preserve, so Save
+  // creates it disabled (configure first, enable later) and Create/Apply
+  // creates it enabled -- same as today's create-time behavior.
+  const enabled = savedModelId.value != null ? form.enabled : apply
 
   const parameters = { ...form.parameters }
   delete parameters.model
@@ -465,7 +475,7 @@ function buildPayload(enabled: boolean): SimulationModelPayload | null {
         .map(v => [v.name, form.inputDefaults[v.name]]),
     )
   }
-  if (!enabled) {
+  if (!apply) {
     parameters.draft_output_mappings = Object.fromEntries(
       outputs.value
         .filter(v => form.mappings[v.name] != null)
@@ -481,7 +491,7 @@ function buildPayload(enabled: boolean): SimulationModelPayload | null {
     created_from_device_id: props.device.id,
     parameters,
     mappings: variables.value
-      .filter(v => enabled || v.direction !== 'output')
+      .filter(v => apply || v.direction !== 'output')
       .filter(v => v.direction === 'output' || form.inputSources[v.name] === 'point' || form.provider_type !== 'fmu')
       .filter(v => form.mappings[v.name] != null)
       .map(v => ({ variable: v.name, direction: v.direction, point_id: form.mappings[v.name]! })),
@@ -514,7 +524,7 @@ function buildPayload(enabled: boolean): SimulationModelPayload | null {
         return {
           variable: v.name,
           direction: 'input' as const,
-          operation: 'max' as const,
+          operation: operation as 'max' | 'min',
           point_ids: form.aggregatePoints[v.name]!,
         }
       }),
@@ -534,11 +544,14 @@ async function persist(apply: boolean) {
   try {
     let saved: SimulationModelConfig
     if (savedModelId.value != null) {
-      saved = await api.simulationModels.update(savedModelId.value, payload)
-      message.success(apply && payload.enabled ? 'Simulation model applied' : 'Simulation model saved')
+      // apply threaded through to the query param -- see api.ts's own
+      // comment. A plain save (apply=false) never touches the runtime
+      // engine, whether this model is enabled or disabled.
+      saved = await api.simulationModels.update(savedModelId.value, payload, apply)
+      message.success(apply ? 'Simulation model applied' : 'Simulation model saved')
     } else {
       saved = await api.simulationModels.create(payload)
-      message.success(apply && payload.enabled ? 'Simulation model added' : 'Simulation model saved')
+      message.success(apply ? 'Simulation model added' : 'Simulation model saved')
     }
     savedModelId.value = saved.id
     form.enabled = saved.enabled
@@ -553,6 +566,31 @@ async function persist(apply: boolean) {
 
 const saveDraft = () => persist(false)
 const applyModel = () => persist(true)
+
+// ─── Enabled (ON/OFF SimEngine participation) ────────────────────────────
+// Deliberately independent of persist()/buildPayload() above -- toggling
+// this must never resend/re-validate mappings (see
+// api.simulationModels.setEnabled's own comment), so a model already
+// fully configured and applied can be switched off and back on without
+// touching its saved configuration at all. Same minimal try/catch pattern
+// as ScheduleDrawer.vue/CalendarDrawer.vue's own toggleEnabled.
+
+const togglingEnabled = ref(false)
+
+async function toggleEnabled(checked: boolean) {
+  if (savedModelId.value == null) return
+  togglingEnabled.value = true
+  try {
+    const updated = await api.simulationModels.setEnabled(savedModelId.value, checked)
+    form.enabled = updated.enabled
+    message.success(updated.enabled ? 'Simulation model enabled' : 'Simulation model disabled')
+    emit('saved')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to update enabled state')
+  } finally {
+    togglingEnabled.value = false
+  }
+}
 
 function onMappingsApplied({ mappings, switchToPoint }: { mappings: Record<string, number>; switchToPoint: string[] }) {
   Object.assign(form.mappings, mappings)
@@ -574,6 +612,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
     :title="device ? `Simulation Model — ${device.name}` : 'Simulation Model'"
     width="520"
     :z-index="1050"
+    :body-style="{ overflowX: 'hidden' }"
     @close="emit('update:open', false)"
   >
     <a-spin :spinning="loading">
@@ -696,20 +735,23 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
             />
             <template v-if="form.inputSources[v.name] === 'aggregate'">
               <div style="margin-bottom:8px">
-                <span style="font-size:12px;color:var(--text-secondary);margin-right:8px">Operation:</span>
+                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px">Operation:</div>
                 <a-segmented
                   :value="form.aggregateOperation[v.name] ?? 'max'"
                   :options="[
                     { label: 'Maximum', value: 'max' },
+                    { label: 'Minimum', value: 'min' },
                     { label: 'Weighted Average', value: 'weighted_average' },
                   ]"
                   size="small"
-                  @change="(value: string | number) => onAggregateOperationChange(v.name, value as 'max' | 'weighted_average')"
+                  block
+                  style="width:100%"
+                  @change="(value: string | number) => onAggregateOperationChange(v.name, value as 'max' | 'min' | 'weighted_average')"
                 />
               </div>
 
-              <!-- Maximum (and any future non-weighted operation): unchanged multi-select UI. -->
-              <template v-if="(form.aggregateOperation[v.name] ?? 'max') === 'max'">
+              <!-- Maximum/Minimum (and any future non-weighted operation): unchanged multi-select UI. -->
+              <template v-if="(form.aggregateOperation[v.name] ?? 'max') !== 'weighted_average'">
                 <a-select
                   v-model:value="form.aggregatePoints[v.name]"
                   mode="multiple"
@@ -723,7 +765,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
                   v-if="(form.aggregatePoints[v.name] ?? []).length"
                   style="font-size:12px;color:var(--text-muted);margin-top:4px"
                 >
-                  Maximum of {{ (form.aggregatePoints[v.name] ?? []).length }}
+                  {{ (form.aggregateOperation[v.name] ?? 'max') === 'min' ? 'Minimum' : 'Maximum' }} of {{ (form.aggregatePoints[v.name] ?? []).length }}
                   point{{ (form.aggregatePoints[v.name] ?? []).length === 1 ? '' : 's' }}
                 </div>
               </template>
@@ -818,22 +860,36 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
 
         <a-form-item label="Status" style="margin-top:16px;margin-bottom:0">
           <a-tag :color="form.enabled ? 'green' : 'default'">
-            {{ form.enabled ? 'Applied' : 'Saved draft' }}
+            {{ form.enabled ? 'Enabled' : 'Disabled' }}
           </a-tag>
         </a-form-item>
       </a-form>
     </a-spin>
 
     <template #footer>
-      <a-space>
-        <a-button @click="emit('update:open', false)">Close</a-button>
-        <a-button :loading="savingDraft" :disabled="loading || !selectedModel || saving" @click="saveDraft">
-          Save
-        </a-button>
-        <a-button type="primary" :loading="saving" :disabled="loading || !selectedModel || savingDraft" @click="applyModel">
-          {{ primaryActionLabel }}
-        </a-button>
-      </a-space>
+      <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
+        <div style="display:flex;align-items:center;gap:8px">
+          <a-switch
+            :checked="form.enabled"
+            :loading="togglingEnabled"
+            :disabled="savedModelId == null || loading"
+            title="Enabled = participates in SimEngine execution. Disabling preserves all configuration and mappings."
+            @change="toggleEnabled"
+          />
+          <span style="font-size:12.5px;color:var(--text-secondary)">
+            {{ form.enabled ? 'Enabled' : 'Disabled' }}
+          </span>
+        </div>
+        <a-space>
+          <a-button @click="emit('update:open', false)">Close</a-button>
+          <a-button :loading="savingDraft" :disabled="loading || !selectedModel || saving" @click="saveDraft">
+            Save
+          </a-button>
+          <a-button type="primary" :loading="saving" :disabled="loading || !selectedModel || savingDraft" @click="applyModel">
+            {{ primaryActionLabel }}
+          </a-button>
+        </a-space>
+      </div>
     </template>
   </a-drawer>
 

@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from src.api.routers.devices import router as devices_router
 from src.api.routers.energy import router as energy_router
 from src.energy import EnergyEngine
-from src.legacy import Database
+from src.db import Database
 
 
 class _FakeEngine:

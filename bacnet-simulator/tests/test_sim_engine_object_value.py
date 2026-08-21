@@ -14,7 +14,7 @@ store. This test encodes the exact production shape of _current_values to
 prove get_object_value() no longer depends on it at all."""
 from __future__ import annotations
 
-from src.legacy import SimEngine
+from src.simulation.engine import SimEngine
 
 
 def test_get_object_value_reads_prev_values_not_current_values(database):

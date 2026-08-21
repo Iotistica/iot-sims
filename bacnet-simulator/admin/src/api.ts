@@ -44,6 +44,8 @@ import type {
   FunctionalTestResolveResponse,
   FunctionalTestRun,
   PointRow,
+  CustomGraphDefinition,
+  SavedGraph,
 } from './types'
 
 import { authToken, logout } from './auth'
@@ -257,11 +259,11 @@ export interface SimulationModelAggregateMapping {
   model_config_id?: number
   variable: string
   direction: 'input'
-  operation: 'max' | 'weighted_average'
+  operation: 'max' | 'min' | 'weighted_average'
   point_ids: number[]
   /** Positionally parallel to point_ids (index i's weight is
    * weight_point_ids[i]). Only present/meaningful for
-   * operation='weighted_average' -- absent or all-null for 'max'. */
+   * operation='weighted_average' -- absent or all-null for 'max'/'min'. */
   weight_point_ids?: (number | null)[]
   point_metadata?: Record<string, {
     point_name?: string
@@ -442,9 +444,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-    update: (id: number, body: SimulationModelPayload) => req<SimulationModelConfig>(`/simulation/models/${id}`, {
+    // apply=false (default): persist configuration only, never touches the
+    // runtime engine. apply=true: also push the saved configuration to the
+    // runtime. Either way the model's enabled/disabled state is whatever
+    // body.enabled says -- this never flips it, see setEnabled() below.
+    update: (id: number, body: SimulationModelPayload, apply = false) =>
+      req<SimulationModelConfig>(`/simulation/models/${id}${apply ? '?apply=true' : ''}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    // Dedicated ON/OFF SimEngine-participation control -- never touches
+    // mappings, unlike update() above (see SimulationModelEnabledPayload's
+    // docstring in the backend router).
+    setEnabled: (id: number, enabled: boolean) => req<SimulationModelConfig>(`/simulation/models/${id}/enabled`, {
       method: 'PUT',
-      body: JSON.stringify(body),
+      body: JSON.stringify({ enabled }),
     }),
     del: (id: number) => req<{ ok: boolean; model_id: number; runtime_id: string }>(`/simulation/models/${id}`, { method: 'DELETE' }),
     pointOptions: () => req<SimulationModelPointOption[]>('/simulation/points/options'),
@@ -552,6 +566,16 @@ export const api = {
   functionalTestRuns: {
     get:    (runId: number) => req<FunctionalTestRun>(`/functional-test-runs/${runId}`),
     cancel: (runId: number) => req<FunctionalTestRun>(`/functional-test-runs/${runId}/cancel`, { method: 'POST' }),
+  },
+
+  customGraphs: {
+    list:   ()                                                     => req<SavedGraph[]>('/custom-graphs'),
+    get:    (id: number)                                           => req<SavedGraph>(`/custom-graphs/${id}`),
+    create: (b: { name: string; definition: CustomGraphDefinition }) =>
+      req<SavedGraph>('/custom-graphs', { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: { name: string; definition: CustomGraphDefinition }) =>
+      req<SavedGraph>(`/custom-graphs/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)                                           => req<null>(`/custom-graphs/${id}`, { method: 'DELETE' }),
   },
 
   points: {

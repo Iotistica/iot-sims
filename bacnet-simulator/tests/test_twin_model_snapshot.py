@@ -1,4 +1,4 @@
-from src.legacy import SimEngine
+from src.simulation.engine import SimEngine
 
 
 def _object_row(object_id: int, name: str, instance: int) -> dict:

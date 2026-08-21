@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from ...bacnet.app import normalize_present_value
+from ..behaviors import FaultBehavior, ManualBehavior, RandomWalkBehavior, make_behavior
+from ..state import SimState
 from .base import (
     PointConfig,
     ProviderStatus,
@@ -23,31 +26,11 @@ _KNOWN_BEHAVIORS = {
 }
 
 
-def _legacy():
-    """
-    Resolve the existing legacy behavior API lazily.
-
-    IMPORTANT:
-    Do not import src.legacy at module import time.
-
-    src.legacy imports src.simulation.providers during startup. If this module
-    imports src.legacy eagerly, Python re-enters the partially initialized
-    legacy module and raises a circular-import ImportError.
-
-    By resolving legacy only when provider methods are actually called,
-    src.legacy has time to finish importing first.
-    """
-    from ... import legacy
-    return legacy
-
-
 class BuiltInSimulationProvider(SimulationProvider):
     """
-    Adapter around the existing built-in Behavior engine.
-
-    This provider intentionally keeps the legacy dependency behind a lazy
-    compatibility boundary. New provider architecture remains outside
-    legacy.py while existing Behavior implementations continue to be reused.
+    Adapter around the existing built-in Behavior engine (src/simulation/
+    behaviors.py) -- new provider architecture, existing Behavior
+    implementations reused directly.
     """
 
     def __init__(self) -> None:
@@ -58,11 +41,10 @@ class BuiltInSimulationProvider(SimulationProvider):
         self._status = ProviderStatus.NOT_CONFIGURED
 
     def _new_state(self) -> Any:
-        return _legacy().SimState()
+        return SimState()
 
     def _make_behavior(self, point: PointConfig) -> Any:
-        legacy = _legacy()
-        return legacy.make_behavior(
+        return make_behavior(
             point.behavior,
             point.behavior_params,
             point.manual_value,
@@ -135,8 +117,6 @@ class BuiltInSimulationProvider(SimulationProvider):
             self._status = ProviderStatus.ERROR
             return
 
-        legacy = _legacy()
-
         self._state.elapsed_seconds += dt
         self._state.time_of_day = (
             self._state.time_of_day + dt / 3600.0
@@ -154,18 +134,16 @@ class BuiltInSimulationProvider(SimulationProvider):
 
             raw_value = behavior.compute(self._state)
 
-            self._outputs[point_id] = legacy.normalize_present_value(
+            self._outputs[point_id] = normalize_present_value(
                 point.object_type,
                 raw_value,
             )
 
     def set_inputs(self, values: Mapping[int, Any]) -> None:
-        legacy = _legacy()
-
         for point_id, value in values.items():
             behavior = self._behaviors.get(point_id)
 
-            if isinstance(behavior, legacy.ManualBehavior):
+            if isinstance(behavior, ManualBehavior):
                 behavior.set(value)
 
     def get_outputs(self) -> Mapping[int, Any]:
@@ -209,8 +187,6 @@ class BuiltInSimulationProvider(SimulationProvider):
         - new config -> create behavior
         - missing config -> remove only when remove_missing=True
         """
-        legacy = _legacy()
-
         if self._context is None:
             return
 
@@ -262,14 +238,14 @@ class BuiltInSimulationProvider(SimulationProvider):
 
             if old_behavior is not None:
                 if (
-                    isinstance(new_behavior, legacy.ManualBehavior)
-                    and isinstance(old_behavior, legacy.ManualBehavior)
+                    isinstance(new_behavior, ManualBehavior)
+                    and isinstance(old_behavior, ManualBehavior)
                 ):
                     new_behavior.set(old_behavior._value)
 
                 elif (
-                    isinstance(new_behavior, legacy.FaultBehavior)
-                    and isinstance(old_behavior, legacy.FaultBehavior)
+                    isinstance(new_behavior, FaultBehavior)
+                    and isinstance(old_behavior, FaultBehavior)
                 ):
                     new_behavior._fault_active = old_behavior._fault_active
                     new_behavior._fault_end_elapsed = (
@@ -278,8 +254,8 @@ class BuiltInSimulationProvider(SimulationProvider):
                     new_behavior._inner = old_behavior._inner
 
                 elif (
-                    isinstance(new_behavior, legacy.RandomWalkBehavior)
-                    and isinstance(old_behavior, legacy.RandomWalkBehavior)
+                    isinstance(new_behavior, RandomWalkBehavior)
+                    and isinstance(old_behavior, RandomWalkBehavior)
                 ):
                     new_behavior._value = old_behavior._value
 

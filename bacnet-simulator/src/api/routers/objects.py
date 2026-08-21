@@ -158,6 +158,7 @@ async def list_objects(
     request: Request,
 ):
     database = get_database(request)
+    engine = get_engine(request)
 
     await require_device(
         database,
@@ -179,9 +180,17 @@ async def list_objects(
         database,
         point_ids,
     )
+    # getattr defensively -- test doubles and any future engine
+    # implementation don't all carry this attribute, and its absence just
+    # means "no diagnostics available," never an error.
+    raw_provider_values = getattr(engine, "_raw_provider_values", None)
     for obj in objects:
         pid = int(obj["id"])
-        obj["simulation_output_owner"] = output_owners.get(pid) or exposure_owners.get(pid)
+        owner = output_owners.get(pid) or exposure_owners.get(pid)
+        obj["simulation_output_owner"] = owner
+        obj["raw_provider_value"] = (
+            raw_provider_values.get(pid) if owner and raw_provider_values else None
+        )
     return objects
 
 
@@ -283,16 +292,7 @@ async def update_object(
         device_id,
         object_id,
     )
-    owner = await asyncio.to_thread(
-        get_output_owners_by_point,
-        database,
-        [object_id],
-    )
-
     body_dict = body.model_dump()
-    if object_id in owner:
-        body_dict["behavior"] = existing["behavior"]
-        body_dict["behavior_params"] = existing["behavior_params"]
     reject_external_object_source_mutation(device, existing, body_dict)
 
     try:

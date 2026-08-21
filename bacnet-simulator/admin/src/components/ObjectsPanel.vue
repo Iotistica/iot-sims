@@ -6,12 +6,12 @@ import { EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined, BulbOutline
 import { api } from '../api'
 import { formatPresentValue } from '../format'
 import { coerceValueForObjectType } from '../objectValue'
-import type { Device, SimObject, Meta, HistoryPoint } from '../types'
+import type { Device, SimObject, Meta, PointRef } from '../types'
 import GridFilterToolbar from './GridFilterToolbar.vue'
 import ObjectDrawer from './ObjectDrawer.vue'
 import SaveTemplateModal from './SaveTemplateModal.vue'
 import TemplatePickerModal from './TemplatePickerModal.vue'
-import HistoryChart from './HistoryChart.vue'
+import CustomGraphModal from './CustomGraphModal.vue'
 import SemanticSuggestionsModal from './SemanticSuggestionsModal.vue'
 
 const props = defineProps<{
@@ -83,10 +83,13 @@ const loading = ref(false)
 const hasDiscovered = computed(() => objects.value.length > 0)
 
 async function loadObjects() {
-  // Clear immediately -- otherwise the table keeps showing the PREVIOUS
-  // device's rows for the duration of the fetch, since only `objects`
-  // (not the `device` prop the header reads) is populated asynchronously.
-  objects.value = []
+  // Deliberately does NOT clear `objects` first -- this is also called for
+  // a plain in-place refresh after saving/duplicating/toggling an object on
+  // the SAME device (see onObjectSaved() etc. below), where clearing first
+  // makes the whole table flash empty for the ~1s round-trip before
+  // repopulating. The one case that genuinely needs a clear-first (avoiding
+  // a flash of the PREVIOUS device's stale rows while switching devices) is
+  // handled explicitly in the props.device.id watcher instead.
   loading.value = true
   try {
     objects.value = await api.objects.list(props.device.id)
@@ -222,7 +225,7 @@ function fmtDelta(obj: SimObject): string {
 
 const BEHAVIOR_COLOR: Record<string, string> = {
   constant: 'default', sine: 'blue', noise: 'orange', random_walk: 'purple', manual: 'red',
-  schedule: 'cyan', ramp: 'green', fault: 'volcano',
+  schedule: 'cyan', ramp: 'green', fault: 'volcano', raw: 'purple',
 }
 
 const pointTypeLabel = computed(() => {
@@ -266,20 +269,6 @@ function clearObjectFilters() {
   objectTypeFilter.value = undefined
 }
 
-function providerLabel(obj: SimObject): string {
-  const provider = obj.simulation_output_owner?.provider_type
-  if (provider === 'fmu') return 'FMU'
-  if (provider === 'learned') return 'Learned'
-  return provider ?? ''
-}
-
-function providerColor(obj: SimObject): string {
-  const provider = obj.simulation_output_owner?.provider_type
-  if (provider === 'fmu') return 'purple'
-  if (provider === 'learned') return 'cyan'
-  return 'default'
-}
-
 watch(objectTypeOptions, (options) => {
   if (
     objectTypeFilter.value !== undefined
@@ -304,7 +293,7 @@ const columns = computed<TableColumnsType<SimObject>>(() => {
       sortDirections: ['ascend', 'descend'],
     },
     { title: 'Units', dataIndex: 'units', key: 'units', width: 150, sorter: (a, b) => compareText(a.units === 'no-units' ? '' : a.units, b.units === 'no-units' ? '' : b.units), sortDirections: ['ascend', 'descend'] },
-    { title: isMirror.value ? 'Live' : 'Live Value', key: 'value', width: isMirror.value ? 95 : 110, sorter: (a, b) => sortableLiveValue(a) - sortableLiveValue(b), sortDirections: ['ascend', 'descend'] },
+    { title: isMirror.value ? 'Live' : 'Value', key: 'value', width: isMirror.value ? 95 : 110, sorter: (a, b) => sortableLiveValue(a) - sortableLiveValue(b), sortDirections: ['ascend', 'descend'] },
   ]
   if (isMirror.value) {
     baseColumns.push(
@@ -368,27 +357,14 @@ async function toggleObjectEnabled(obj: SimObject) {
   }
 }
 
-// ─── History ──────────────────────────────────────────────────────────────
+// ─── Custom Graph (History) ─────────────────────────────────────────────
 
-const histModalOpen = ref(false)
-const histObj = ref<SimObject | null>(null)
-const histData = ref<HistoryPoint[]>([])
-const histLoading = ref(false)
+const graphModalOpen = ref(false)
+const graphInitialPoint = ref<PointRef | null>(null)
 
-async function openHistory(obj: SimObject) {
-  histObj.value = obj
-  histData.value = []
-  histLoading.value = true
-  histModalOpen.value = true
-  try {
-    histData.value = await api.objects.history(props.device.id, obj.id)
-  } catch { /* swallow */ } finally {
-    histLoading.value = false
-  }
-}
-function histFmt(v: number, obj: SimObject | null): string {
-  if (!obj) return v.toFixed(2)
-  return formatPresentValue(obj.object_type, v)
+function openHistory(obj: SimObject) {
+  graphInitialPoint.value = { device_id: props.device.id, object_id: obj.id }
+  graphModalOpen.value = true
 }
 
 // ─── Set value ────────────────────────────────────────────────────────────
@@ -468,7 +444,10 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
       {{ device.name }}
       <a-tag v-if="isExternal" color="default" style="margin-left:8px;font-weight:normal">Read Only</a-tag>
       <a-tag v-if="isMirror" color="blue" style="margin-left:8px;font-weight:normal">Twin</a-tag>
-      <a-tag v-if="isSimulationMode" color="green" style="margin-left:8px;font-weight:normal">Sim</a-tag>
+      <a-tooltip v-if="isSimulationMode && device.simulation_model_stopped" title="Simulation stopped — model disabled">
+        <a-tag color="default" style="margin-left:8px;font-weight:normal">Sim</a-tag>
+      </a-tooltip>
+      <a-tag v-else-if="isSimulationMode" color="green" style="margin-left:8px;font-weight:normal">Sim</a-tag>
       <a-tooltip v-if="simulationProviderLabel" :title="simulationProviderTitle">
         <a-tag :color="simulationProviderColor" style="margin-left:8px;font-weight:normal">{{ simulationProviderLabel }}</a-tag>
       </a-tooltip>
@@ -577,7 +556,7 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
         </template>
         <template v-else-if="column.key === 'behavior'">
           <a-tooltip v-if="(record as SimObject).simulation_output_owner" :title="`Driven by ${(record as SimObject).simulation_output_owner!.name} / ${(record as SimObject).simulation_output_owner!.variable}`">
-            <a-tag :color="providerColor(record as SimObject)">{{ providerLabel(record as SimObject) }}</a-tag>
+            <a-tag :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
           </a-tooltip>
           <a-tag v-else-if="canConfigureSimulation && !isMirror" :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
           <span v-else style="color:var(--text-disabled)">—</span>
@@ -705,26 +684,10 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
     </div>
   </a-modal>
 
-  <!-- History chart modal -->
-  <a-modal
-    v-model:open="histModalOpen"
-    :title="histObj ? `${histObj.name} — History` : 'History'"
-    :footer="null"
-    width="680px"
-    destroy-on-close
-  >
-    <template v-if="!histLoading && histObj">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-        <a-tag :color="BEHAVIOR_COLOR[histObj.behavior]">{{ histObj.behavior }}</a-tag>
-        <span style="font-size:12px;color:var(--text-secondary)">{{ histObj.units === 'no-units' ? '' : histObj.units }}</span>
-        <span style="font-size:12px;color:var(--text-placeholder);margin-left:auto">{{ histData.length }} samples</span>
-      </div>
-    </template>
-    <HistoryChart
-      :data="histData"
-      :loading="histLoading"
-      :format-value="(v: number) => histFmt(v, histObj)"
-      empty-label="Not enough data yet — check back after a few ticks (5 s each)"
-    />
-  </a-modal>
+  <!-- Custom Graph (History) modal -->
+  <CustomGraphModal
+    v-model:open="graphModalOpen"
+    :meta="props.meta"
+    :initial-point="graphInitialPoint"
+  />
 </template>

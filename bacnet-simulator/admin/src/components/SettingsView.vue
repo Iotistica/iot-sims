@@ -8,6 +8,7 @@ import BackupsPanel from './BackupsPanel.vue'
 
 const loading = ref(false)
 const savingGeneral = ref(false)
+const savingSimulation = ref(false)
 const savingBuffers = ref(false)
 
 const form = reactive<Settings>({
@@ -49,6 +50,18 @@ async function saveGeneral() {
   }
 }
 
+async function saveSimulation() {
+  savingSimulation.value = true
+  try {
+    Object.assign(form, await api.settings.update({ ...form }))
+    message.success('Settings saved')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to save settings')
+  } finally {
+    savingSimulation.value = false
+  }
+}
+
 async function saveBuffers() {
   savingBuffers.value = true
   try {
@@ -73,28 +86,44 @@ onMounted(load)
         <a-spin :spinning="loading">
           <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:16px;max-width:480px">
             <a-form layout="vertical">
-              <a-form-item label="Tick cadence (seconds)" tooltip="How often the engine advances the simulation and samples object values">
-                <a-input-number v-model:value="form.tick_seconds" :min="0.1" :max="3600" :step="0.5" style="width:100%" />
-              </a-form-item>
-              <a-form-item label="JWT expiry (hours)" tooltip="How long a login session stays valid. Already-issued tokens keep their original expiry.">
+              <a-form-item label="JWT expiry (hours)" tooltip="How long a login session stays valid. Already-issued tokens keep their original expiry." style="margin-bottom:0">
                 <a-input-number v-model:value="form.jwt_expire_hours" :min="1" :max="8760" style="width:100%" />
-              </a-form-item>
-              <a-form-item label="Default trend-log interval (seconds)" tooltip="Used when creating a new trend log without specifying one">
-                <a-input-number v-model:value="form.trend_log_default_interval" :min="1" style="width:100%" />
-              </a-form-item>
-              <a-form-item label="Default trend-log buffer size" tooltip="Used when creating a new trend log without specifying one" style="margin-bottom:0">
-                <a-input-number v-model:value="form.trend_log_default_buffer_size" :min="1" :max="100000" style="width:100%" />
-              </a-form-item>
-              <a-divider orientation="left">FMU Runtime</a-divider>
-              <a-form-item label="FMU Model Runtime URL" tooltip="Base URL for the generic IoT FMU model runtime">
-                <a-input v-model:value="form.fmu_runtime_url" placeholder="http://localhost:8002" />
-              </a-form-item>
-              <a-form-item label="Request Timeout (seconds)" tooltip="Timeout for FMU model catalog and simulation runtime requests" style="margin-bottom:0">
-                <a-input-number v-model:value="form.fmu_runtime_timeout_s" :min="1" :max="120" :step="1" style="width:100%" />
               </a-form-item>
             </a-form>
           </div>
           <a-button type="primary" :loading="savingGeneral" style="margin-top:14px" @click="saveGeneral">Save</a-button>
+        </a-spin>
+      </a-tab-pane>
+
+      <a-tab-pane key="simulation" tab="Simulation">
+        <a-spin :spinning="loading">
+          <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:16px;max-width:480px">
+            <a-form layout="vertical">
+              <a-form-item label="Tick Interval (seconds)" tooltip="How often the engine advances the simulation and samples object values">
+                <a-input-number v-model:value="form.tick_seconds" :min="0.1" :max="3600" :step="0.5" style="width:100%" />
+              </a-form-item>
+
+              <a-divider orientation="left">History &amp; Trending</a-divider>
+              <a-form-item label="Object History Buffer (samples)" tooltip="Per-object value-history ring buffer used for the History chart">
+                <a-input-number v-model:value="form.object_history_maxlen" :min="10" :max="100000" style="width:100%" />
+              </a-form-item>
+              <a-form-item label="Trend Log Default Interval (seconds)" tooltip="Used when creating a new trend log without specifying one">
+                <a-input-number v-model:value="form.trend_log_default_interval" :min="1" style="width:100%" />
+              </a-form-item>
+              <a-form-item label="Trend Log Default Buffer (records)" tooltip="Used when creating a new trend log without specifying one">
+                <a-input-number v-model:value="form.trend_log_default_buffer_size" :min="1" :max="100000" style="width:100%" />
+              </a-form-item>
+
+              <a-divider orientation="left">FMU Runtime</a-divider>
+              <a-form-item label="Runtime URL" tooltip="Base URL for the generic IoT FMU model runtime">
+                <a-input v-model:value="form.fmu_runtime_url" placeholder="http://localhost:8002" />
+              </a-form-item>
+              <a-form-item label="Runtime Timeout (seconds)" tooltip="Timeout for FMU model catalog and simulation runtime requests" style="margin-bottom:0">
+                <a-input-number v-model:value="form.fmu_runtime_timeout_s" :min="1" :max="120" :step="1" style="width:100%" />
+              </a-form-item>
+            </a-form>
+          </div>
+          <a-button type="primary" :loading="savingSimulation" style="margin-top:14px" @click="saveSimulation">Save</a-button>
         </a-spin>
       </a-tab-pane>
 
@@ -110,9 +139,6 @@ onMounted(load)
               </a-form-item>
               <a-form-item label="Global log entries" tooltip="Activity log retained across all devices combined">
                 <a-input-number v-model:value="form.global_log_maxlen" :min="10" :max="50000" style="width:100%" />
-              </a-form-item>
-              <a-form-item label="Object history points" tooltip="Per-object value-history ring buffer used for the History chart">
-                <a-input-number v-model:value="form.object_history_maxlen" :min="10" :max="100000" style="width:100%" />
               </a-form-item>
               <a-form-item label="Recent errors (analytics)">
                 <a-input-number v-model:value="form.metrics_errors_maxlen" :min="10" :max="10000" style="width:100%" />

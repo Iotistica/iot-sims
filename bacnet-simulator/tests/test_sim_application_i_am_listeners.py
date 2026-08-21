@@ -17,7 +17,8 @@ import pytest
 from bacpypes3.apdu import IAmRequest
 from bacpypes3.pdu import Address as Bp3Address
 
-from src.legacy import SimApplication, metrics
+from src.bacnet.app import SimApplication
+from src.monitoring.metrics import metrics
 
 
 def _make_i_am(device_instance: int, address: str, vendor_id: int = 999) -> IAmRequest:

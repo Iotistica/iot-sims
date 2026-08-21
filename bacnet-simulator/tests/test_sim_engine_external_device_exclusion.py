@@ -6,7 +6,7 @@ repo's test suite deliberately never calls engine.start()/reload()
 directly -- see conftest.py's docstring)."""
 from __future__ import annotations
 
-from src.legacy import SimEngine
+from src.simulation.engine import SimEngine
 
 
 def test_external_device_excluded_even_when_enabled():

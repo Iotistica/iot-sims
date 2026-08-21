@@ -20,7 +20,7 @@ import pytest
 
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 
-from src.legacy import Database  # noqa: E402
+from src.db import Database  # noqa: E402
 
 
 @pytest.fixture
@@ -76,6 +76,12 @@ def _routers():
         pass
 
     try:
+        from src.api.routers.custom_graphs import router as custom_graphs_router
+        routers.append(custom_graphs_router)
+    except ImportError:
+        pass
+
+    try:
         from src.api.routers.simulation import router as simulation_router
         routers.append(simulation_router)
     except ImportError:
@@ -112,9 +118,9 @@ def test_app(database: Database):
     # assert on exactly what got logged, e.g. tests/test_device_delete_logs.py.
     app.state.logged_events = []
 
-    def _log_event(device_id, level, message):
+    def _log_event(device_id, level, message, *, category="audit"):
         app.state.logged_events.append(
-            {"device_id": device_id, "level": level, "message": message}
+            {"device_id": device_id, "level": level, "message": message, "category": category}
         )
 
     app.state.log_event = _log_event

@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from src.api.routers.functional_test_runs import router as functional_test_runs_router
 from src.api.routers.functional_tests import router as functional_tests_router
 from src.functional_tests import runtime as runtime_module
-from src.legacy import SimEngine
+from src.simulation.engine import SimEngine
 
 
 @pytest.fixture(autouse=True)

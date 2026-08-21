@@ -11,7 +11,7 @@ immediately after Behavior.compute(), before the value is stored/served/
 logged anywhere."""
 from __future__ import annotations
 
-from src.legacy import normalize_present_value
+from src.bacnet.app import normalize_present_value
 
 
 def test_binary_types_always_normalize_to_bool():
@@ -35,7 +35,7 @@ def test_manual_behavior_numeric_input_still_normalizes_correctly():
     a user types into the old plain-number Set Value control) to float --
     normalize_present_value() must still map that back to the correct bool
     for a binary point, matching what the UI's "ON"/"OFF" label shows."""
-    from src.legacy import ManualBehavior
+    from src.simulation.behaviors import ManualBehavior
 
     behavior = ManualBehavior({"value": 1.0})
     assert normalize_present_value("binary-input", behavior.compute(None)) is True
@@ -52,7 +52,7 @@ def test_manual_behavior_accepts_on_off_style_strings():
     This is this app's own displayed vocabulary for binary points (see
     admin/src/format.ts's formatPresentValue: ON/OFF), so it must be
     accepted, not just JSON true/false."""
-    from src.legacy import ManualBehavior
+    from src.simulation.behaviors import ManualBehavior
 
     for word, expected in [
         ("on", True), ("ON", True), (" On ", True), ("active", True), ("true", True),
@@ -68,7 +68,7 @@ def test_manual_behavior_set_also_coerces_on_off_strings():
     construction -- otherwise a restore/re-write after the object already
     has manual behavior would silently store the raw string instead of a
     proper bool."""
-    from src.legacy import ManualBehavior
+    from src.simulation.behaviors import ManualBehavior
 
     behavior = ManualBehavior({"value": True})
     behavior.set("off")
@@ -80,7 +80,7 @@ def test_manual_behavior_set_also_coerces_on_off_strings():
 def test_manual_behavior_numeric_strings_still_coerce_to_float():
     """Non-boolean-word strings (e.g. an analog manual override typed as
     text) must still fall through to float(), unchanged from before."""
-    from src.legacy import ManualBehavior
+    from src.simulation.behaviors import ManualBehavior
 
     assert ManualBehavior({"value": "72.5"}).compute(None) == 72.5
 
@@ -91,7 +91,7 @@ def test_coerce_binary_write_value():
     for ANY non-empty string -- bool("0") and bool("off") were both True,
     so writing "0"/"off" to a binary-output silently turned it ON instead
     of OFF."""
-    from src.legacy import coerce_binary_write_value
+    from src.bacnet.app import coerce_binary_write_value
 
     assert coerce_binary_write_value(True) is True
     assert coerce_binary_write_value(False) is False

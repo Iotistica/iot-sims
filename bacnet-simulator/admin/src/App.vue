@@ -21,6 +21,7 @@ import SettingsView from './components/SettingsView.vue'
 import PacketCapturePanel from './components/PacketCapturePanel.vue'
 import SemanticPanel from './components/SemanticPanel.vue'
 import FunctionalTestsView from './components/functional-tests/FunctionalTestsView.vue'
+import SavedGraphsView from './components/SavedGraphsView.vue'
 import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
 import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
@@ -47,7 +48,8 @@ const activeView = ref<
   'settings' |
   'utility' |
   'semantic' |
-  'tests'
+  'tests' |
+  'graphs'
 >('devices')
 
 const health  = ref<Health>({ status: 'unknown', bacnet_running: false, devices: 0, sim_state: 'stopped', elapsed_seconds: 0 })
@@ -307,6 +309,18 @@ const duplicateOptions     = ref({
   semantics: true,
   simulation: true,
 })
+
+// Sidebar (LeftSideView) width — user-resizable via its own drag handle,
+// persisted so the chosen width survives a page reload.
+const SIDEBAR_WIDTH_KEY = 'bacnet-sim-sidebar-width'
+const sidebarWidth = ref<number>((() => {
+  const raw = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
+  return Number.isFinite(raw) && raw > 0 ? raw : 320
+})())
+function onSidebarWidthChange(value: number) {
+  sidebarWidth.value = value
+  localStorage.setItem(SIDEBAR_WIDTH_KEY, String(value))
+}
 
 // Active project state — persisted to localStorage so a page reload (e.g.
 // after a frontend rebuild) doesn't lose track of which project "Save"
@@ -907,6 +921,7 @@ onUnmounted(() => {
           <a-radio-button value="utility"><DashboardOutlined /> Utilities</a-radio-button>
           <a-radio-button value="semantic"><PartitionOutlined /> Graph</a-radio-button>
           <a-radio-button value="tests"><ExperimentOutlined /> Tests</a-radio-button>
+          <a-radio-button value="graphs"><LineChartOutlined /> Data Graphs</a-radio-button>
         </a-radio-group>
 
         <div style="flex:1"></div>
@@ -943,11 +958,14 @@ onUnmounted(() => {
       <UtilitiesDashboard v-else-if="activeView === 'utility'" />
       <SemanticPanel v-else-if="activeView === 'semantic'" />
       <FunctionalTestsView v-else-if="activeView === 'tests'" />
+      <SavedGraphsView v-else-if="activeView === 'graphs'" />
       <a-layout v-else>
         <!-- Sidebar: extracted tree / left panel -->
         <LeftSideView
           v-model:search="deviceSearch"
           v-model:expanded-keys="expandedKeys"
+          :width="sidebarWidth"
+          @update:width="onSidebarWidthChange"
           :devices="devices"
           :locations="locations"
           :equipment="equipment"
@@ -1021,7 +1039,7 @@ onUnmounted(() => {
           </div>
 
         </div>
-        <DeviceLogPanel />
+        <DeviceLogPanel :device="selectedDevice" />
         </a-layout-content>
       </a-layout>
     </a-layout>

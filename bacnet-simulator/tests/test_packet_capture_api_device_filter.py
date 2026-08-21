@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from src.api.routers.devices import router as devices_router
 from src.api.routers.packet_capture import router as packet_capture_router
 from src.bacnet.packet_capture import PacketCapture
-from src.legacy import Database
+from src.db import Database
 
 
 class _FakeEngine:

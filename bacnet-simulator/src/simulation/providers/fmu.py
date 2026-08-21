@@ -56,27 +56,28 @@ class FMUPointBinding:
     direction: str
 
 
-# "max" and "weighted_average" are implemented; the tuple/dataclass shape
-# (an operation string plus a list of source points) is deliberately generic
-# so min/avg/sum can be added later without changing the aggregate's
+# "max", "min", and "weighted_average" are implemented; the tuple/dataclass
+# shape (an operation string plus a list of source points) is deliberately
+# generic so avg/sum can be added later without changing the aggregate's
 # representation.
-_SUPPORTED_AGGREGATE_OPERATIONS = {"max", "weighted_average"}
+_SUPPORTED_AGGREGATE_OPERATIONS = {"max", "min", "weighted_average"}
 
 
 @dataclass(frozen=True)
 class FMUAggregateInput:
-    """An FMU input variable driven by an operation ("max" or
+    """An FMU input variable driven by an operation ("max", "min", or
     "weighted_average") over several BACnet points' live values, rather than
-    exactly one point or a constant. See FMUAggregateStepError for why "max"
-    never tolerates partial resolution.
+    exactly one point or a constant. See FMUAggregateStepError for why
+    "max"/"min" never tolerate partial resolution.
 
     weight_point_ids is only meaningful for operation="weighted_average": it
     is a second point-id list, positionally paired with point_ids (index i's
     weight is weight_point_ids[i]), one weight point per value point. It is
-    empty for "max" (or any future non-weighted operation). Unlike "max",
-    weighted_average tolerates a partial member set at resolution time --
-    see _resolve_weighted_average's docstring for why a per-pair fault
-    doesn't have the same "silently wrong" risk max's docstring warns about.
+    empty for "max"/"min" (or any future non-weighted operation). Unlike
+    "max"/"min", weighted_average tolerates a partial member set at
+    resolution time -- see _resolve_weighted_average's docstring for why a
+    per-pair fault doesn't have the same "silently wrong" risk max/min's
+    docstring warns about.
     """
     variable: str
     operation: str
@@ -381,7 +382,7 @@ class FMUSimulationProvider(SimulationProvider):
         _build_step_payload so both call sites stay in lockstep as
         operations are added -- only their own differing log level /
         unresolved-vs-raise handling lives at the call site. diagnostics is
-        operation-shaped (raw_values for max, pairs for weighted_average)
+        operation-shaped (raw_values for max/min, pairs for weighted_average)
         so callers can build a full input_report entry without needing
         their own per-operation branch."""
         if agg.operation == "weighted_average":
@@ -580,6 +581,8 @@ class FMUSimulationProvider(SimulationProvider):
     def _compute_aggregate(agg: FMUAggregateInput, raw_values: list[float]) -> float:
         if agg.operation == "max":
             return max(raw_values)
+        if agg.operation == "min":
+            return min(raw_values)
         raise ValueError(f"Unsupported aggregate operation: {agg.operation!r}")
 
     def _aggregate_failure_detail(

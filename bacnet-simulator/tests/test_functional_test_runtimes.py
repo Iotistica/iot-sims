@@ -21,7 +21,7 @@ import pytest
 from src.functional_tests import runtime as runtime_module
 from src.functional_tests.operands import ExecutionError
 from src.functional_tests.runtime import TestRuntime
-from src.legacy import SimEngine
+from src.simulation.engine import SimEngine
 
 SIMULATED_DEVICE = {"source_type": "simulated"}
 EXTERNAL_DEVICE = {"source_type": "external-bacnet", "external_host": "10.0.0.5", "device_instance": 99}

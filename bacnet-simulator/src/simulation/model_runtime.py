@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..monitoring.event_log import _log_event
 from .model_store import (
     get_simulation_model,
     list_enabled_simulation_models,
@@ -395,7 +396,16 @@ def unregister_model_config(engine: Any, config: dict) -> bool:
     )
 
 
-def reload_model(database: Any, engine: Any, model_id: int) -> dict:
+def reload_model(database: Any, engine: Any, model_id: int, *, log_success: bool = True) -> dict:
+    """
+    log_success=False lets a caller that already logs its own, more specific
+    success event (currently only set_simulation_model_enabled_route's
+    "simulation enabled") suppress this function's generic "FMU model
+    started" -- otherwise a single Enabled-toggle click produced two log
+    lines for the one action. The failure log always fires regardless: it's
+    the only place that failure is ever recorded, so suppressing it would
+    lose real information, not just deduplicate it.
+    """
     config = get_simulation_model(database, model_id)
     if config is None:
         raise ValueError(f"Simulation model {model_id} does not exist")
@@ -405,7 +415,17 @@ def reload_model(database: Any, engine: Any, model_id: int) -> dict:
 
     if config["enabled"]:
         config = {**config, "_settings": database.get_settings()}
-        register_model_config(engine, config)
+        device_id = config.get("created_from_device_id")
+        try:
+            register_model_config(engine, config)
+        except Exception as exc:
+            _log_event(
+                device_id, "error", f"FMU registration failed ({exc})",
+                category="simulation",
+            )
+            raise
+        if log_success:
+            _log_event(device_id, "info", "FMU model started", category="simulation")
 
     return config
 
@@ -440,6 +460,7 @@ def reconcile_enabled_models(database: Any, engine: Any) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
 
     for config in persisted:
+        device_id = config.get("created_from_device_id")
         try:
             runtime_id = register_model_config(
                 engine,
@@ -448,11 +469,17 @@ def reconcile_enabled_models(database: Any, engine: Any) -> dict[str, Any]:
             )
             loaded.append(runtime_id)
         except Exception as exc:
+            _log_event(
+                device_id, "error", f"FMU registration failed ({exc})",
+                category="simulation",
+            )
             errors.append({
                 "model_id": str(config["id"]),
                 "name": str(config["name"]),
                 "error": str(exc),
             })
+        else:
+            _log_event(device_id, "info", "FMU model started", category="simulation")
 
     return {
         "loaded": loaded,
@@ -564,13 +591,26 @@ def recover_unhealthy_simulation_models(database: Any, engine: Any) -> dict[str,
             _recovery_failure_counts.pop(failure_key, None)
             recovered.append(runtime_id)
         except Exception as exc:
-            _recovery_failure_counts[failure_key] = consecutive_failures + 1
+            new_failure_count = consecutive_failures + 1
+            _recovery_failure_counts[failure_key] = new_failure_count
             log.warning(
                 "FMU SESSION RECOVER FAILED model_id=%s runtime_id=%s error=%s",
                 config["id"],
                 runtime_id,
                 exc,
             )
+            # reload_model() already logged the registration failure itself
+            # (device-scoped, category="simulation") -- only log here when
+            # this sweep is the one that trips the circuit breaker, so
+            # "giving up" is reported once rather than every 30s thereafter
+            # (the skip branch above, taken on every later sweep once the
+            # circuit is open, deliberately does not log again).
+            if new_failure_count == _MAX_CONSECUTIVE_RECOVERY_FAILURES:
+                _log_event(
+                    config.get("created_from_device_id"), "error",
+                    f"FMU recovery abandoned after {new_failure_count} consecutive attempts",
+                    category="simulation",
+                )
             errors.append({
                 "model_id": str(config["id"]),
                 "name": str(config["name"]),
