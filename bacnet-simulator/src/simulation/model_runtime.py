@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -59,6 +60,55 @@ def _is_aggregate_row(mapping: dict) -> bool:
     ordinary Point row (singular "point_id"). Aggregate rows are always
     direction="input" -- output mappings are never aggregated."""
     return "point_ids" in mapping
+
+
+def runtime_signature(config: dict) -> tuple:
+    """A hashable snapshot of everything about a simulation model config
+    that actually determines how its provider is built -- provider/model
+    identity, parameters, and point wiring. Deliberately excludes `name`,
+    `description`, and every denormalized display field a mapping/exposure
+    row carries (point_name, device_name, object_type, units, ...) --
+    those can change (e.g. renaming the point a mapping already points at)
+    without the wiring itself changing at all. Two configs with an equal
+    signature would build an identical provider, so the caller (the model
+    PUT route) can skip an unnecessary unregister+reregister -- for an
+    EnergyPlus/Spawn-backed FMU that restart re-runs the model's full
+    warmup, so doing it on every Apply click even when nothing runtime-
+    relevant changed was needlessly resetting simulated time and costing
+    real wall-clock minutes."""
+    mappings = config.get("mappings", [])
+    point_rows = tuple(sorted(
+        (
+            mapping.get("variable"),
+            mapping.get("direction"),
+            mapping.get("point_id"),
+            mapping.get("conversion"),
+        )
+        for mapping in mappings if not _is_aggregate_row(mapping)
+    ))
+    aggregate_rows = tuple(sorted(
+        (
+            mapping.get("variable"),
+            mapping.get("direction"),
+            mapping.get("operation"),
+            tuple(mapping.get("point_ids") or []),
+            tuple(mapping.get("weight_point_ids") or []),
+        )
+        for mapping in mappings if _is_aggregate_row(mapping)
+    ))
+    exposure_rows = tuple(sorted(
+        (exposure.get("variable"), exposure.get("point_id"))
+        for exposure in config.get("input_exposures", [])
+    ))
+    return (
+        config.get("provider_type"),
+        config.get("model_type"),
+        json.dumps(config.get("parameters") or {}, sort_keys=True),
+        config.get("created_from_device_id"),
+        point_rows,
+        aggregate_rows,
+        exposure_rows,
+    )
 
 
 def _aggregate_row_device_ids(mapping: dict) -> list[int]:
@@ -396,7 +446,14 @@ def unregister_model_config(engine: Any, config: dict) -> bool:
     )
 
 
-def reload_model(database: Any, engine: Any, model_id: int, *, log_success: bool = True) -> dict:
+def reload_model(
+    database: Any,
+    engine: Any,
+    model_id: int,
+    *,
+    log_success: bool = True,
+    success_message: str = "FMU model started",
+) -> dict:
     """
     log_success=False lets a caller that already logs its own, more specific
     success event (currently only set_simulation_model_enabled_route's
@@ -405,6 +462,12 @@ def reload_model(database: Any, engine: Any, model_id: int, *, log_success: bool
     lines for the one action. The failure log always fires regardless: it's
     the only place that failure is ever recorded, so suppressing it would
     lose real information, not just deduplicate it.
+
+    success_message lets a caller that knows this call is actually
+    replacing an already-running session (e.g. the model PUT route, when
+    runtime_signature() shows a real config change while the model was
+    already enabled) say so explicitly -- "FMU model started" reads as a
+    fresh start even when it's really a restart caused by an edit.
     """
     config = get_simulation_model(database, model_id)
     if config is None:
@@ -425,7 +488,7 @@ def reload_model(database: Any, engine: Any, model_id: int, *, log_success: bool
             )
             raise
         if log_success:
-            _log_event(device_id, "info", "FMU model started", category="simulation")
+            _log_event(device_id, "info", success_message, category="simulation")
 
     return config
 

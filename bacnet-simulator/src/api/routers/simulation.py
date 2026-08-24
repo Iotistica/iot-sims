@@ -23,6 +23,7 @@ from ...simulation.model_runtime import (
     provider_runtime_id,
     reconcile_enabled_models,
     reload_model,
+    runtime_signature,
 )
 from ...simulation.model_store import (
     create_simulation_model,
@@ -1491,9 +1492,35 @@ async def edit_simulation_model(
         if old_runtime_id != new_runtime_id:
             engine.unregister_simulation_provider(old_runtime_id)
 
-        if model["enabled"]:
+        # Skip the restart entirely when the model was already enabled and
+        # nothing runtime_signature() cares about actually changed (e.g.
+        # Apply was clicked after only editing the name, or with no edits
+        # at all). reload_model() always unregisters then reregisters
+        # unconditionally -- for an EnergyPlus/Spawn-backed FMU that means
+        # re-running the model's full warmup and logging a fresh "FMU
+        # model started" every single Apply, even a no-op one. A real
+        # config change (mappings, parameters, model_type, ...), or a
+        # disabled -> enabled transition (nothing running yet to compare
+        # against), still always goes through reload_model() below.
+        needs_restart = (
+            not existing["enabled"]
+            or old_runtime_id != new_runtime_id
+            or runtime_signature(existing) != runtime_signature(model)
+        )
+
+        if model["enabled"] and needs_restart:
+            # existing["enabled"] means a session was already running before
+            # this Apply -- "restarted" is the honest description for that
+            # case (an edit forced a fresh session, replacing a live one).
+            # "started" is reserved for the case nothing was running yet
+            # (a disabled -> enabled transition), which is a genuine start.
+            restart_message = (
+                "Simulation model updated and restarted"
+                if existing["enabled"]
+                else "FMU model started"
+            )
             try:
-                reload_model(database, engine, model_id)
+                reload_model(database, engine, model_id, success_message=restart_message)
             except Exception as exc:
                 log.exception(
                     "Simulation model activation failed: model_id=%s name=%s "
