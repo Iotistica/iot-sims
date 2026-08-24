@@ -1514,13 +1514,9 @@ async def edit_simulation_model(
             # case (an edit forced a fresh session, replacing a live one).
             # "started" is reserved for the case nothing was running yet
             # (a disabled -> enabled transition), which is a genuine start.
-            restart_message = (
-                "Simulation model updated and restarted"
-                if existing["enabled"]
-                else "FMU model started"
-            )
+            action = "restarted" if existing["enabled"] else "started"
             try:
-                reload_model(database, engine, model_id, success_message=restart_message)
+                reload_model(database, engine, model_id, action=action)
             except Exception as exc:
                 log.exception(
                     "Simulation model activation failed: model_id=%s name=%s "

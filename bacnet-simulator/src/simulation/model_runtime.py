@@ -452,22 +452,26 @@ def reload_model(
     model_id: int,
     *,
     log_success: bool = True,
-    success_message: str = "FMU model started",
+    action: str = "started",
 ) -> dict:
     """
     log_success=False lets a caller that already logs its own, more specific
     success event (currently only set_simulation_model_enabled_route's
-    "simulation enabled") suppress this function's generic "FMU model
+    "simulation enabled") suppress this function's generic "FMU model ...
     started" -- otherwise a single Enabled-toggle click produced two log
     lines for the one action. The failure log always fires regardless: it's
     the only place that failure is ever recorded, so suppressing it would
     lose real information, not just deduplicate it.
 
-    success_message lets a caller that knows this call is actually
-    replacing an already-running session (e.g. the model PUT route, when
+    action lets a caller that knows this call is actually replacing an
+    already-running session (e.g. the model PUT route, when
     runtime_signature() shows a real config change while the model was
-    already enabled) say so explicitly -- "FMU model started" reads as a
-    fresh start even when it's really a restart caused by an edit.
+    already enabled) say "restarted" instead of the default "started" --
+    the default reads as a fresh start even when it's really a restart
+    caused by an edit. Kept as a single verb rather than a full override
+    string so every caller's message stays the same
+    `FMU model "<name>" <action>` shape -- naming which model changed,
+    consistently, everywhere this fires.
     """
     config = get_simulation_model(database, model_id)
     if config is None:
@@ -488,7 +492,10 @@ def reload_model(
             )
             raise
         if log_success:
-            _log_event(device_id, "info", success_message, category="simulation")
+            _log_event(
+                device_id, "info", f'FMU model "{config["name"]}" {action}',
+                category="simulation",
+            )
 
     return config
 
