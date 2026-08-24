@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -203,11 +204,28 @@ def get_remote_model_definition(settings: dict[str, Any], model_id: str) -> Mode
 
 
 def get_remote_model_catalog(settings: dict[str, Any]) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
-    for summary in fetch_remote_catalog(settings):
-        model_id = summary.get("id")
-        if not model_id:
-            continue
-        metadata = fetch_remote_metadata(settings, str(model_id))
-        entries.append(definition_from_metadata(metadata).catalog_entry())
-    return entries
+    """Every catalog entry needs its own /metadata fetch (the summary list
+    from fetch_remote_catalog() doesn't carry inputs/outputs) -- fetched
+    concurrently, not one HTTP round trip after another, since a cold
+    _metadata_cache (a fresh model added, a restarted runtime, or just the
+    30s TTL having lapsed) previously meant the Simulation Model drawer's
+    open() waited on N sequential round trips to the FMU runtime instead
+    of one. Safe to run concurrently: fetch_remote_metadata()'s own cache
+    is a plain dict, but every thread here writes a different model_id key,
+    and dict item assignment is already atomic under the GIL."""
+    model_ids = [
+        str(summary["id"])
+        for summary in fetch_remote_catalog(settings)
+        if summary.get("id")
+    ]
+    if not model_ids:
+        return []
+    with ThreadPoolExecutor(max_workers=min(8, len(model_ids))) as pool:
+        metadatas = pool.map(
+            lambda model_id: fetch_remote_metadata(settings, model_id),
+            model_ids,
+        )
+    return [
+        definition_from_metadata(metadata).catalog_entry()
+        for metadata in metadatas
+    ]
