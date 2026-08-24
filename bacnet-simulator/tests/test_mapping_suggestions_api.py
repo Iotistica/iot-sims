@@ -12,6 +12,16 @@ import pytest
 
 from src.simulation.mapping_ai_suggestions import AiMappingSuggestion
 
+# Real catalog GUID for the remote runtime's SimpleVAVZone model -- these
+# tests reach the actual FMU runtime (see get_runtime_settings's
+# fmu_runtime_url default), so model_type must be an id that runtime's
+# catalog genuinely has. Used to be the pre-GUID id "simple_vav_zone_fmu",
+# which only resolved via LEGACY_MODEL_IDS's alias table; now that that
+# table is gone (removed once nothing live still needed the old-id ->
+# GUID upgrade), tests must use the real id directly like every other
+# caller already does.
+SIMPLE_VAV_ZONE_MODEL_TYPE = "b76aae8c-ecfe-44f2-b053-8b005c8ae2ed"
+
 
 def _set_equipment_type(client, device: dict, equipment_type: str) -> dict:
     resp = client.put(f"/devices/{device['id']}", json={
@@ -61,7 +71,7 @@ def test_mapping_suggestions_returns_entry_per_variable(client):
     device = client.post("/devices", json={"device_instance": 3003, "name": "VAV-Plain"}).json()
 
     resp = client.post("/simulation/models/mapping-suggestions", json={
-        "model_type": "simple_vav_zone_fmu", "provider_type": "fmu",
+        "model_type": SIMPLE_VAV_ZONE_MODEL_TYPE, "provider_type": "fmu",
         "created_from_device_id": device["id"],
     })
     assert resp.status_code == 200, resp.text
@@ -194,7 +204,7 @@ def test_mapping_suggestion_ai_without_topology_still_returns_valid_shortlist(cl
 def test_mapping_suggestion_ai_unknown_variable_400(client):
     device = client.post("/devices", json={"device_instance": 3006, "name": "VAV-BadVar"}).json()
     resp = client.post("/simulation/models/mapping-suggestions/ai", json={
-        "model_type": "simple_vav_zone_fmu", "variable": "not_a_real_variable", "created_from_device_id": device["id"],
+        "model_type": SIMPLE_VAV_ZONE_MODEL_TYPE, "variable": "not_a_real_variable", "created_from_device_id": device["id"],
     })
     assert resp.status_code == 400
 

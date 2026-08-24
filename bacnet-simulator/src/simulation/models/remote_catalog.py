@@ -10,34 +10,18 @@ from urllib.request import Request, urlopen
 from .registry import MappingHints, ModelDefinition, VariableDefinition
 
 
-LEGACY_MODEL_IDS = {
-    # Pre-GUID snake_case ids -> current catalog GUIDs. Two-hop history
-    # (snake_case -> PascalCase -> GUID) collapses to a single direct
-    # mapping here rather than chaining lookups.
-    "simple_vav_zone_fmu": "b76aae8c-ecfe-44f2-b053-8b005c8ae2ed",
-    "simple_ahu_fmu": "dec110d0-11ec-4191-a01c-8c09d05cf130",
-    # Pre-GUID PascalCase ids (the catalog's own "id" values before the
-    # model-id-to-GUID migration; now surfaced as each model's "slug") ->
-    # current catalog GUIDs. Any simulation_model_configs.model_type row
-    # persisted before the migration is upgraded to the new GUID the next
-    # time it's read (see model_store.py::_decode_config), the same
-    # mechanism that already handled the snake_case entries above.
-    "RTU": "ac5e7188-4b72-43e0-9124-912007232705",
-    "SimpleVAVZone": "b76aae8c-ecfe-44f2-b053-8b005c8ae2ed",
-    "ThermalZone": "aaeb9641-2137-4c79-b4f4-baa88cbce5a5",
-    "SimpleAHU": "dec110d0-11ec-4191-a01c-8c09d05cf130",
-    "AHU": "67914b04-327b-4b2b-ba84-a551995148d6",
-    "BoilerPlant": "f5ed0e92-792b-4515-9a80-0e91b4fa8061",
-    "SimpleChillerPlant": "65e1d3f2-81d7-4739-a90a-72d28bcadc96",
-}
-
 _CACHE_TTL_SECONDS = 30.0
 _catalog_cache: dict[tuple[str, float], tuple[float, list[dict[str, Any]]]] = {}
 _metadata_cache: dict[tuple[str, float, str], tuple[float, dict[str, Any]]] = {}
 
 
 def normalize_remote_model_id(model_id: str) -> str:
-    return LEGACY_MODEL_IDS.get(model_id, model_id)
+    """No-op today -- kept as the single boundary every caller already
+    normalizes a model id through, so a future id migration (like the
+    pre-GUID -> GUID cutover this used to bridge, removed once no live
+    config or project export still needed it) has one place to hook back
+    in rather than touching every call site again."""
+    return model_id
 
 
 def _request_json(base_url: str, timeout_s: float, path: str) -> dict[str, Any]:

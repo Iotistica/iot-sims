@@ -4,7 +4,7 @@ import json
 import sqlite3
 from typing import Any
 
-from .models.remote_catalog import LEGACY_MODEL_IDS, normalize_remote_model_id
+from .models.remote_catalog import normalize_remote_model_id
 
 
 def ensure_simulation_model_schema(database: Any) -> None:
@@ -185,40 +185,7 @@ def ensure_simulation_model_schema(database: Any) -> None:
                 "ALTER TABLE simulation_model_mappings ADD COLUMN conversion TEXT"
             )
 
-        _backfill_legacy_model_type_ids(conn)
         conn.commit()
-
-
-def _backfill_legacy_model_type_ids(conn: sqlite3.Connection) -> None:
-    """One-time data migration for the model-id-to-GUID catalog cutover:
-    rewrites any simulation_model_configs.model_type row still holding a
-    pre-migration id (e.g. "RTU", "SimpleVAVZone", or an even older
-    snake_case id) to its current GUID, using the exact same
-    LEGACY_MODEL_IDS table _decode_config()'s normalize_remote_model_id()
-    already uses to upgrade on READ. That read-time upgrade alone is not
-    enough here: this is a hard cutover (old ids are rejected by the
-    catalog's own GET /models/{id}/... routes going forward, not aliased
-    indefinitely), so a row left un-rewritten would work today (because of
-    the read-time upgrade) but break the moment normalize_remote_model_id's
-    fallback-to-identity path is ever removed, or wherever model_type is
-    read via a path that doesn't call it. Guarded by a cheap COUNT check so
-    this is a no-op on every call after the first (ensure_simulation_model_
-    schema runs on most requests)."""
-    ids = tuple(LEGACY_MODEL_IDS.keys())
-    if not ids:
-        return
-    placeholders = ",".join("?" for _ in ids)
-    stale = conn.execute(
-        f"SELECT COUNT(*) FROM simulation_model_configs WHERE model_type IN ({placeholders})",
-        ids,
-    ).fetchone()[0]
-    if not stale:
-        return
-    for old_id, new_id in LEGACY_MODEL_IDS.items():
-        conn.execute(
-            "UPDATE simulation_model_configs SET model_type=? WHERE model_type=?",
-            (new_id, old_id),
-        )
 
 
 def _decode_config(row: Any) -> dict[str, Any]:
