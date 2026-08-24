@@ -33,6 +33,7 @@ from ..semantics.mirror import sync_entity_from_flat_field, sync_flat_field_from
 from ..semantics.validation import validate_semantic_entity
 from ..simulation.model_store import (
     ensure_simulation_model_schema,
+    get_aggregate_membership_owner,
     insert_simulation_model,
     list_all_simulation_models,
     reconcile_provider_owned_raw_behavior,
@@ -627,6 +628,171 @@ class Database:
             cur = conn.execute("DELETE FROM locations WHERE id=?", (location_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    def _subtree_location_ids(self, conn: sqlite3.Connection, location_id: int) -> list[int]:
+        """location_id and every location beneath it, in BFS (parent-
+        before-child) order -- a child is only ever appended to the list
+        in the round after its parent, so a caller that needs children
+        deleted before their parents (avoiding locations.parent_location_id's
+        FK) can just iterate reversed(result)."""
+        ids = [location_id]
+        frontier = [location_id]
+        while frontier:
+            placeholders = ",".join("?" * len(frontier))
+            rows = conn.execute(
+                f"SELECT id FROM locations WHERE parent_location_id IN ({placeholders})",
+                frontier,
+            ).fetchall()
+            frontier = [r["id"] for r in rows]
+            ids.extend(frontier)
+        return ids
+
+    def get_location_deletion_impact(self, location_id: int) -> dict:
+        """Read-only preview of what delete_location_cascade(location_id)
+        would do -- used by the admin UI to show a friendly confirmation
+        (counts + what else references the points inside) instead of just
+        letting the cascade fail or silently drop simulation-model/graph
+        references. Never mutates anything."""
+        with self._conn() as conn:
+            location_ids = self._subtree_location_ids(conn, location_id)
+            sub_location_count = len(location_ids) - 1
+
+            loc_placeholders = ",".join("?" * len(location_ids))
+            device_rows = conn.execute(
+                f"SELECT id, name FROM devices WHERE location_id IN ({loc_placeholders})",
+                location_ids,
+            ).fetchall()
+            device_ids = [r["id"] for r in device_rows]
+            device_name_by_id = {r["id"]: r["name"] for r in device_rows}
+
+            equipment_count = conn.execute(
+                f"SELECT COUNT(*) FROM equipment WHERE location_id IN ({loc_placeholders})",
+                location_ids,
+            ).fetchone()[0]
+
+            point_rows = []
+            if device_ids:
+                dev_placeholders = ",".join("?" * len(device_ids))
+                point_rows = conn.execute(
+                    f"SELECT id, name, device_id FROM objects WHERE device_id IN ({dev_placeholders})",
+                    device_ids,
+                ).fetchall()
+
+            # N+1 is deliberate here: reuses get_aggregate_membership_owner
+            # as-is (same function objects.py::delete_object already
+            # trusts for the single-point case) rather than re-deriving its
+            # JOIN logic -- point counts under one location are small, and
+            # this is a read-only preview, not a hot path.
+            blocking_points: list[dict] = []
+            for point in point_rows:
+                owner = get_aggregate_membership_owner(self, point["id"])
+                if owner is not None:
+                    blocking_points.append({
+                        "point_name": point["name"],
+                        "device_name": device_name_by_id.get(point["device_id"], ""),
+                        "model_name": owner["model_name"],
+                        "variable": owner["variable"],
+                    })
+
+            affected_simulation_models: list[dict] = []
+            affected_custom_graphs: list[dict] = []
+            if point_rows:
+                point_ids = [p["id"] for p in point_rows]
+                pt_placeholders = ",".join("?" * len(point_ids))
+                model_rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT c.id, c.name
+                    FROM simulation_model_configs c
+                    WHERE c.id IN (
+                        SELECT model_config_id FROM simulation_model_mappings
+                        WHERE point_id IN ({pt_placeholders})
+                        UNION
+                        SELECT model_config_id FROM simulation_model_input_exposures
+                        WHERE point_id IN ({pt_placeholders})
+                    )
+                    ORDER BY c.name
+                    """,
+                    point_ids + point_ids,
+                ).fetchall()
+                affected_simulation_models = [dict(r) for r in model_rows]
+
+                # custom_graphs.definition_json's series entries are a JSON
+                # blob, not an FK (see that table's own comment) -- has to
+                # be scanned in Python, there's no cascade to rely on.
+                point_id_set = set(point_ids)
+                device_id_set = set(device_ids)
+                for g in conn.execute("SELECT id, name, definition_json FROM custom_graphs").fetchall():
+                    try:
+                        definition = json.loads(g["definition_json"])
+                    except (TypeError, ValueError):
+                        continue
+                    series = definition.get("series") if isinstance(definition, dict) else None
+                    if not series:
+                        continue
+                    hit = any(
+                        isinstance(s, dict)
+                        and s.get("device_id") in device_id_set
+                        and s.get("object_id") in point_id_set
+                        for s in series
+                    )
+                    if hit:
+                        affected_custom_graphs.append({"id": g["id"], "name": g["name"]})
+
+            return {
+                "sub_location_count": sub_location_count,
+                "device_count": len(device_ids),
+                "equipment_count": equipment_count,
+                "point_count": len(point_rows),
+                "blocked": bool(blocking_points),
+                "blocking_points": blocking_points,
+                "affected_simulation_models": affected_simulation_models,
+                "affected_custom_graphs": affected_custom_graphs,
+            }
+
+    def delete_location_cascade(self, location_id: int) -> bool:
+        """Cascade variant of delete_location(): deletes the location and
+        everything under it. Devices and equipment in scope are deleted
+        first -- devices.id -> objects.device_id ON DELETE CASCADE takes
+        each device's objects, and those objects' simulation_model_mappings/
+        input_exposures, with them automatically. If any surviving object
+        is still an aggregate-mapping member (ON DELETE RESTRICT, see
+        model_store.ensure_simulation_model_schema's own comment), that
+        bulk DELETE raises sqlite3.IntegrityError here -- deliberately left
+        uncaught so the whole transaction rolls back; the API layer
+        (locations.py::delete_location) translates it into a clean 409,
+        mirroring devices.py::delete_device's existing pattern. Locations
+        themselves are deleted one at a time, deepest-first (reversed
+        BFS order), since parent_location_id has no ON DELETE clause and a
+        single bulk `DELETE ... WHERE id IN (...)` can't guarantee that
+        ordering itself.
+        """
+        with self._conn() as conn:
+            location_ids = self._subtree_location_ids(conn, location_id)
+            loc_placeholders = ",".join("?" * len(location_ids))
+
+            conn.execute(
+                f"DELETE FROM devices WHERE location_id IN ({loc_placeholders})",
+                location_ids,
+            )
+            conn.execute(
+                f"DELETE FROM equipment WHERE location_id IN ({loc_placeholders})",
+                location_ids,
+            )
+
+            deleted_count = 0
+            for loc_id in reversed(location_ids):
+                conn.execute(
+                    "DELETE FROM semantic_relationships "
+                    "WHERE source_entity_id IN (SELECT id FROM semantic_entities WHERE location_id=?) "
+                    "OR target_entity_id IN (SELECT id FROM semantic_entities WHERE location_id=?)",
+                    (loc_id, loc_id),
+                )
+                conn.execute("DELETE FROM semantic_entities WHERE location_id=?", (loc_id,))
+                cur = conn.execute("DELETE FROM locations WHERE id=?", (loc_id,))
+                deleted_count += cur.rowcount
+
+            conn.commit()
+            return deleted_count > 0
 
     # ── Equipment ─────────────────────────────────────────────────────────────
     # A real, standalone piece of building equipment -- distinct from a
@@ -2425,72 +2591,114 @@ class Database:
             ]
 
     @staticmethod
-    def _attach_trend_logs(conn: sqlite3.Connection, dev: dict) -> None:
-        """Snapshot this device's trend logs for a project, replacing the
-        live monitored_object_id with a portable (object_type, object_instance)
-        reference — object ids are reassigned on load, so a raw id wouldn't
-        survive the round trip."""
-        trend_logs = [dict(r) for r in conn.execute(
-            "SELECT * FROM trend_logs WHERE device_id=?", (dev["id"],)
-        )]
-        for tl in trend_logs:
-            mon = conn.execute(
-                "SELECT object_type, object_instance FROM objects WHERE id=?",
-                (tl.pop("monitored_object_id"),),
-            ).fetchone()
-            tl["monitored_object_ref"] = (
-                {"object_type": mon["object_type"], "object_instance": mon["object_instance"]}
-                if mon else None
-            )
+    def _bulk_attach_project_snapshot_children(conn: sqlite3.Connection, devices: list[dict]) -> None:
+        """Batched replacement for what used to be a per-device loop calling
+        an objects SELECT + _attach_trend_logs + _attach_schedules +
+        _attach_calendars once EACH -- for a project with N devices, that
+        was 4+ round trips per device (O(N), plus a further nested query
+        per trend-log/schedule-target row) purely from save_project()/
+        update_project() being called, which is to say every single click
+        of Save. Collapses that down to a small constant number of bulk
+        `WHERE device_id IN (...)` queries, then groups results back onto
+        each device dict in Python -- a device with zero trend
+        logs/schedules/calendars (the common case) now costs nothing extra
+        instead of three empty-result queries. Preserves the exact
+        snapshot semantics the old per-device helpers had: trend logs and
+        schedule targets still get their live object id replaced with a
+        portable (object_type, object_instance) reference (object ids are
+        reassigned on load, see also load_project()); a missing/orphaned
+        object reference still becomes monitored_object_ref=None (trend
+        logs) or a dropped target (schedules); calendars are untouched
+        beyond stripping id/device_id, same as before."""
+        if not devices:
+            return
+
+        device_ids = [d["id"] for d in devices]
+        placeholders = ",".join("?" * len(device_ids))
+
+        objects_by_device: dict[int, list[dict]] = {did: [] for did in device_ids}
+        object_ref_by_id: dict[int, dict] = {}
+        for r in conn.execute(
+            f"SELECT * FROM objects WHERE device_id IN ({placeholders}) "
+            "ORDER BY device_id, object_type, object_instance",
+            device_ids,
+        ):
+            row = dict(r)
+            objects_by_device[row["device_id"]].append(row)
+            object_ref_by_id[row["id"]] = {
+                "object_type": row["object_type"],
+                "object_instance": row["object_instance"],
+            }
+        for dev in devices:
+            dev["objects"] = objects_by_device[dev["id"]]
+
+        trend_logs_by_device: dict[int, list[dict]] = {did: [] for did in device_ids}
+        for r in conn.execute(
+            f"SELECT * FROM trend_logs WHERE device_id IN ({placeholders})",
+            device_ids,
+        ):
+            tl = dict(r)
+            device_id = tl["device_id"]
+            tl["monitored_object_ref"] = object_ref_by_id.get(tl.pop("monitored_object_id"))
             tl.pop("id", None)
             tl.pop("device_id", None)
             # Historical records aren't part of a project snapshot, only config.
             tl.pop("record_count", None)
             tl.pop("total_record_count", None)
             tl.pop("last_sampled_at", None)
-        dev["trend_logs"] = trend_logs
+            trend_logs_by_device[device_id].append(tl)
+        for dev in devices:
+            dev["trend_logs"] = trend_logs_by_device[dev["id"]]
 
-    @staticmethod
-    def _attach_schedules(conn: sqlite3.Connection, dev: dict) -> None:
-        """Same portable-reference approach as _attach_trend_logs, but for
-        each schedule's (potentially multiple) target object references."""
-        schedules = [dict(r) for r in conn.execute(
-            "SELECT * FROM bacnet_schedules WHERE device_id=?", (dev["id"],)
-        )]
-        for sched in schedules:
-            targets = conn.execute(
-                "SELECT object_id, property_identifier FROM bacnet_schedule_targets WHERE schedule_id=?",
-                (sched["id"],),
-            )
-            portable_targets = []
-            for t in targets:
-                mon = conn.execute(
-                    "SELECT object_type, object_instance FROM objects WHERE id=?", (t["object_id"],)
-                ).fetchone()
+        schedules_by_device: dict[int, list[dict]] = {did: [] for did in device_ids}
+        schedule_rows_by_id: dict[int, dict] = {}
+        schedule_device_by_id: dict[int, int] = {}
+        for r in conn.execute(
+            f"SELECT * FROM bacnet_schedules WHERE device_id IN ({placeholders})",
+            device_ids,
+        ):
+            sched = dict(r)
+            schedule_rows_by_id[sched["id"]] = sched
+            schedule_device_by_id[sched["id"]] = sched["device_id"]
+
+        targets_by_schedule: dict[int, list[dict]] = {sid: [] for sid in schedule_rows_by_id}
+        if schedule_rows_by_id:
+            schedule_ids = list(schedule_rows_by_id.keys())
+            sched_placeholders = ",".join("?" * len(schedule_ids))
+            for r in conn.execute(
+                "SELECT schedule_id, object_id, property_identifier FROM bacnet_schedule_targets "
+                f"WHERE schedule_id IN ({sched_placeholders})",
+                schedule_ids,
+            ):
+                t = dict(r)
+                mon = object_ref_by_id.get(t["object_id"])
                 if mon:
-                    portable_targets.append({
+                    targets_by_schedule[t["schedule_id"]].append({
                         "object_type": mon["object_type"],
                         "object_instance": mon["object_instance"],
                         "property_identifier": t["property_identifier"],
                     })
-            sched["targets"] = portable_targets
+
+        for sid, sched in schedule_rows_by_id.items():
+            sched["targets"] = targets_by_schedule[sid]
             sched.pop("id", None)
             sched.pop("device_id", None)
-        dev["schedules"] = schedules
+            schedules_by_device[schedule_device_by_id[sid]].append(sched)
+        for dev in devices:
+            dev["schedules"] = schedules_by_device[dev["id"]]
 
-    @staticmethod
-    def _attach_calendars(conn: sqlite3.Connection, dev: dict) -> None:
-        """Calendars need no portable-reference handling of their own — a
-        Schedule's calendarReference exceptions already store the calendar by
-        name (see bacnet_schedule.build_exception_schedule), which survives
-        the id reassignment on project load without any extra work here."""
-        calendars = [dict(r) for r in conn.execute(
-            "SELECT * FROM bacnet_calendars WHERE device_id=?", (dev["id"],)
-        )]
-        for cal in calendars:
+        calendars_by_device: dict[int, list[dict]] = {did: [] for did in device_ids}
+        for r in conn.execute(
+            f"SELECT * FROM bacnet_calendars WHERE device_id IN ({placeholders})",
+            device_ids,
+        ):
+            cal = dict(r)
+            device_id = cal["device_id"]
             cal.pop("id", None)
             cal.pop("device_id", None)
-        dev["calendars"] = calendars
+            calendars_by_device[device_id].append(cal)
+        for dev in devices:
+            dev["calendars"] = calendars_by_device[dev["id"]]
 
     # ─── Functional tests ──────────────────────────────────────────────────
     # Project-level data, independent of any single device/object/location
@@ -2708,14 +2916,7 @@ class Database:
             devices = [dict(r) for r in conn.execute(
                 "SELECT * FROM devices ORDER BY device_instance"
             )]
-            for dev in devices:
-                dev["objects"] = [dict(r) for r in conn.execute(
-                    "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance",
-                    (dev["id"],),
-                )]
-                self._attach_trend_logs(conn, dev)
-                self._attach_schedules(conn, dev)
-                self._attach_calendars(conn, dev)
+            self._bulk_attach_project_snapshot_children(conn, devices)
             # Brick Core: stored verbatim, including the (soon-to-be-stale)
             # id/semantic_key values -- load_project() remaps ids and
             # recomputes semantic_key from the newly-assigned ones rather
@@ -2809,14 +3010,7 @@ class Database:
             devices = [dict(r) for r in conn.execute(
                 "SELECT * FROM devices ORDER BY device_instance"
             )]
-            for dev in devices:
-                dev["objects"] = [dict(r) for r in conn.execute(
-                    "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance",
-                    (dev["id"],),
-                )]
-                self._attach_trend_logs(conn, dev)
-                self._attach_schedules(conn, dev)
-                self._attach_calendars(conn, dev)
+            self._bulk_attach_project_snapshot_children(conn, devices)
             semantic_entities = [dict(r) for r in conn.execute("SELECT * FROM semantic_entities")]
             semantic_relationships = [dict(r) for r in conn.execute("SELECT * FROM semantic_relationships")]
             energy_model_configs = [dict(r) for r in conn.execute("SELECT * FROM energy_model_configs")]

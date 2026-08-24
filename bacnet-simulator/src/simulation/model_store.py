@@ -42,6 +42,7 @@ def ensure_simulation_model_schema(database: Any) -> None:
                 variable TEXT NOT NULL,
                 direction TEXT NOT NULL CHECK(direction IN ('input', 'output')),
                 point_id INTEGER NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+                conversion TEXT,
                 UNIQUE(model_config_id, variable, direction)
             );
 
@@ -169,6 +170,21 @@ def ensure_simulation_model_schema(database: Any) -> None:
                 "ON simulation_model_aggregate_members(weight_point_id)"
             )
 
+        # Additive migration: conversion was added to simulation_model_mappings
+        # after the table first shipped -- a named value conversion (see
+        # mapping_conversions.CONVERSIONS) applied to an FMU output at the
+        # mapping boundary, e.g. 'zero_based_to_multistate' for a zero-based
+        # FMU state output mapped onto this simulator's strictly 1-based
+        # multi-state Present_Value. NULL (no conversion) for every existing
+        # row -- same backfill pattern as weight_point_id above.
+        existing_mapping_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(simulation_model_mappings)")
+        }
+        if "conversion" not in existing_mapping_cols:
+            conn.execute(
+                "ALTER TABLE simulation_model_mappings ADD COLUMN conversion TEXT"
+            )
+
         _backfill_legacy_model_type_ids(conn)
         conn.commit()
 
@@ -226,6 +242,7 @@ def _load_mappings(conn: sqlite3.Connection, model_id: int) -> list[dict]:
             m.variable,
             m.direction,
             m.point_id,
+            m.conversion,
             o.device_id,
             o.name AS point_name,
             o.object_type,
@@ -373,6 +390,183 @@ def _load_input_exposures(conn: sqlite3.Connection, model_id: int) -> list[dict]
     return [dict(row) for row in rows]
 
 
+def _bulk_load_mappings(conn: sqlite3.Connection, model_ids: list[int]) -> dict[int, list[dict]]:
+    """Batched equivalent of calling _load_mappings once per id in
+    model_ids -- one query via a WHERE model_config_id IN (...) instead of
+    one query per model. Ordering (input before output, then by variable)
+    is preserved by sorting the single result set the same way the
+    original per-model ORDER BY did, then grouping by model_config_id."""
+    result: dict[int, list[dict]] = {mid: [] for mid in model_ids}
+    if not model_ids:
+        return result
+    placeholders = ",".join("?" * len(model_ids))
+    rows = conn.execute(
+        f"""
+        SELECT
+            m.id,
+            m.model_config_id,
+            m.variable,
+            m.direction,
+            m.point_id,
+            m.conversion,
+            o.device_id,
+            o.name AS point_name,
+            o.object_type,
+            o.object_instance,
+            o.units,
+            o.point_type,
+            d.name AS device_name
+        FROM simulation_model_mappings m
+        JOIN objects o ON o.id = m.point_id
+        JOIN devices d ON d.id = o.device_id
+        WHERE m.model_config_id IN ({placeholders})
+        ORDER BY
+            m.model_config_id,
+            CASE m.direction WHEN 'input' THEN 0 ELSE 1 END,
+            m.variable
+        """,
+        model_ids,
+    ).fetchall()
+    for row in rows:
+        result[row["model_config_id"]].append(dict(row))
+    return result
+
+
+def _bulk_load_aggregate_mappings(conn: sqlite3.Connection, model_ids: list[int]) -> dict[int, list[dict]]:
+    """Batched equivalent of calling _load_aggregate_mappings once per id
+    in model_ids. Same two-level shape (aggregate header -> member points)
+    as the original, just fetched via two IN (...) queries total instead
+    of 1 + N (one per aggregate header, previously)."""
+    result: dict[int, list[dict]] = {mid: [] for mid in model_ids}
+    if not model_ids:
+        return result
+    placeholders = ",".join("?" * len(model_ids))
+    agg_rows = conn.execute(
+        f"""
+        SELECT id, model_config_id, variable, direction, operation
+        FROM simulation_model_aggregate_mappings
+        WHERE model_config_id IN ({placeholders})
+        ORDER BY model_config_id, variable
+        """,
+        model_ids,
+    ).fetchall()
+    if not agg_rows:
+        return result
+
+    agg_ids = [int(agg["id"]) for agg in agg_rows]
+    agg_placeholders = ",".join("?" * len(agg_ids))
+    member_rows = conn.execute(
+        f"""
+        SELECT
+            am.aggregate_mapping_id,
+            am.point_id,
+            o.name AS point_name,
+            o.device_id,
+            o.object_type,
+            o.object_instance,
+            o.units,
+            o.point_type,
+            d.name AS device_name,
+            am.weight_point_id,
+            wo.name AS weight_point_name,
+            wo.device_id AS weight_device_id,
+            wo.object_type AS weight_object_type,
+            wo.object_instance AS weight_object_instance,
+            wo.units AS weight_units,
+            wo.point_type AS weight_point_type,
+            wd.name AS weight_device_name
+        FROM simulation_model_aggregate_members am
+        JOIN objects o ON o.id = am.point_id
+        JOIN devices d ON d.id = o.device_id
+        LEFT JOIN objects wo ON wo.id = am.weight_point_id
+        LEFT JOIN devices wd ON wd.id = wo.device_id
+        WHERE am.aggregate_mapping_id IN ({agg_placeholders})
+        ORDER BY am.aggregate_mapping_id, am.id
+        """,
+        agg_ids,
+    ).fetchall()
+    members_by_agg: dict[int, list[Any]] = {aid: [] for aid in agg_ids}
+    for m in member_rows:
+        members_by_agg[m["aggregate_mapping_id"]].append(m)
+
+    for agg in agg_rows:
+        agg_id = int(agg["id"])
+        agg_members = members_by_agg[agg_id]
+        point_ids = [int(m["point_id"]) for m in agg_members]
+        weight_point_ids = [
+            int(m["weight_point_id"]) if m["weight_point_id"] is not None else None
+            for m in agg_members
+        ]
+        point_metadata = {
+            int(m["point_id"]): {
+                "point_name": m["point_name"],
+                "device_name": m["device_name"],
+                "device_id": m["device_id"],
+                "object_type": m["object_type"],
+                "object_instance": m["object_instance"],
+                "units": m["units"],
+                "point_type": m["point_type"],
+            }
+            for m in agg_members
+        }
+        for m in agg_members:
+            if m["weight_point_id"] is not None:
+                point_metadata[int(m["weight_point_id"])] = {
+                    "point_name": m["weight_point_name"],
+                    "device_name": m["weight_device_name"],
+                    "device_id": m["weight_device_id"],
+                    "object_type": m["weight_object_type"],
+                    "object_instance": m["weight_object_instance"],
+                    "units": m["weight_units"],
+                    "point_type": m["weight_point_type"],
+                }
+        result[agg["model_config_id"]].append({
+            "id": agg["id"],
+            "model_config_id": agg["model_config_id"],
+            "variable": agg["variable"],
+            "direction": agg["direction"],
+            "operation": agg["operation"],
+            "point_ids": point_ids,
+            "weight_point_ids": weight_point_ids,
+            "point_metadata": point_metadata,
+        })
+    return result
+
+
+def _bulk_load_input_exposures(conn: sqlite3.Connection, model_ids: list[int]) -> dict[int, list[dict]]:
+    """Batched equivalent of calling _load_input_exposures once per id in
+    model_ids."""
+    result: dict[int, list[dict]] = {mid: [] for mid in model_ids}
+    if not model_ids:
+        return result
+    placeholders = ",".join("?" * len(model_ids))
+    rows = conn.execute(
+        f"""
+        SELECT
+            e.id,
+            e.model_config_id,
+            e.variable,
+            e.point_id,
+            o.device_id,
+            o.name AS point_name,
+            o.object_type,
+            o.object_instance,
+            o.units,
+            o.point_type,
+            d.name AS device_name
+        FROM simulation_model_input_exposures e
+        JOIN objects o ON o.id = e.point_id
+        JOIN devices d ON d.id = o.device_id
+        WHERE e.model_config_id IN ({placeholders})
+        ORDER BY e.model_config_id, e.variable
+        """,
+        model_ids,
+    ).fetchall()
+    for row in rows:
+        result[row["model_config_id"]].append(dict(row))
+    return result
+
+
 def list_all_simulation_models(conn: sqlite3.Connection) -> list[dict]:
     """Same shape as list_simulation_models() (every simulation model, with
     mappings/aggregate_mappings assembled) but takes an already-open
@@ -382,15 +576,28 @@ def list_all_simulation_models(conn: sqlite3.Connection) -> list[dict]:
     separately-opened connection. Includes every model regardless of
     provider_type (including legacy 'system' rows), unlike
     list_simulation_models's own default -- a full-project snapshot must
-    be complete, not filtered for UI display."""
+    be complete, not filtered for UI display.
+
+    Uses the _bulk_load_* helpers (3 queries total, or 4 if any model has
+    aggregate mappings) instead of _load_mappings/_load_aggregate_mappings/
+    _load_input_exposures called once per model (3 queries per model,
+    previously) -- save_project/update_project call this on every save, so
+    a project with dozens of simulation models was issuing 100+ sequential
+    queries just for this step."""
     rows = conn.execute(
         "SELECT * FROM simulation_model_configs ORDER BY id"
     ).fetchall()
+    model_ids = [int(row["id"]) for row in rows]
+    mappings_by_id = _bulk_load_mappings(conn, model_ids)
+    aggregate_mappings_by_id = _bulk_load_aggregate_mappings(conn, model_ids)
+    input_exposures_by_id = _bulk_load_input_exposures(conn, model_ids)
+
     result: list[dict] = []
     for row in rows:
         item = _decode_config(row)
-        item["mappings"] = _load_mappings(conn, int(item["id"])) + _load_aggregate_mappings(conn, int(item["id"]))
-        item["input_exposures"] = _load_input_exposures(conn, int(item["id"]))
+        model_id = int(item["id"])
+        item["mappings"] = mappings_by_id[model_id] + aggregate_mappings_by_id[model_id]
+        item["input_exposures"] = input_exposures_by_id[model_id]
         result.append(item)
     return result
 
@@ -696,14 +903,15 @@ def _replace_mappings(
         conn.execute(
             """
             INSERT INTO simulation_model_mappings
-                (model_config_id, variable, direction, point_id)
-            VALUES (?, ?, ?, ?)
+                (model_config_id, variable, direction, point_id, conversion)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 model_id,
                 str(mapping["variable"]),
                 str(mapping["direction"]),
                 int(mapping["point_id"]),
+                str(mapping["conversion"]) if mapping.get("conversion") else None,
             ),
         )
 
