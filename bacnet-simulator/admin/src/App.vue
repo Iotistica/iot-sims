@@ -10,6 +10,7 @@ import NewProjectModal from './components/NewProjectModal.vue'
 import DiscoverModal from './components/DiscoverModal.vue'
 import ObjectsPanel from './components/ObjectsPanel.vue'
 import CreateSimulatedCopyModal from './components/CreateSimulatedCopyModal.vue'
+import ExportEdeOptionsModal from './components/ExportEdeOptionsModal.vue'
 import IotisticaLogo from './components/IotisticaLogo.vue'
 import LeftSideView from './components/LeftSideView.vue'
 import DeviceLogPanel from './components/DeviceLogPanel.vue'
@@ -282,6 +283,7 @@ const selectedDevice = ref<Device | null>(null)
 const selectedEquipment = ref<Equipment | null>(null)
 const objectsPanelRef = ref<{ reload: () => void } | null>(null)
 const liveValues = ref<Record<number, number | boolean>>({})
+const unackedAlarmCount = ref(0)
 const modelValues = ref<Record<number, number | boolean>>({})
 const modelStates = ref<Record<number, string>>({})
 
@@ -300,6 +302,8 @@ const addContextLocationId = ref<number | null>(null)
 const projectsDrawerOpen   = ref(false)
 const createCopyModalOpen  = ref(false)
 const createCopySource     = ref<Device | null>(null)
+const exportEdeModalOpen   = ref(false)
+const exportEdeDevice      = ref<Device | null>(null)
 const duplicateModalOpen   = ref(false)
 const duplicateSource      = ref<Device | null>(null)
 const duplicateLoading     = ref(false)
@@ -368,6 +372,9 @@ const saveModalOpen    = ref(false)
 const saveModalName    = ref('')
 const saveModalDesc    = ref('')
 const saveModalLoading = ref(false)
+// Direct "Save" toolbar button (overwrite, no dialog) -- separate from
+// saveModalLoading, which only guards the "Save As" modal's own OK button.
+const savingProject = ref(false)
 
 // WebSocket
 let ws: WebSocket | null = null
@@ -395,9 +402,17 @@ function wsConnect() {
       if (o.model_value !== undefined) modelMap[o.id] = o.model_value
       if (o.model_state !== undefined) stateMap[o.id] = o.model_state
     }))
-    liveValues.value = map
-    modelValues.value = modelMap
-    modelStates.value = stateMap
+    // Merge rather than replace -- a snapshot taken mid SimEngine.reload()
+    // (e.g. right after an object save, while the engine has cleared
+    // self._objects and is rebuilding it) can legitimately omit objects
+    // that exist a moment before and after. Replacing the whole map on
+    // every message turned that transient gap into every row's Value
+    // column blanking out for a second or two; merging keeps each
+    // object's last-known value in place until it reappears in a later,
+    // complete snapshot.
+    liveValues.value = { ...liveValues.value, ...map }
+    modelValues.value = { ...modelValues.value, ...modelMap }
+    modelStates.value = { ...modelStates.value, ...stateMap }
   }
   // Only keep retrying while still logged in — an expired/cleared token would
   // otherwise reconnect forever against a server that immediately closes it.
@@ -567,12 +582,9 @@ function openEditLocation(l: Location) { editingLocation.value = l; locationDraw
 function openAddEquipment(locationId: number | null = null) { editingEquipment.value = null; addContextLocationId.value = locationId; equipmentDrawerOpen.value = true }
 function openEditEquipment(e: Equipment) { editingEquipment.value = e; equipmentDrawerOpen.value = true }
 
-async function exportDeviceEde(d: Device) {
-  try {
-    await api.devices.exportEde(d.id, d.name)
-  } catch (e: unknown) {
-    message.error((e as Error).message ?? 'Export failed')
-  }
+function exportDeviceEde(d: Device) {
+  exportEdeDevice.value = d
+  exportEdeModalOpen.value = true
 }
 
 async function exportDeviceBrick(d: Device) {
@@ -716,12 +728,21 @@ function onNewProjectClick() {
   })
 }
 
-function onNewProjectCreated(project: Project) {
+async function onNewProjectCreated(project: Project) {
   activeProjectId.value = project.id
   activeProjectName.value = project.name
   activeProjectDesc.value = project.description
   activeProjectDiscoveryConnections.value = normalizeDiscoveryConnections(project.discovery_connections, project.connection_config)
   activeProjectConnectionConfig.value = connectionConfigForCompat(activeProjectDiscoveryConnections.value)
+  // resetToNewProject(true) (called before the save that created this
+  // project) already reloaded locations/devices/equipment, but that
+  // happened BEFORE the server generated the Above/Below ground building
+  // levels the modal's own form just asked for -- reload once more so a
+  // non-empty building structure actually shows up instead of only
+  // appearing the next time the project is explicitly re-opened.
+  await loadLocations()
+  await loadDevices()
+  await loadEquipment()
 }
 
 function openSaveAs() {
@@ -732,7 +753,13 @@ function openSaveAs() {
 
 async function openSave() {
   if (activeProjectId.value !== null) {
-    // Overwrite existing project directly — no dialog
+    // Overwrite existing project directly — no dialog. Guard against a
+    // second click landing while the first save is still in flight (the
+    // button has no other disabled state to prevent it) — without this,
+    // a fast double-click fires api.projects.update() twice and shows two
+    // separate "saved" toasts for what the user experienced as one click.
+    if (savingProject.value) return
+    savingProject.value = true
     try {
       await api.projects.update(
         activeProjectId.value,
@@ -745,6 +772,8 @@ async function openSave() {
       message.success(`"${activeProjectName.value}" saved`)
     } catch (e: unknown) {
       message.error((e as Error).message ?? 'Failed to save')
+    } finally {
+      savingProject.value = false
     }
   } else {
     saveModalName.value = ''
@@ -823,18 +852,34 @@ const TREE_ICON_SLOT_STYLE = {
 // Lifecycle — gated behind auth: protected endpoints 401 until logged in
 let healthTimer: ReturnType<typeof setInterval>
 let devicesTimer: ReturnType<typeof setInterval>
+let alarmsTimer: ReturnType<typeof setInterval>
+
+async function loadUnackedAlarmCount() {
+  try {
+    // Same "ack_required && !acknowledged" definition AlarmsPanel.vue's own
+    // unackedCount badge uses -- kept in lockstep so the nav tab and the
+    // panel's in-view count never disagree. Polled independently here
+    // (rather than read from AlarmsPanel) since that component is only
+    // mounted while the Alarms tab itself is active (v-else-if), but the
+    // nav badge needs to show a live count from any tab.
+    const entries = await api.alarms.list(200, true)
+    unackedAlarmCount.value = entries.filter(a => a.ack_required && !a.acknowledged).length
+  } catch { /* swallow -- matches loadHealth()'s best-effort polling */ }
+}
 
 async function startApp() {
-  await Promise.all([loadMeta(), loadDevices(), loadLocations(), loadEquipment(), loadHealth()])
+  await Promise.all([loadMeta(), loadDevices(), loadLocations(), loadEquipment(), loadHealth(), loadUnackedAlarmCount()])
   await refreshDiscoveryConnections()
   wsConnect()
   healthTimer = setInterval(loadHealth, 10_000)
   devicesTimer = setInterval(loadDevices, 30_000)
+  alarmsTimer = setInterval(loadUnackedAlarmCount, 10_000)
 }
 
 function stopApp() {
   clearInterval(healthTimer)
   clearInterval(devicesTimer)
+  clearInterval(alarmsTimer)
   if (wsTimer) { clearTimeout(wsTimer); wsTimer = null }
   ws?.close()
   ws = null
@@ -915,7 +960,7 @@ onUnmounted(() => {
         <a-radio-group v-model:value="activeView" button-style="solid" size="small" style="margin-left:8px">
           <a-radio-button value="devices"><ApartmentOutlined /> Browse</a-radio-button>
           <a-radio-button value="bacnet"><ApiOutlined  /> BACnet</a-radio-button>
-          <a-radio-button value="alarms"><AlertOutlined /> Alarms</a-radio-button>
+          <a-radio-button value="alarms"><AlertOutlined /> Alarms{{ unackedAlarmCount ? ` (${unackedAlarmCount})` : '' }}</a-radio-button>
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
           <a-radio-button value="packet-capture"><ClusterOutlined /> Network</a-radio-button>
           <a-radio-button value="utility"><DashboardOutlined /> Utilities</a-radio-button>
@@ -930,7 +975,7 @@ onUnmounted(() => {
           <template #icon><FileAddOutlined /></template>
           New Project
         </a-button>
-        <a-button size="small" type="primary" ghost :disabled="!projectDirty" @click="openSave">Save</a-button>
+        <a-button size="small" type="primary" ghost :disabled="!projectDirty" :loading="savingProject" @click="openSave">Save</a-button>
         <a-button v-if="activeProjectId !== null" size="small" @click="openSaveAs">Save As</a-button>
         <a-button size="small" @click="projectsDrawerOpen = true">Open Project</a-button>
 
@@ -1083,6 +1128,12 @@ onUnmounted(() => {
       :source-device="createCopySource"
       :existing-instances="devices.map(d => d.device_instance)"
       @created="onSimulatedCopyCreated"
+    />
+
+    <!-- Export EDE options modal -->
+    <ExportEdeOptionsModal
+      v-model:open="exportEdeModalOpen"
+      :device="exportEdeDevice"
     />
 
     <!-- Duplicate device modal -->

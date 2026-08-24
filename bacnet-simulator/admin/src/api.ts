@@ -25,6 +25,7 @@ import type {
   PriorityArrayInfo,
   Calendar,
   Location,
+  LocationDeletionImpact,
   Equipment,
   AssignablePoint,
   SemanticEntity,
@@ -181,6 +182,7 @@ export type SimulationProviderType =
   | 'builtin'
   | 'fmu'
   | 'learned'
+  | 'weather'
 
 export interface SimulationProviderCatalogEntry {
   provider_type: SimulationProviderType
@@ -482,7 +484,7 @@ export const api = {
     update: (id: number, b: Omit<Device, 'id'>) => req<Device>(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
     del:    (id: number)                   => req<null>(`/devices/${id}`, { method: 'DELETE' }),
     logs:   (id: number, limit = 100)      => req<LogEntry[]>(`/devices/${id}/logs?limit=${limit}`),
-    exportEde: (id: number, name: string)  => downloadFile(`/devices/${id}/export/ede`, `${name}.ede`),
+    exportEde: (id: number, name: string, mode: 'defaults' | 'live' = 'defaults')  => downloadFile(`/devices/${id}/export/ede?mode=${mode}`, `${name}.ede`),
     importEde: (id: number, file: File)    =>
       uploadFile<{ ok: boolean; objects_imported: number }>(`/devices/${id}/import/ede`, file, {}, true),
     exportBrick: (id: number, name: string) => downloadFile(`/devices/${id}/export/brick`, `${name}.ttl`),
@@ -490,10 +492,12 @@ export const api = {
   },
 
   locations: {
-    list:   ()                                    => req<Location[]>('/locations'),
-    create: (b: Omit<Location, 'id'>)             => req<Location>('/locations', { method: 'POST', body: JSON.stringify(b) }),
-    update: (id: number, b: Omit<Location, 'id'>) => req<Location>(`/locations/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
-    del:    (id: number)                          => req<null>(`/locations/${id}`, { method: 'DELETE' }),
+    list:           ()                                    => req<Location[]>('/locations'),
+    create:         (b: Omit<Location, 'id'>)             => req<Location>('/locations', { method: 'POST', body: JSON.stringify(b) }),
+    update:         (id: number, b: Omit<Location, 'id'>) => req<Location>(`/locations/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:            (id: number, opts?: { cascade?: boolean }) =>
+      req<null>(`/locations/${id}${opts?.cascade ? '?cascade=true' : ''}`, { method: 'DELETE' }),
+    deletionImpact: (id: number)                          => req<LocationDeletionImpact>(`/locations/${id}/deletion-impact`),
   },
 
   equipment: {
@@ -597,6 +601,8 @@ export const api = {
     del:      (did: number, oid: number)           => req<null>(`/devices/${did}/objects/${oid}`, { method: 'DELETE' }),
     setValue: (did: number, oid: number, value: unknown) =>
       req(`/devices/${did}/objects/${oid}/value`, { method: 'POST', body: JSON.stringify({ value }) }),
+    restoreBehavior: (did: number, oid: number) =>
+      req<SimObject>(`/devices/${did}/objects/${oid}/restore-behavior`, { method: 'POST' }),
     history: (did: number, oid: number) =>
       req<HistoryPoint[]>(`/devices/${did}/objects/${oid}/history`),
     priorityArray: (did: number, oid: number) =>
@@ -625,6 +631,7 @@ export const api = {
     clear:   ()                                              => req<{ ok: boolean }>('/profiles/clear', { method: 'POST' }),
     import_: (name: string, description: string, data: object) =>
       req<Project>('/profiles/import', { method: 'POST', body: JSON.stringify({ name, description, data }) }),
+    export:   (id: number, name: string) => downloadFile(`/profiles/${id}/export`, `${name}.json`),
     exportEde: (id: number, name: string) => downloadFile(`/profiles/${id}/export/ede`, `${name}.ede`),
     importEde: (name: string, description: string, deviceName: string, file: File) =>
       uploadFile<Project>('/profiles/import/ede', file, { name, description, device_name: deviceName }),

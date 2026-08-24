@@ -43,8 +43,12 @@ async function loadProject(p: Project) {
   }
 }
 
-function exportProject(p: Project) {
-  window.open(`/profiles/${p.id}/export`, '_blank')
+async function exportProject(p: Project) {
+  try {
+    await api.projects.export(p.id, p.name)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Export failed')
+  }
 }
 
 async function exportProjectEde(p: Project) {
