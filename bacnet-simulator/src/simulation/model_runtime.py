@@ -549,7 +549,10 @@ def reconcile_enabled_models(database: Any, engine: Any) -> dict[str, Any]:
                 "error": str(exc),
             })
         else:
-            _log_event(device_id, "info", "FMU model started", category="simulation")
+            _log_event(
+                device_id, "info", f'FMU model "{config["name"]}" started',
+                category="simulation",
+            )
 
     return {
         "loaded": loaded,
