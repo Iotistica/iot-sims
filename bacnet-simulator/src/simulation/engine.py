@@ -1202,7 +1202,17 @@ class SimEngine:
             for point_id, value in self._builtin_provider.get_outputs().items()
             if int(point_id) not in self._point_output_owner
         }
-        provider_outputs = self._run_registered_providers(
+        # to_thread, not a direct call: FMUSimulationProvider.step() makes a
+        # blocking urllib HTTP call to the FMU runtime, and an
+        # EnergyPlus/Spawn-backed model can take several real seconds per
+        # step (measured ~8.5s) -- called directly here, that stalls the
+        # single asyncio event loop this coroutine shares with the whole
+        # HTTP API for the same duration, so every request (project save,
+        # object list, anything) hangs until the step returns.
+        # _run_registered_providers is self-contained (no self.db access,
+        # only in-memory provider/dict state) so it's safe to run off-loop.
+        provider_outputs = await asyncio.to_thread(
+            self._run_registered_providers,
             dependencies.TICK_SECONDS,
             provider_outputs,
         )
