@@ -173,6 +173,7 @@ def _string_parameter_definition(data: dict[str, Any]) -> ParameterDefinition:
         type=param_type,
         default=data.get("default"),
         required=bool(data.get("required", False)),
+        advanced=bool(data.get("advanced", False)),
     )
 
 
