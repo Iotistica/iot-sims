@@ -1,3 +1,43 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import isfinite
+
+KWH_PER_THERM = 29.300111
+
+
+@dataclass(frozen=True)
+class RTUEnergyConfig:
+    electricity_rate_per_kwh: float = 0.0
+    gas_rate_per_therm: float = 0.0
+    electricity_kg_co2e_per_kwh: float = 0.0
+    gas_kg_co2e_per_therm: float = 0.0
+
+    def validate(self) -> None:
+        for name, value in {
+            "electricity_rate_per_kwh": self.electricity_rate_per_kwh,
+            "gas_rate_per_therm": self.gas_rate_per_therm,
+            "electricity_kg_co2e_per_kwh": self.electricity_kg_co2e_per_kwh,
+            "gas_kg_co2e_per_therm": self.gas_kg_co2e_per_therm,
+        }.items():
+            if not isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+
+
+@dataclass(frozen=True)
+class RTUSnapshot:
+    """Direct RTU FMU outputs. No fallback estimation is performed."""
+    total_electric_power_kw: float
+    gas_heating_input_kw: float
+    compressor_power_kw: float | None = None
+    supply_fan_power_kw: float | None = None
+    cooling_load_kw: float | None = None
+    heating_load_kw: float | None = None
+    compressor_cop: float | None = None
+    cooling_plr_percent: float | None = None
+    heating_plr_percent: float | None = None
+
+
 @dataclass(frozen=True)
 class RTUEnergyResult:
     electric_power_kw: float
