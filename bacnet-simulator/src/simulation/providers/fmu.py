@@ -8,6 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from ..mapping_conversions import apply_output_conversion
 from .base import ProviderStatus, SimulationContext, SimulationProvider, ValidationResult
 
 
@@ -54,6 +55,13 @@ class FMUPointBinding:
     point_id: int
     variable: str
     direction: str
+    # Named conversion (see mapping_conversions.CONVERSIONS) applied to an
+    # output binding's raw FMU value at _convert_output_value() below,
+    # before the value ever reaches engine.py's own type-coercion/
+    # multi-state clamp. None (the vast majority of bindings) is a no-op.
+    # Only meaningful for direction="output" -- see model_runtime.py's
+    # construction of this dataclass.
+    conversion: str | None = None
 
 
 # "max", "min", and "weighted_average" are implemented; the tuple/dataclass
@@ -181,11 +189,23 @@ class FMURuntimeClient:
             )
         return response.body
 
-    def initialize(self, model_id: str, inputs: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def initialize(
+        self,
+        model_id: str,
+        inputs: Mapping[str, Any] | None = None,
+        string_parameters: Mapping[str, str] | None = None,
+        warmup_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "inputs": dict(inputs or {}),
+            "string_parameters": dict(string_parameters or {}),
+        }
+        if warmup_seconds is not None:
+            body["warmup_seconds"] = warmup_seconds
         response = self._request(
             "POST",
             f"/models/{model_id}/initialize",
-            body={"inputs": dict(inputs or {})},
+            body=body,
         )
         if response.status_code >= 400:
             raise RuntimeError(
@@ -224,6 +244,8 @@ class FMUSimulationProvider(SimulationProvider):
         aggregate_inputs: list[FMUAggregateInput] | None = None,
         input_exposures: list[FMUInputExposure] | None = None,
         input_defaults: Mapping[str, Any] | None = None,
+        string_parameters: Mapping[str, str] | None = None,
+        warmup_seconds: float | None = None,
         timeout_s: float = 20.0,
         input_variables: set[str] | None = None,
         output_variables: set[str] | None = None,
@@ -234,6 +256,18 @@ class FMUSimulationProvider(SimulationProvider):
         self._aggregate_inputs = list(aggregate_inputs or [])
         self._input_exposures = list(input_exposures or [])
         self._input_defaults = dict(input_defaults or {})
+        # Session-lifetime FMI String parameter overrides, resolved once by
+        # model_runtime._build_fmu_provider and captured here for the whole
+        # provider lifetime -- unlike self._inputs, these are never
+        # re-resolved per tick, matching the runtime's own once-at-
+        # initialize() semantics (see shared/runtime/models/manager.py's
+        # RuntimeSession.string_parameters).
+        self._string_parameters = dict(string_parameters or {})
+        # Per-session warmup override (e.g. Weather's "Playback Start
+        # Month", converted to seconds by model_runtime._build_fmu_provider)
+        # -- distinct from self._warmup_seconds below, which holds the
+        # runtime's *reported* warmup_seconds for progress tracking.
+        self._warmup_seconds_override = warmup_seconds
         self._timeout_s = float(timeout_s)
         self._input_variables = set(input_variables or ())
         self._output_variables = set(output_variables or ())
@@ -403,14 +437,26 @@ class FMUSimulationProvider(SimulationProvider):
         *,
         reason: str,
     ) -> str:
-        result = self._client.initialize(self._model, inputs or {})
+        # string_parameters/warmup_seconds are only passed as kwargs when
+        # actually set -- preserves the exact 2-positional-arg call shape
+        # for every session that uses neither (the overwhelming majority),
+        # so existing test doubles that monkeypatch FMURuntimeClient.initialize
+        # with an older (self, model_id, inputs=None) signature keep working
+        # unchanged.
+        extra_kwargs: dict[str, Any] = {}
+        if self._string_parameters:
+            extra_kwargs["string_parameters"] = self._string_parameters
+        if self._warmup_seconds_override is not None:
+            extra_kwargs["warmup_seconds"] = self._warmup_seconds_override
+        result = self._client.initialize(self._model, inputs or {}, **extra_kwargs)
         session_id = str(result["session_id"])
         self._runtime_state = str(result.get("state") or "")
         self._warmup_progress = _as_float(result.get("warmup_progress"))
         self._warmup_seconds = _as_float(result.get("warmup_seconds"))
         log.info(
             "FMU runtime session created: session=%s model=%s runtime=%s "
-            "reason=%s state=%s warmup_progress=%s warmup_seconds=%s inputs=%s",
+            "reason=%s state=%s warmup_progress=%s warmup_seconds=%s inputs=%s "
+            "string_parameters=%s",
             session_id,
             self._model,
             self._runtime_url,
@@ -419,6 +465,7 @@ class FMUSimulationProvider(SimulationProvider):
             self._warmup_progress,
             self._warmup_seconds,
             dict(inputs or {}),
+            self._string_parameters,
         )
         return session_id
 
@@ -611,10 +658,10 @@ class FMUSimulationProvider(SimulationProvider):
     ) -> tuple[float | None, list[dict[str, Any]]]:
         """Computes sum(value[i]*weight[i]) / sum(weight[i]) over agg's
         value/weight point pairs. Returns (result, pair_diagnostics);
-        result is None when there is no valid pair to divide by (every pair
-        was invalid, or every valid weight was exactly 0) -- the caller must
-        treat None as an aggregate failure, the weighted_average counterpart
-        to "max" raising on a missing/non-numeric member.
+        result is None only when there is no valid VALUE anywhere in the
+        pair set -- the caller must treat that as an aggregate failure, the
+        weighted_average counterpart to "max" raising on a missing/non-
+        numeric member.
 
         Unlike "max", an individual pair with a missing/non-numeric value,
         missing/non-numeric weight, or a negative weight is simply excluded
@@ -632,9 +679,27 @@ class FMUSimulationProvider(SimulationProvider):
         negative), so it is excluded the same way a missing value is,
         not clamped to zero and not treated as "the whole aggregate is
         unresolvable" the way "max" would.
+
+        Zero-weight fallback: when every valid weight is exactly zero (the
+        weighted average is mathematically undefined, 0/0) -- e.g. RTU
+        return_air_temp_c weighted by VAV airflow, where airflow reads 0
+        because the upstream RTU hasn't established duct pressure yet --
+        falls back to a plain arithmetic mean of whichever values ARE
+        valid, rather than failing the aggregate. Without this, RTU can
+        never initialize (no weight), so it can never produce the duct
+        pressure the VAVs need to develop real airflow: a genuine startup
+        deadlock, not a data-quality problem "max"'s stricter handling is
+        meant to guard against. This is the same "exclude rather than
+        refuse to compute" philosophy above, just extended to the case
+        where ALL weights (not just some members) are simultaneously
+        unusable, so it never changes the result for any aggregate that
+        already resolves normally (weight > 0). As soon as any weight goes
+        positive again, the very next call takes the real weighted branch
+        again -- no separate state to track or reset.
         """
         numerator = 0.0
         denominator = 0.0
+        valid_values: list[float] = []
         pair_diagnostics: list[dict[str, Any]] = []
         for value_point_id, weight_point_id in zip(agg.point_ids, agg.weight_point_ids):
             value = _as_float(self._inputs.get(value_point_id)) if value_point_id in self._inputs else None
@@ -647,6 +712,8 @@ class FMUSimulationProvider(SimulationProvider):
             if used:
                 numerator += value * weight
                 denominator += weight
+            if value is not None:
+                valid_values.append(value)
             pair_diagnostics.append({
                 "value_point_id": value_point_id,
                 "weight_point_id": weight_point_id,
@@ -654,30 +721,46 @@ class FMUSimulationProvider(SimulationProvider):
                 "weight": weight,
                 "used": used,
             })
-        if denominator <= 0:
-            return None, pair_diagnostics
-        result = numerator / denominator
-        # Explicit staged breakdown -- every quantity that feeds the final
-        # division, logged in the model input's own declared unit (no
-        # conversion of any kind happens in this repo -- see
-        # FMUInputExposure's docstring). Exists so a wrong-looking resolved
-        # value (e.g. an accidentally-unweighted mean, or a value that's
-        # actually a normalized weight/fraction) is diagnosable straight
-        # from these logs instead of by re-deriving the math by hand.
-        log.info(
-            "FMU WEIGHTED_AVERAGE variable=%s pairs=%s sum(value*weight)=%s "
-            "sum(weight)=%s result=%s",
-            agg.variable,
-            [
-                {"value_point_id": d["value_point_id"], "value": d["value"],
-                 "weight_point_id": d["weight_point_id"], "weight": d["weight"], "used": d["used"]}
-                for d in pair_diagnostics
-            ],
-            numerator,
-            denominator,
-            result,
-        )
-        return result, pair_diagnostics
+        if denominator > 0:
+            result = numerator / denominator
+            # Explicit staged breakdown -- every quantity that feeds the
+            # final division, logged in the model input's own declared unit
+            # (no conversion of any kind happens in this repo -- see
+            # FMUInputExposure's docstring). Exists so a wrong-looking
+            # resolved value (e.g. an accidentally-unweighted mean, or a
+            # value that's actually a normalized weight/fraction) is
+            # diagnosable straight from these logs instead of by re-
+            # deriving the math by hand.
+            log.info(
+                "FMU WEIGHTED_AVERAGE variable=%s pairs=%s sum(value*weight)=%s "
+                "sum(weight)=%s result=%s",
+                agg.variable,
+                [
+                    {"value_point_id": d["value_point_id"], "value": d["value"],
+                     "weight_point_id": d["weight_point_id"], "weight": d["weight"], "used": d["used"]}
+                    for d in pair_diagnostics
+                ],
+                numerator,
+                denominator,
+                result,
+            )
+            return result, pair_diagnostics
+        if valid_values:
+            result = sum(valid_values) / len(valid_values)
+            log.info(
+                "FMU WEIGHTED_AVERAGE variable=%s total weight is 0 -- falling back to "
+                "plain average of %d valid value(s) pairs=%s result=%s",
+                agg.variable,
+                len(valid_values),
+                [
+                    {"value_point_id": d["value_point_id"], "value": d["value"],
+                     "weight_point_id": d["weight_point_id"], "weight": d["weight"]}
+                    for d in pair_diagnostics
+                ],
+                result,
+            )
+            return result, pair_diagnostics
+        return None, pair_diagnostics
 
     def _weighted_average_failure_detail(
         self, agg: FMUAggregateInput, pair_diagnostics: list[dict[str, Any]],
@@ -713,8 +796,37 @@ class FMUSimulationProvider(SimulationProvider):
             f"{list(agg.point_ids)}: total valid weight is 0: " + "; ".join(parts)
         )
 
+    _CFM_PER_M3_S = 2118.880003
+
+    @staticmethod
+    def _is_volumetric_flow_variable(variable: str) -> bool:
+        """Every model.json volumetric-airflow variable in this app's
+        convention is named "*_m3_s" (supply_airflow_m3_s,
+        outdoor_airflow_m3_s, ...) -- the one place a model's declared unit
+        (m3/s) and a BACnet point's natural unit (CFM) diverge. Originally
+        this checked one hardcoded name (supply_airflow_m3_s); that missed
+        RTU's outdoor_airflow_m3_s output entirely (found via a live bug:
+        RTU-1-Outdoor-Airflow displayed a raw ~1.07 m3/s value under a CFM
+        unit label, off by ~2119x). Matching the naming convention instead
+        of one literal string covers every current and future *_m3_s
+        variable without needing a per-variable edit here. Every other
+        Point-mapped variable (temperatures, percentages, power, pressure)
+        already matches its bound point's unit 1:1, so this can't affect
+        them -- and the actual conversion below still only fires when the
+        bound point's OWN declared units are CFM, so a variable already
+        correctly labeled m3/s is never touched either."""
+        return variable.endswith("_m3_s")
+
     def _convert_output_value(self, binding: FMUPointBinding, value: Any) -> Any:
-        if binding.variable != "supply_airflow_m3_s":
+        # Declarative, mapping-configured conversion first (e.g.
+        # 'zero_based_to_multistate') -- applied regardless of variable
+        # name, unlike the CFM handling below which is inferred from a
+        # naming convention. Runs before engine.py's own multi-state
+        # clamp ever sees the value, so a converted value already lands
+        # inside that clamp's valid [1, numberOfStates] range.
+        value = apply_output_conversion(binding.conversion, value)
+
+        if not self._is_volumetric_flow_variable(binding.variable):
             return value
         metadata = self._binding_metadata(binding)
         units = str(metadata.get("units") or "").lower()
@@ -724,7 +836,7 @@ class FMUSimulationProvider(SimulationProvider):
             or ("cubicfeet" in normalized_units and "minute" in normalized_units)
         ):
             try:
-                return float(value) * 2118.880003
+                return float(value) * self._CFM_PER_M3_S
             except (TypeError, ValueError):
                 return value
         return value
@@ -738,13 +850,13 @@ class FMUSimulationProvider(SimulationProvider):
         BACnet point's own unit. Without this, a raw CFM reading (order
         100-1000) gets sent straight through as if it were already m3/s,
         overwhelming the receiving model's heat/mass balance by ~2000x.
-        Scoped to this one variable name for the same reason
+        Scoped by _is_volumetric_flow_variable for the same reason
         _convert_output_value is: it's the one place in the whole variable
         surface where a point's natural BACnet unit (CFM) and a model's
         declared unit (m3/s) diverge -- every other Point-mapped input
         already matches its bound point's unit 1:1 (degC-to-degC,
         percent-to-percent, etc)."""
-        if binding.variable != "supply_airflow_m3_s":
+        if not self._is_volumetric_flow_variable(binding.variable):
             return value
         metadata = self._binding_metadata(binding)
         units = str(metadata.get("units") or "").lower()
@@ -754,7 +866,7 @@ class FMUSimulationProvider(SimulationProvider):
             or ("cubicfeet" in normalized_units and "minute" in normalized_units)
         ):
             try:
-                return float(value) / 2118.880003
+                return float(value) / self._CFM_PER_M3_S
             except (TypeError, ValueError):
                 return value
         return value

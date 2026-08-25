@@ -182,7 +182,6 @@ export type SimulationProviderType =
   | 'builtin'
   | 'fmu'
   | 'learned'
-  | 'weather'
 
 export interface SimulationProviderCatalogEntry {
   provider_type: SimulationProviderType
@@ -396,6 +395,25 @@ export interface VariableCandidatesResponse {
   related_equipment_name: string | null
 }
 
+// Which real calendar year each month of a composite TMYx-style weather
+// file's data was actually drawn from -- parsed server-side from the
+// file's own #COMMENTS header line. `months` keys are 1-12; null when the
+// uploaded file doesn't carry a recognizable #COMMENTS line at all.
+export interface WeatherProvenance {
+  months: Record<string, number>
+  period_of_record: string | null
+  station: string | null
+  source: string | null
+}
+
+export interface UploadedResource {
+  filename: string
+  path: string
+  size_bytes: number
+  sha256: string
+  created_at: number
+}
+
 export const api = {
   health: () => req<Health>('/health'),
   meta:   () => req<Meta>('/meta'),
@@ -471,6 +489,26 @@ export const api = {
     variableCandidates: (body: { model_type: string; variable: string; created_from_device_id: number | null; current_model_id?: number | null; limit?: number }) =>
       req<VariableCandidatesResponse>('/simulation/models/variable-candidates', { method: 'POST', body: JSON.stringify(body) }),
     reconcile: () => req<Record<string, unknown>>('/simulation/models/reconcile', { method: 'POST' }),
+  },
+
+  // Generic, model-agnostic file upload for any catalog model's "file"-type
+  // parameter (see remote_catalog.py's _string_parameter_definition on the
+  // backend) -- not scoped to weather or any one model.
+  simulationResources: {
+    upload: (file: File) =>
+      uploadFile<UploadedResource & { weather_provenance: WeatherProvenance | null; converted_mos: UploadedResource | null }>(
+        '/simulation/resources', file,
+      ),
+    list: () => req<{ resources: UploadedResource[] }>('/simulation/resources'),
+    // Re-parses an already-uploaded file's #COMMENTS header -- used to
+    // populate the "Playback Start Month" source-year labels when the
+    // drawer reopens on a config whose file was uploaded in an earlier
+    // session (weather_provenance from .upload() above isn't persisted
+    // anywhere, so it has to be recomputed on demand).
+    provenance: (filename: string) =>
+      req<{ weather_provenance: WeatherProvenance | null }>(
+        `/simulation/resources/${encodeURIComponent(filename)}/weather-provenance`,
+      ),
   },
 
   settings: {

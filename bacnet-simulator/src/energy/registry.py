@@ -18,12 +18,14 @@ from .equipment.ahu import AHUEnergyConfig
 from .equipment.boiler import BoilerEnergyConfig
 from .equipment.chiller import ChillerEnergyConfig
 from .equipment.lighting import LightingEnergyConfig
+from .equipment.rtu import RTUEnergyConfig
 
 MODEL_CONFIG_CLASSES: dict[str, type] = {
     "chiller": ChillerEnergyConfig,
     "ahu": AHUEnergyConfig,
     "lighting": LightingEnergyConfig,
     "boiler": BoilerEnergyConfig,
+    "rtu": RTUEnergyConfig,
 }
 
 MODEL_TYPE_LABELS: dict[str, str] = {
@@ -31,6 +33,7 @@ MODEL_TYPE_LABELS: dict[str, str] = {
     "ahu": "AHU",
     "lighting": "Lighting",
     "boiler": "Boiler",
+    "rtu": "RTU",
 }
 
 # Every model type allows multiple named instances per device (e.g.

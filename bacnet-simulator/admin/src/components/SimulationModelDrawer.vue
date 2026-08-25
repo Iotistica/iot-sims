@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type {
   SimulationModelCatalogEntry,
@@ -10,6 +11,7 @@ import type {
   SimulationModelPointOption,
   SimulationProviderCatalogEntry,
   SimulationProviderType,
+  WeatherProvenance,
 } from '../api'
 import type { Device } from '../types'
 import MappingSuggestionsModal from './MappingSuggestionsModal.vue'
@@ -51,6 +53,19 @@ interface ModelCatalogEntry extends SimulationModelCatalogEntry {
 
 interface PointOption extends SimulationModelPointOption {}
 
+// form.mappings must be keyed by (direction, name), not name alone: a
+// model can declare an input and an output under the identical variable
+// name (e.g. RTU's fan_command_pct is both uFan's input AND yFan's
+// output, alongside a separately-named supply_fan_speed_pct output for
+// the same yFan signal). A name-only key made the input row's point
+// selection silently bleed into the identically-named output row (and
+// vice versa) -- selecting the fan command's source point also, invisibly,
+// set it as that output's target, reproducing a self-referential mapping
+// every time the drawer was saved regardless of what the backend held.
+function mappingKey(v: { name: string; direction: string }): string {
+  return `${v.direction}:${v.name}`
+}
+
 const props = defineProps<{ open: boolean; device: Device | null }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; saved: [] }>()
 
@@ -60,6 +75,111 @@ const catalog = ref<ModelCatalogEntry[]>([])
 const providers = ref<SimulationProviderCatalogEntry[]>([])
 const points = ref<PointOption[]>([])
 const advancedOpen = ref<string[]>([])
+
+// File-type Parameter upload (see remote_catalog.py's is_file/"file" param
+// type) -- one shared hidden <input>, not one per parameter, since only one
+// upload can be in flight from a single click anyway; resourceUploadTarget
+// tracks which parameter's value the next file picked should populate.
+const resourceFileInput = ref<HTMLInputElement>()
+const resourceUploadTarget = ref<string | null>(null)
+const resourceUploading = ref<string | null>(null)
+
+function pickResourceFile(paramName: string) {
+  resourceUploadTarget.value = paramName
+  resourceFileInput.value?.click()
+}
+
+function resourceFileLabel(value: unknown): string {
+  if (!value || typeof value !== 'string') return ''
+  return value.split(/[\\/]/).pop() || value
+}
+
+async function onResourceFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  const paramName = resourceUploadTarget.value
+  input.value = '' // allow re-selecting the same filename later
+  if (!file || !paramName) return
+  resourceUploading.value = paramName
+  try {
+    const result = await api.simulationResources.upload(file)
+    // "wea_filename" wants the Modelica-table (.mos) form; every other
+    // file parameter (e.g. "epw_filename") gets the upload as-is. Both
+    // names are a convention shared by every Buildings-library
+    // weather-consuming model's model.json (Weather's wea_filename,
+    // EnergyPlusThermalZone's epw_filename + wea_filename) -- not
+    // hardcoded to any one model.
+    form.parameters[paramName] = paramName === 'wea_filename'
+      ? (result.converted_mos?.path ?? result.path)
+      : result.path
+    // One upload sets both halves of an EPW/MOS pair when the selected
+    // model declares both parameters -- e.g. uploading
+    // EnergyPlusThermalZone's "Weather (EPW)" field also fills its
+    // "Weather (MOS)" field automatically, so the same source file only
+    // needs picking once even though two FMI parameters need it.
+    const siblingName = paramName === 'epw_filename' ? 'wea_filename'
+      : paramName === 'wea_filename' ? 'epw_filename'
+      : null
+    if (siblingName && selectedModel.value?.parameters.some(p => p.name === siblingName)) {
+      if (siblingName === 'wea_filename' && result.converted_mos) {
+        form.parameters[siblingName] = result.converted_mos.path
+      } else if (siblingName === 'epw_filename') {
+        form.parameters[siblingName] = result.path
+      }
+    }
+    weatherProvenance.value = result.weather_provenance
+    message.success(`Uploaded ${result.filename}`)
+  } catch (err: unknown) {
+    message.error((err as Error).message ?? 'Upload failed')
+  } finally {
+    resourceUploading.value = null
+  }
+}
+
+// Which real calendar year each month of the uploaded weather file's data
+// was actually drawn from (a TMYx-style composite file's own #COMMENTS
+// header) -- drives the "Playback Start Month" dropdown's per-option
+// labels below, so a user picking "July" can see it's really 2024 data
+// without having to open the source file themselves.
+const weatherProvenance = ref<WeatherProvenance | null>(null)
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+function monthOptionLabel(monthNum: number): string {
+  const year = weatherProvenance.value?.months?.[String(monthNum)]
+  const name = MONTH_NAMES[monthNum - 1]
+  return year ? `${name} (${year} data)` : name
+}
+
+function firstFileParamFilename(): string | null {
+  for (const p of selectedModel.value?.parameters ?? []) {
+    if (p.type !== 'file') continue
+    const value = form.parameters[p.name]
+    if (typeof value === 'string' && value) return resourceFileLabel(value)
+  }
+  return null
+}
+
+// Re-parses an already-uploaded file's header on drawer open -- the
+// upload response's own weather_provenance (set directly in
+// onResourceFileChange above) only exists for the file just picked in
+// *this* session, not one uploaded in an earlier session and only
+// referenced here by its saved path.
+async function refreshWeatherProvenance() {
+  const filename = firstFileParamFilename()
+  if (!filename) {
+    weatherProvenance.value = null
+    return
+  }
+  try {
+    const result = await api.simulationResources.provenance(filename)
+    weatherProvenance.value = result.weather_provenance
+  } catch {
+    weatherProvenance.value = null
+  }
+}
 const savedModelId = ref<number | null>(null)
 const mappingModalOpen = ref(false)
 const savingDraft = ref(false)
@@ -272,13 +392,14 @@ function resetForModel(modelType: string) {
   form.aggregatePairs = {}
   form.inputExposures = {}
   advancedOpen.value = []
+  weatherProvenance.value = null
   for (const p of model?.parameters ?? []) {
     if (p.default !== undefined) form.parameters[p.name] = p.default
   }
   for (const v of model?.inputs ?? []) {
     const matchingPoint = form.provider_type === 'fmu' ? matchingDevicePoint(v.name) : null
     form.inputSources[v.name] = matchingPoint ? 'point' : (form.provider_type === 'fmu' ? 'constant' : 'point')
-    form.mappings[v.name] = matchingPoint?.id
+    form.mappings[mappingKey(v)] = matchingPoint?.id
     form.inputDefaults[v.name] = configuredPointValue(matchingPoint) ?? defaultForInput(v)
     form.aggregatePoints[v.name] = []
     form.aggregateOperation[v.name] = 'max'
@@ -330,11 +451,14 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
         ? m.point_ids.map((pid, i) => ({ value: pid, weight: (m.weight_point_ids ?? [])[i] ?? undefined }))
         : []
     } else {
-      mappings[m.variable] = m.point_id
+      mappings[`${m.direction}:${m.variable}`] = m.point_id
     }
   }
   for (const [variable, pointId] of Object.entries(draftOutputMappings)) {
-    if (mappings[variable] == null) mappings[variable] = pointId
+    // draft_output_mappings is output-only (see buildPayload below) -- key
+    // it to match.
+    const key = `output:${variable}`
+    if (mappings[key] == null) mappings[key] = pointId
   }
   form.mappings = mappings
   form.aggregatePoints = aggregatePoints
@@ -349,7 +473,7 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
     const savedSource = inputSources[v.name]
     form.inputSources[v.name] = savedSource === 'constant' || savedSource === 'point' || savedSource === 'aggregate'
       ? savedSource
-      : (mappings[v.name] != null ? 'point' : (aggregatePoints[v.name]?.length ? 'aggregate' : 'constant'))
+      : (mappings[mappingKey(v)] != null ? 'point' : (aggregatePoints[v.name]?.length ? 'aggregate' : 'constant'))
     if (form.inputDefaults[v.name] === undefined) form.inputDefaults[v.name] = defaultForInput(v)
     if (form.aggregatePoints[v.name] === undefined) form.aggregatePoints[v.name] = []
     if (form.aggregateOperation[v.name] === undefined) form.aggregateOperation[v.name] = 'max'
@@ -358,6 +482,7 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
     if (form.inputSources[v.name] === 'aggregate') void loadVariableCandidates(v)
   }
   advancedOpen.value = []
+  void refreshWeatherProvenance()
 }
 
 async function load() {
@@ -413,14 +538,14 @@ function validateMappings(requireComplete: boolean): boolean {
   if (!selectedModel.value) return false
 
   for (const v of outputs.value) {
-    if (v.required !== false && !form.mappings[v.name]) {
+    if (v.required !== false && !form.mappings[mappingKey(v)]) {
       message.error(`${v.label} mapping is required`)
       return false
     }
   }
   for (const v of inputs.value) {
     if (form.provider_type !== 'fmu' || form.inputSources[v.name] === 'point') {
-      if (v.required !== false && !form.mappings[v.name]) {
+      if (v.required !== false && !form.mappings[mappingKey(v)]) {
         message.error(`${v.label} mapping is required`)
         return false
       }
@@ -478,8 +603,8 @@ function buildPayload(apply: boolean): SimulationModelPayload | null {
   if (!apply) {
     parameters.draft_output_mappings = Object.fromEntries(
       outputs.value
-        .filter(v => form.mappings[v.name] != null)
-        .map(v => [v.name, form.mappings[v.name]]),
+        .filter(v => form.mappings[mappingKey(v)] != null)
+        .map(v => [v.name, form.mappings[mappingKey(v)]]),
     )
   }
 
@@ -493,8 +618,8 @@ function buildPayload(apply: boolean): SimulationModelPayload | null {
     mappings: variables.value
       .filter(v => apply || v.direction !== 'output')
       .filter(v => v.direction === 'output' || form.inputSources[v.name] === 'point' || form.provider_type !== 'fmu')
-      .filter(v => form.mappings[v.name] != null)
-      .map(v => ({ variable: v.name, direction: v.direction, point_id: form.mappings[v.name]! })),
+      .filter(v => form.mappings[mappingKey(v)] != null)
+      .map(v => ({ variable: v.name, direction: v.direction, point_id: form.mappings[mappingKey(v)]! })),
     aggregate_mappings: inputs.value
       .filter(v => form.provider_type === 'fmu' && form.inputSources[v.name] === 'aggregate')
       // Only complete (value+weight) pairs are ever sent for
@@ -641,8 +766,30 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
 
         <template v-if="commonParameters.length || advancedParameters.length">
           <a-divider orientation="left">Parameters</a-divider>
+          <input
+            ref="resourceFileInput"
+            type="file"
+            style="display:none"
+            @change="onResourceFileChange"
+          />
           <a-form-item v-for="p in commonParameters" :key="p.name" :label="p.label" :required="p.required">
             <a-switch v-if="p.type === 'boolean'" v-model:checked="(form.parameters[p.name] as boolean)" />
+            <div v-else-if="p.type === 'file'" style="display:flex;gap:10px;align-items:center">
+              <a-button size="small" :loading="resourceUploading === p.name" @click="pickResourceFile(p.name)">
+                <template #icon><UploadOutlined /></template>
+                {{ form.parameters[p.name] ? 'Replace' : 'Upload' }}
+              </a-button>
+              <span v-if="form.parameters[p.name]" style="font-size:12px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                {{ resourceFileLabel(form.parameters[p.name]) }}
+              </span>
+            </div>
+            <a-select
+              v-else-if="p.type === 'month'"
+              v-model:value="(form.parameters[p.name] as number)"
+              style="width:220px"
+            >
+              <a-select-option v-for="m in 12" :key="m" :value="m">{{ monthOptionLabel(m) }}</a-select-option>
+            </a-select>
             <a-input
               v-else-if="p.type === 'string'"
               v-model:value="(form.parameters[p.name] as string)"
@@ -662,6 +809,22 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
             <a-collapse-panel key="advanced" header="Advanced">
               <a-form-item v-for="p in advancedParameters" :key="p.name" :label="p.label">
                 <a-switch v-if="p.type === 'boolean'" v-model:checked="(form.parameters[p.name] as boolean)" />
+                <div v-else-if="p.type === 'file'" style="display:flex;gap:10px;align-items:center">
+                  <a-button size="small" :loading="resourceUploading === p.name" @click="pickResourceFile(p.name)">
+                    <template #icon><UploadOutlined /></template>
+                    {{ form.parameters[p.name] ? 'Replace' : 'Upload' }}
+                  </a-button>
+                  <span v-if="form.parameters[p.name]" style="font-size:12px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                    {{ resourceFileLabel(form.parameters[p.name]) }}
+                  </span>
+                </div>
+                <a-select
+                  v-else-if="p.type === 'month'"
+                  v-model:value="(form.parameters[p.name] as number)"
+                  style="width:220px"
+                >
+                  <a-select-option v-for="m in 12" :key="m" :value="m">{{ monthOptionLabel(m) }}</a-select-option>
+                </a-select>
                 <a-input
                   v-else-if="p.type === 'string'"
                   v-model:value="(form.parameters[p.name] as string)"
@@ -727,7 +890,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
             />
             <a-select
               v-if="form.inputSources[v.name] === 'point'"
-              v-model:value="form.mappings[v.name]"
+              v-model:value="form.mappings[mappingKey(v)]"
               show-search allow-clear
               :options="pointOptions"
               option-filter-prop="label"
@@ -847,7 +1010,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
           :required="v.required !== false"
         >
           <a-select
-            v-model:value="form.mappings[v.name]"
+            v-model:value="form.mappings[mappingKey(v)]"
             show-search allow-clear
             :options="pointOptions"
             option-filter-prop="label"

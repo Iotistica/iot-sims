@@ -7,6 +7,7 @@
  * filter-only here, never the value stored -- see PointRef in types.ts. */
 import { computed, ref } from 'vue'
 import type { TableColumnsType } from 'ant-design-vue'
+import { PlusOutlined } from '@ant-design/icons-vue'
 import type { Meta, PointRef, PointRow } from '../types'
 import { formatPresentValue } from '../format'
 import GridFilterToolbar from './GridFilterToolbar.vue'
@@ -18,8 +19,13 @@ const props = withDefaults(
     meta: Meta
     disabled?: boolean
     placeholder?: string
+    /** 'button' (default) is the original full-width text trigger. 'icon'
+     * renders a small circular icon button instead -- same internal
+     * open/filter/table logic either way, only the trigger's markup
+     * changes. Used by SavedGraphCard.vue's compact header "+" action. */
+    trigger?: 'button' | 'icon'
   }>(),
-  { disabled: false, placeholder: 'Select point…' },
+  { disabled: false, placeholder: 'Select point…', trigger: 'button' },
 )
 
 const emit = defineEmits<{ 'update:modelValue': [PointRef | null] }>()
@@ -116,6 +122,18 @@ const columns: TableColumnsType<PointRow> = [
 
 <template>
   <a-button
+    v-if="trigger === 'icon'"
+    type="text"
+    size="small"
+    shape="circle"
+    :disabled="disabled"
+    :title="placeholder"
+    @click="open = true"
+  >
+    <template #icon><PlusOutlined /></template>
+  </a-button>
+  <a-button
+    v-else
     :disabled="disabled"
     style="width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
     @click="open = true"

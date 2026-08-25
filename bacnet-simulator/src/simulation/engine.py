@@ -95,6 +95,12 @@ class SimEngine:
         self._current_values: dict = {}  # for API
         # object DB id → last logged value (for change detection)
         self._prev_values: dict[int, Any] = {}  # kept for history only
+        # object DB id → live value snapshotted immediately before reload()
+        # tears state down, consulted by _create_object() while rebuilding
+        # provider-owned raw/constant points (see reload()'s own comment).
+        # One-shot: populated at the start of a reload, drained by the end
+        # of start(), empty the rest of the time.
+        self._reload_preserved_values: dict[int, Any] = {}
         # object DB id → live Behavior instance, built once at _create_object()
         # for EVERY object regardless of provider ownership. Non-provider-owned
         # points ignore this dict entirely (BuiltInSimulationProvider keeps its
@@ -568,6 +574,7 @@ class SimEngine:
         if not enabled:
             log.info("No enabled devices — BACnet stack idle")
             self.app = None
+            self._reload_preserved_values = {}
             return
 
         base_ip = _resolve_base_ip()
@@ -793,6 +800,12 @@ class SimEngine:
         finally:
             self.app.device_object = saved
 
+        # One-shot: every _create_object() call for this start() has now
+        # run, so the pre-reload snapshot has done its job. Drop it rather
+        # than let it linger and get reused by some later, unrelated
+        # start() call.
+        self._reload_preserved_values = {}
+
     def _make_device_object(self, dev: dict) -> DeviceObject:
         try:
             segmentation = Segmentation(dev.get("segmentation_supported") or "segmented-both")
@@ -846,8 +859,28 @@ class SimEngine:
         # Behavior on top of the provider's raw value (see
         # _apply_fmu_behavior()); non-provider-owned points ignore it, since
         # BuiltInSimulationProvider keeps its own separate instance.
-        self._point_behaviors[int(obj_row["id"])] = behavior
-        val = behavior.compute(self.state)
+        obj_id = int(obj_row["id"])
+        self._point_behaviors[obj_id] = behavior
+        # A provider-owned "raw"/"constant" point's real value IS whatever
+        # the provider last computed, never something derived from
+        # behavior_params (which is frequently empty/stale for a point that
+        # has only ever displayed a live provider value -- see reload()'s
+        # comment). _point_output_owner survives reload() untouched (only
+        # _objects/_prev_values/etc. get cleared -- registered providers
+        # keep their output claims), so it's already correct here even
+        # mid-rebuild. Restoring from the pre-reload snapshot rather than
+        # re-seeding from params is what stops a provider-owned point that
+        # also feeds its own model as an input (e.g. a fan command echoed
+        # back as the FMU's own speed input) from latching at a zeroed
+        # seed value forever.
+        if (
+            obj_id in self._reload_preserved_values
+            and obj_row["behavior"] in ("raw", "constant")
+            and self._point_output_owner.get(obj_id, "builtin") != "builtin"
+        ):
+            val = self._reload_preserved_values[obj_id]
+        else:
+            val = behavior.compute(self.state)
         # BACnet requires globally unique object names within a single application,
         # even across virtual devices — prefix with device name to guarantee uniqueness.
         obj_name = f"{device_name}.{obj_row['name']}" if device_name else obj_row["name"]
@@ -1025,19 +1058,31 @@ class SimEngine:
 
         return None
 
-    def _update_value(self, bacnet_obj: Any, otype: str, val: Any) -> None:
+    def _update_value(self, bacnet_obj: Any, otype: str, val: Any) -> Any:
+        """Writes the live BACnet presentValue and returns the exact value
+        actually written (post type-coercion/clamping) -- this is the one
+        place that knows what really landed on the wire, e.g. a multi-state
+        object's [1, numberOfStates] clamp. Callers that separately track a
+        "current value" for /sim/state, the Admin UI, Mirror sync, or manual
+        overrides should use this return value rather than re-deriving their
+        own, so that tracked value can't drift from what Present_Value
+        actually reads -- see the tick loop, inject_mirror_values, and
+        set_manual_value, all of which previously stored the pre-clamp raw
+        value instead and could disagree with a real BACnet client's read."""
         if otype in ("analog-input", "analog-output", "analog-value"):
-            bacnet_obj.presentValue = Real(float(val))
+            written = float(val)
+            bacnet_obj.presentValue = Real(written)
         elif otype == "binary-output":
-            active = bool(val) if not isinstance(val, bool) else val
-            bacnet_obj.presentValue = BinaryPV("active" if active else "inactive")  # triggers recalculating() via priorityArray
+            written = bool(val) if not isinstance(val, bool) else val
+            bacnet_obj.presentValue = BinaryPV("active" if written else "inactive")  # triggers recalculating() via priorityArray
         elif otype in MULTISTATE_TYPES:
             n_states = int(bacnet_obj.numberOfStates)
-            state = max(1, min(n_states, round(float(val))))
-            bacnet_obj.presentValue = Unsigned(state)
+            written = max(1, min(n_states, round(float(val))))
+            bacnet_obj.presentValue = Unsigned(written)
         else:
-            active = bool(val) if not isinstance(val, bool) else val
-            bacnet_obj.presentValue = BinaryPV("active" if active else "inactive")
+            written = bool(val) if not isinstance(val, bool) else val
+            bacnet_obj.presentValue = BinaryPV("active" if written else "inactive")
+        return written
 
     def _apply_fmu_behavior(
         self, behavior: Behavior, behavior_name: str, raw_value: Any, state: SimState,
@@ -1271,7 +1316,16 @@ class SimEngine:
                             exc_info=True,
                         )
                         val = provider_outputs[obj_id]
-            self._update_value(bacnet_obj, obj_row["object_type"], val)
+            # written_val is what _update_value actually put on the wire
+            # (post type-coercion/clamping -- e.g. a multi-state object's
+            # [1, numberOfStates] clamp). Used below only for /sim/state
+            # (_prev_values) and the Admin UI's live "value" field, so
+            # those can never disagree with a real BACnet client's read.
+            # Alarm/enrollment evaluation, trend logging, and history
+            # deliberately keep using the pre-clamp `val` -- unchanged
+            # behavior, since clamping is a no-op for every object type
+            # except multi-state.
+            written_val = self._update_value(bacnet_obj, obj_row["object_type"], val)
             if owner != "builtin":
                 log.info(
                     "BACnet object write from simulation provider: provider=%s "
@@ -1308,7 +1362,7 @@ class SimEngine:
                         await self._sample_trend_log(tl["id"], val)
                         self._trend_log_last_value[tl["id"]] = val
 
-            self._prev_values[obj_id] = val
+            self._prev_values[obj_id] = written_val
 
             # Append to rolling history (never persisted)
             hist = self._history.setdefault(obj_id, deque(maxlen=dependencies.OBJECT_HISTORY_MAXLEN))
@@ -1322,7 +1376,7 @@ class SimEngine:
                 "name": obj_row["name"],
                 "object_type": obj_row["object_type"],
                 "object_instance": obj_row["object_instance"],
-                "value": val,
+                "value": written_val,
                 "units": obj_row.get("units", ""),
                 "behavior": obj_row["behavior"],
             }
@@ -1370,9 +1424,17 @@ class SimEngine:
                 continue
             bacnet_obj, _ = entry
             normalized = normalize_present_value(obj["object_type"], val)
-            self._update_value(bacnet_obj, obj["object_type"], normalized)
+            # written_val: see the tick loop's identical comment above --
+            # what actually landed on the wire, used for /sim/state so it
+            # can't disagree with a real BACnet client's read even if the
+            # mirrored source and this object's own config disagree (e.g.
+            # a numberOfStates mismatch). _mirror_values / the snapshot
+            # deliberately keep the un-clamped `normalized` value -- that's
+            # "what the mirrored source reported", a distinct diagnostic
+            # concept from "what this object's Present_Value now holds".
+            written_val = self._update_value(bacnet_obj, obj["object_type"], normalized)
             self._mirror_values[obj_id] = normalized
-            self._prev_values[obj_id] = normalized
+            self._prev_values[obj_id] = written_val
             if dev is not None:
                 self._upsert_current_value_snapshot(dev, obj, normalized)
 
@@ -1514,7 +1576,22 @@ class SimEngine:
             ))
 
     async def reload(self) -> None:
-        """Rebuild the BACnet stack from DB (called after config changes)."""
+        """Rebuild the BACnet stack from DB (called after config changes).
+
+        Registered FMU/Learned providers are NOT re-registered here (see
+        start()'s own comment) -- only the BACnet objects/_prev_values get
+        torn down and rebuilt. Snapshot _prev_values first so
+        _create_object() can restore each provider-owned raw/constant
+        point's actual live value instead of re-seeding it from
+        behavior_params, which is often empty/stale for a point whose
+        value has only ever come from the provider (never a real
+        configured default) -- see _create_object()'s own comment for the
+        incident this fixes (an unrelated object edit anywhere triggers
+        this same reload, and used to zero a provider-owned point's value,
+        which could self-latch off forever for a point that's also one of
+        its own model's inputs).
+        """
+        self._reload_preserved_values = dict(self._prev_values)
         async with self._reload_lock:
             log.info("Reloading BACnet stack...")
             if self.app:
@@ -1665,19 +1742,27 @@ class SimEngine:
             if obj_id not in self._point_output_owner:
                 self._builtin_provider.sync_point_config(manual_cfg)
                 self._builtin_provider.set_inputs({obj_id: value})
-            self._update_value(bacnet_obj, obj_row["object_type"], value)
-            # _update_value() only touches the live BACnet presentValue --
+            # _update_value()'s return is the exact value it wrote to the
+            # live BACnet presentValue (post type-coercion/clamping, e.g.
+            # a multi-state object's [1, numberOfStates] clamp) --
             # get_object_value() (what Functional Test Verify/Wait Until
             # steps, the Energy Engine, etc. actually read) reads
             # self._prev_values, which is otherwise only refreshed by the
-            # periodic tick loop. Without this, a manual override written
-            # and immediately read back (e.g. a Set block followed straight
-            # by a Verify, no Wait in between) sees the STALE pre-write
-            # value until the next tick happens to run -- this was the
-            # actual cause of a Set-then-Verify reporting the point's OLD
-            # state instead of what was just written.
-            self._prev_values[obj_id] = normalize_present_value(
-                obj_row["object_type"], active_behavior.compute(None)
+            # periodic tick loop. Without updating it here, a manual
+            # override written and immediately read back (e.g. a Set block
+            # followed straight by a Verify, no Wait in between) sees the
+            # STALE pre-write value until the next tick happens to run --
+            # this was the actual cause of a Set-then-Verify reporting the
+            # point's OLD state instead of what was just written. Using
+            # _update_value's own return (rather than separately
+            # recomputing normalize_present_value(active_behavior.compute
+            # (None))) also fixes a second, narrower bug: normalize_
+            # present_value() is a no-op for multi-state types, so the old
+            # code could leave _prev_values holding a raw out-of-range
+            # value (e.g. 0) that Present_Value's own clamp would never
+            # actually allow on the wire.
+            self._prev_values[obj_id] = self._update_value(
+                bacnet_obj, obj_row["object_type"], value
             )
         return True
 

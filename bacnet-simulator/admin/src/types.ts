@@ -50,6 +50,25 @@ export interface Location {
   sort_order?: number | null
 }
 
+/** Response shape for GET /locations/{id}/deletion-impact -- see
+ *  LocationDrawer.vue's doDelete() for how each field drives the
+ *  confirmation dialog. */
+export interface LocationDeletionImpact {
+  sub_location_count: number
+  device_count: number
+  equipment_count: number
+  point_count: number
+  blocked: boolean
+  blocking_points: Array<{
+    point_name: string
+    device_name: string
+    model_name: string
+    variable: string
+  }>
+  affected_simulation_models: Array<{ id: number; name: string }>
+  affected_custom_graphs: Array<{ id: number; name: string }>
+}
+
 export interface Equipment {
   id: number
   name: string

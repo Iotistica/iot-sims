@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 from typing import Any
 
 from ..monitoring.event_log import _log_event
@@ -14,6 +15,7 @@ from .models.remote_catalog import (
     get_runtime_settings,
     normalize_remote_model_id,
 )
+from .weather.epw import start_hour_of_year
 from .providers import (
     FMUAggregateInput,
     FMUInputExposure,
@@ -205,6 +207,7 @@ def _build_fmu_provider(
             point_id=int(mapping["point_id"]),
             variable=str(mapping["variable"]),
             direction=str(mapping["direction"]),
+            conversion=mapping.get("conversion"),
         )
         for mapping in point_rows
     ]
@@ -280,6 +283,29 @@ def _build_fmu_provider(
         for pid in (*agg.point_ids, *(w for w in agg.weight_point_ids if w is not None))
     }
 
+    # A point cannot be both an input source and an output target for the
+    # SAME model -- that's a direct self-loop (the model's own output would
+    # feed back in as its own input every tick, with no independent driving
+    # signal). Found via a live production incident: RTU-1-Supply-Fan-Command
+    # was mapped as both fan_command_pct's input (uFan) AND output (yFan);
+    # once a stale/zeroed value ever got fed in, the FMU's own
+    # "uFan>0.01 else yFan=0" interlock latched the fan off forever, with no
+    # way to recover short of a manual point edit -- see
+    # _validate_mapping_contract in api/routers/simulation.py for the
+    # equivalent save-time guard (this one is defense-in-depth for configs
+    # that predate that check, or are constructed by any other path).
+    point_input_source_ids = {
+        binding.point_id for binding in bindings if binding.direction == "input"
+    } | aggregate_member_point_ids
+    self_loop_point_ids = sorted(point_input_source_ids & output_binding_point_ids)
+    if self_loop_point_ids:
+        raise ValueError(
+            f"Model {config['model_type']!r} maps point(s) {self_loop_point_ids} "
+            "as both an input source and an output target -- a point cannot "
+            "feed its own model as an input while also being written by "
+            "that model's output"
+        )
+
     inputs = {
         binding.point_id
         for binding in bindings
@@ -289,7 +315,43 @@ def _build_fmu_provider(
 
     initial_point_inputs = _resolve_initial_point_inputs(engine, inputs)
 
-    provider = FMUSimulationProvider(
+    # Session-lifetime FMI String parameter overrides (e.g. Weather's
+    # wea_filename) -- whatever the simulation model's own `parameters`
+    # blob holds under a name the catalog declared as type="string" or
+    # "file" (see remote_catalog.py's _string_parameter_definition -- both
+    # are real FMI String parameters at the runtime level, "file" only
+    # differs in how the drawer's Parameters UI renders the control for
+    # it). Missing/blank values are simply omitted here rather than
+    # substituted with param.default -- the FMU runtime already falls back
+    # to the catalog default itself (manager.py's
+    # _make_string_parameter_payload), so duplicating that here would just
+    # be a second place to keep in sync.
+    string_parameters = {
+        param.name: str(parameters[param.name])
+        for param in definition.parameters
+        if param.type in ("string", "file") and parameters.get(param.name)
+    }
+
+    # "month" parameters (currently only Weather's playback_start_month --
+    # see remote_catalog.py's _PLAYBACK_START_MONTH_PARAMETER) never reach
+    # the FMU as a String/Real value at all -- they're purely local
+    # bacnet-simulator UX, converted into a session-level warmup_seconds
+    # override (day fixed at 1; the weather table wraps every exactly one
+    # year, so fast-forwarding through a warmup this long lands the session
+    # on the chosen month before it ever starts reporting). None (the
+    # common case: no such parameter declared, or none selected) means
+    # "use the FMU's own default warmup_seconds", unchanged from today.
+    warmup_seconds: float | None = None
+    for param in definition.parameters:
+        if param.type != "month":
+            continue
+        selected_month = parameters.get(param.name)
+        if selected_month is None:
+            continue
+        warmup_seconds = start_hour_of_year(date(2001, int(selected_month), 1)) * 3600.0
+        break
+
+    provider_kwargs: dict[str, Any] = dict(
         runtime_url=runtime_url,
         model=runtime_model,
         bindings=bindings,
@@ -308,6 +370,15 @@ def _build_fmu_provider(
             if variable.direction == "output"
         },
     )
+    # Only passed when non-empty -- keeps the exact old constructor call
+    # shape for every model with no string_parameters (the overwhelming
+    # majority), so existing test doubles standing in for
+    # FMUSimulationProvider that predate this kwarg keep working unchanged.
+    if string_parameters:
+        provider_kwargs["string_parameters"] = string_parameters
+    if warmup_seconds is not None:
+        provider_kwargs["warmup_seconds"] = warmup_seconds
+    provider = FMUSimulationProvider(**provider_kwargs)
 
     aggregate_member_bindings_metadata = [
         {

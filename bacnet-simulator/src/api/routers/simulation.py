@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import sqlite3
+import tempfile
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.error import HTTPError
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ...core.config import BINARY_TYPES, MULTISTATE_TYPES
 from ...integrations.azure_openai import AzureStructuredClient
 from ...simulation.mapping_ai_suggestions import suggest_point_for_variable_via_ai
+from ...simulation.mapping_conversions import CONVERSIONS
 from ...simulation.mapping_suggestions import (
     build_shortlist,
     relationship_context_string,
@@ -41,6 +45,13 @@ from ...simulation.models.remote_catalog import (
     get_remote_model_definition,
     normalize_remote_model_id,
 )
+from ...simulation.models.remote_resources import (
+    download_resource_content,
+    list_resources,
+    upload_resource,
+)
+from ...simulation.weather.convert import convert_epw_to_mos
+from ...simulation.weather.epw import parse_weather_provenance
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +115,25 @@ class SimulationModelMappingPayload(BaseModel):
     direction: Literal["input", "output"]
     point_id: int = Field(gt=0)
     source: Literal["point"] = "point"
+    conversion: str | None = Field(
+        default=None,
+        description=(
+            "Named value conversion (see simulation.mapping_conversions."
+            "CONVERSIONS) applied to this variable's FMU value at the "
+            "mapping boundary -- e.g. 'zero_based_to_multistate' for a "
+            "zero-based FMU output (0/1/2/...) mapped to this "
+            "simulator's strictly 1-based multi-state Present_Value."
+        ),
+    )
+
+    @field_validator("conversion")
+    @classmethod
+    def _known_conversion(cls, value: str | None) -> str | None:
+        if value is not None and value not in CONVERSIONS:
+            raise ValueError(
+                f"Unknown conversion {value!r}; supported: {sorted(CONVERSIONS)}"
+            )
+        return value
 
 
 class SimulationModelAggregateMappingPayload(BaseModel):
@@ -278,6 +308,7 @@ def _mapping_dicts(
             "variable": mapping.variable,
             "direction": mapping.direction,
             "point_id": mapping.point_id,
+            "conversion": mapping.conversion,
         }
         for mapping in payload.mappings
         if not (
@@ -584,6 +615,35 @@ def _validate_mapping_contract(
     seen: set[tuple[str, str]] = set()
 
     effective_mappings = _mapping_dicts(payload)
+
+    # A point cannot be both an input source and an output target for the
+    # same model -- that's a direct self-loop: the model's own output would
+    # feed back in as its own input every tick, with no independent driving
+    # signal. Found via a live incident: RTU-1-Supply-Fan-Command was mapped
+    # as both fan_command_pct's input (uFan) AND output (yFan); once a
+    # stale/zeroed value got fed in (e.g. after an unrelated object edit
+    # triggered a reload), the FMU's own "uFan>0.01 else yFan=0" interlock
+    # latched the fan off permanently, with no way to recover short of a
+    # manual point edit. Checked here (save time) so the mistake can't be
+    # made through the UI/API at all; model_runtime.py's
+    # _build_fmu_provider has the same check as defense-in-depth for
+    # configs saved before this existed.
+    input_point_ids = {m["point_id"] for m in effective_mappings if m["direction"] == "input"}
+    for aggregate in _aggregate_mapping_dicts(payload):
+        input_point_ids.update(aggregate["point_ids"])
+        input_point_ids.update(w for w in (aggregate.get("weight_point_ids") or []) if w is not None)
+    output_point_ids = {m["point_id"] for m in effective_mappings if m["direction"] == "output"}
+    self_loop_point_ids = sorted(input_point_ids & output_point_ids)
+    if self_loop_point_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Point(s) {self_loop_point_ids} are mapped as both a model "
+                "input source and a model output target -- a point cannot "
+                "feed its own model as an input while also being written "
+                "by that model's output"
+            ),
+        )
 
     for mapping in effective_mappings:
         key = (mapping["variable"], mapping["direction"])
@@ -1065,6 +1125,157 @@ async def simulation_model_catalog(request: Request):
     except Exception as exc:
         raise HTTPException(
             status_code=503,
+            detail={
+                "message": "FMU model runtime cannot be reached",
+                "runtime_error": str(exc),
+            },
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Resource upload - relays to the FMU runtime's generic /resources endpoint
+# (shared/runtime/resources/ in iot-models), for any catalog model's
+# "is_file" string parameter (see remote_catalog.py's
+# _string_parameter_definition). Not scoped to weather or any one model.
+#
+# One exception to "generic, no domain logic": a .epw upload is transparently
+# converted to .mos first (see weather/convert.py, LBNL's own converter,
+# vendored verbatim -- confirmed working against a real weather file this
+# session). A pure Modelica-table reader (Weather's weaName) needs the
+# converted .mos; Spawn/EnergyPlus itself (EnergyPlusThermalZone's epwName)
+# parses the raw .epw directly and cannot read .mos at all -- so a .epw
+# upload is stored BOTH ways (see upload_simulation_resource below), and a
+# user only ever has to supply the raw .epw they actually have, never run
+# the converter by hand or upload the same file twice for two parameters.
+# ---------------------------------------------------------------------------
+
+def _convert_if_epw(filename: str, contents: bytes) -> tuple[str, bytes] | None:
+    """Runs contents through weather/convert.py's real EPW->MOS converter
+    when filename looks like a .epw, returning (mos_filename, mos_bytes).
+    Returns None when there's nothing to convert (already a .mos or other
+    upload) -- the caller stores the original upload as-is in that case.
+    Synchronous (file I/O + the converter's own CPU-bound parsing) -- call
+    via asyncio.to_thread, never directly on the event loop."""
+    if not filename.lower().endswith(".epw"):
+        return None
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir_path = Path(tmp_dir)
+        epw_path = tmp_dir_path / Path(filename).name
+        epw_path.write_bytes(contents)
+        mos_path = convert_epw_to_mos(epw_path)
+        return mos_path.name, mos_path.read_bytes()
+
+
+def _weather_provenance_or_none(contents: bytes) -> dict[str, Any] | None:
+    """Best-effort: not every upload is a weather file, and not every EPW
+    source writes the #COMMENTS line parse_weather_provenance looks for --
+    both cases degrade to None (surfaced to the drawer as "no provenance
+    available"), never an error."""
+    try:
+        text = contents.decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    return parse_weather_provenance(text)
+
+
+@router.post("/simulation/resources")
+async def upload_simulation_resource(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    database = get_database(request)
+    filename = file.filename or "upload"
+    contents = await file.read()
+    settings = database.get_settings()
+
+    # Always store the upload exactly as given -- a raw .epw is preserved
+    # verbatim (EnergyPlusThermalZone's epwName parameter needs the real
+    # EPW format; Spawn/EnergyPlus parses it directly, never .mos).
+    try:
+        result = await asyncio.to_thread(
+            upload_resource, settings, filename, io.BytesIO(contents),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "FMU model runtime resource upload failed",
+                "runtime_error": str(exc),
+            },
+        ) from exc
+
+    # When the upload is a .epw, also store its auto-converted .mos
+    # companion -- the Modelica-table form Weather's weaName (and
+    # EnergyPlusThermalZone's own weaName) needs. Both resources live in
+    # iot-models' one shared, content-addressed store, so uploading the
+    # same source .epw again for a different model/parameter is a fast,
+    # idempotent no-op, not a second real upload.
+    converted_mos: dict[str, Any] | None = None
+    try:
+        conversion = await asyncio.to_thread(_convert_if_epw, filename, contents)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"Could not convert {filename!r} from EPW to MOS",
+                "conversion_error": str(exc),
+            },
+        ) from exc
+    if conversion is not None:
+        mos_filename, mos_contents = conversion
+        try:
+            converted_mos = await asyncio.to_thread(
+                upload_resource, settings, mos_filename, io.BytesIO(mos_contents),
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "FMU model runtime resource upload failed",
+                    "runtime_error": str(exc),
+                },
+            ) from exc
+
+    return {
+        **result,
+        "weather_provenance": _weather_provenance_or_none(contents),
+        "converted_mos": converted_mos,
+    }
+
+
+@router.get("/simulation/resources/{filename}/weather-provenance")
+async def get_simulation_resource_weather_provenance(request: Request, filename: str):
+    database = get_database(request)
+    try:
+        content = await asyncio.to_thread(
+            download_resource_content,
+            database.get_settings(),
+            filename,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "FMU model runtime resource fetch failed",
+                "runtime_error": str(exc),
+            },
+        ) from exc
+    return {"weather_provenance": _weather_provenance_or_none(content)}
+
+
+@router.get("/simulation/resources")
+async def list_simulation_resources(request: Request):
+    database = get_database(request)
+    try:
+        return {
+            "resources": await asyncio.to_thread(
+                list_resources,
+                database.get_settings(),
+            )
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
             detail={
                 "message": "FMU model runtime cannot be reached",
                 "runtime_error": str(exc),

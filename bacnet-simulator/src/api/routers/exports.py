@@ -4,7 +4,7 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from ...bacnet import brick_export, ede
 
@@ -28,6 +28,13 @@ def get_database(request: Request) -> Any:
         )
 
     return database
+
+
+def get_engine(request: Request) -> Any:
+    """Unlike get_database, a missing engine is not an error here -- EDE
+    export's "Current live values" mode simply has no live values to offer
+    (every point exports blank) rather than failing the whole export."""
+    return getattr(request.app.state, "engine", None)
 
 
 # ─── Filename helpers ─────────────────────────────────────────────────────────
@@ -88,10 +95,13 @@ def project_json_response(
 def ede_response(
     devices: list[dict],
     name: str,
+    *,
+    live_values: dict[int, Any] | None = None,
 ) -> Response:
     content = ede.devices_to_ede(
         devices,
         name,
+        live_values=live_values,
     )
 
     return Response(
@@ -167,6 +177,7 @@ async def export_project_json(
 async def export_device_ede(
     device_id: int,
     request: Request,
+    mode: str = Query("defaults", pattern="^(defaults|live)$"),
 ):
     database = get_database(request)
 
@@ -190,9 +201,21 @@ async def export_device_ede(
         device_id,
     )
 
+    live_values: dict[int, Any] | None = None
+    if mode == "live":
+        engine = get_engine(request)
+        # engine=None (e.g. not yet booted) -- {} still switches
+        # devices_to_ede into "live mode", exporting every point blank
+        # rather than silently falling back to configuration defaults.
+        live_values = {
+            obj["id"]: engine.get_object_value(obj["id"])
+            for obj in device_data["objects"]
+        } if engine is not None else {}
+
     return ede_response(
         [device_data],
         device_data["name"],
+        live_values=live_values,
     )
 
 

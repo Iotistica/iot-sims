@@ -37,6 +37,7 @@ const DEFAULT_PARAMS: Record<string, any> = {
 
 const loading = ref(false)
 const deleting = ref(false)
+const restoring = ref(false)
 const form = reactive({
   object_type: 'analog-input',
   object_instance: 1,
@@ -343,6 +344,21 @@ async function save() {
     message.error((e as Error).message)
   } finally {
     loading.value = false
+  }
+}
+
+async function restorePrevious() {
+  if (!props.object || !props.deviceId) return
+  restoring.value = true
+  try {
+    await api.objects.restoreBehavior(props.deviceId, props.object.id)
+    message.success('Restored previous behavior')
+    emit('update:open', false)
+    emit('saved')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to restore previous behavior')
+  } finally {
+    restoring.value = false
   }
 }
 
@@ -877,7 +893,17 @@ function doDelete() {
 
     <template #footer>
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <a-button v-if="object && !draftMode" danger :loading="deleting" @click="doDelete">Delete</a-button>
+        <a-space v-if="object && !draftMode">
+          <a-button danger :loading="deleting" @click="doDelete">Delete</a-button>
+          <a-button
+            v-if="object.behavior === 'fault'"
+            :loading="restoring"
+            title="Undo this temporary fault and put the point back exactly as it was configured before"
+            @click="restorePrevious"
+          >
+            Restore Previous
+          </a-button>
+        </a-space>
         <div v-else />
         <a-space>
           <a-button @click="emit('update:open', false)">Cancel</a-button>

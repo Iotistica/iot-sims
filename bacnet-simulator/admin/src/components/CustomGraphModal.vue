@@ -29,12 +29,11 @@ import { Line } from 'vue-chartjs'
 import { CloseOutlined, SaveOutlined } from '@ant-design/icons-vue'
 import { isDark } from '../theme'
 import { api } from '../api'
+import { CHART_COLORS, axisForUnits, buildChartData, buildChartOptions } from '../customGraphChart'
 import type { CustomGraphDefinition, CustomGraphSeries, HistoryPoint, Meta, PointRef, PointRow, SavedGraph } from '../types'
 import PointPicker from './PointPicker.vue'
 
 ChartJS.register(LinearScale, PointElement, LineElement, Tooltip, Legend)
-
-const CHART_COLORS = ['#1890ff', '#52c41a', '#faad14', '#f5222d', '#722ed1', '#13c2c2', '#eb2f96', '#a0d911']
 
 const props = defineProps<{
   open: boolean
@@ -63,15 +62,6 @@ function unitsLabel(row: PointRow): string {
   return row.units ?? 'no-units'
 }
 
-function axisForUnits(units: string): 'left' | 'right' {
-  const distinctUnits: string[] = []
-  for (const s of series.value) {
-    if (!distinctUnits.includes(s.units)) distinctUnits.push(s.units)
-  }
-  if (distinctUnits.length === 0 || distinctUnits[0] === units) return 'left'
-  return 'right'
-}
-
 async function fetchHistoryFor(entry: GraphSeriesState): Promise<void> {
   entry.loading = true
   try {
@@ -89,7 +79,7 @@ function addSeriesFromRow(row: PointRow, overrides?: Partial<CustomGraphSeries>)
     device_id: row.device_id,
     object_id: row.object_id,
     color: overrides?.color ?? CHART_COLORS[series.value.length % CHART_COLORS.length],
-    axis: overrides?.axis ?? axisForUnits(units),
+    axis: overrides?.axis ?? axisForUnits(series.value.map(s => s.units), units),
     visible: overrides?.visible ?? true,
     device_name: row.device_name,
     name: row.name,
@@ -172,69 +162,27 @@ watch(
 
 // ─── Chart ──────────────────────────────────────────────────────────────
 
-const chartData = computed(() => ({
-  datasets: series.value
-    .filter(s => s.visible)
-    .map(s => ({
-      label: `${s.device_name} / ${s.name}`,
-      data: s.data.map(p => ({ x: p.ts * 1000, y: p.value })),
-      borderColor: s.color,
-      backgroundColor: s.color,
-      yAxisID: s.axis === 'right' ? 'y1' : 'y',
-      pointRadius: 0,
-      tension: 0.3,
-    })),
-}))
-
-const chartOptionsBase = computed(() => {
-  const textColor = isDark.value ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.65)'
-  const gridColor = isDark.value ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)'
-  return {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false as const,
-    plugins: { legend: { labels: { color: textColor } } },
-    scales: {
-      x: {
-        type: 'linear' as const,
-        ticks: { color: textColor, callback: (v: number) => new Date(v).toLocaleTimeString() },
-        grid: { color: gridColor },
-      },
-      y: { ticks: { color: textColor }, grid: { color: gridColor } },
-    },
-  }
-})
+const chartData = computed(() => buildChartData(series.value))
 
 const hasRightAxisSeries = computed(() => series.value.some(s => s.visible && s.axis === 'right'))
 
-const chartOptions = computed(() => {
-  if (!hasRightAxisSeries.value) return chartOptionsBase.value
-  return {
-    ...chartOptionsBase.value,
-    scales: {
-      ...chartOptionsBase.value.scales,
-      y1: { position: 'right' as const, ticks: chartOptionsBase.value.scales.y.ticks, grid: { display: false } },
-    },
-  }
-})
+const chartOptions = computed(() => buildChartOptions(isDark.value, hasRightAxisSeries.value))
 
 // ─── Save ───────────────────────────────────────────────────────────────
+// Name and points share this one dialog -- no separate rename popup and no
+// separate "name it before saving" popup; both used to be their own modal
+// (SavedGraphsView.vue's rename prompt, and this component's own
+// saveModalOpen), collapsed here into a single name field alongside the
+// point picker/chart/save button.
 
-const saveModalOpen = ref(false)
-const saveNameInput = ref('')
 const saving = ref(false)
 
-function openSaveModal() {
+async function doSave() {
   if (!series.value.length) {
     message.error('Add at least one point before saving')
     return
   }
-  saveNameInput.value = graphName.value
-  saveModalOpen.value = true
-}
-
-async function doSave() {
-  const name = saveNameInput.value.trim()
+  const name = graphName.value.trim()
   if (!name) {
     message.error('Name is required')
     return
@@ -253,7 +201,6 @@ async function doSave() {
       : await api.customGraphs.create({ name, definition })
     savedGraphId.value = result.id
     graphName.value = result.name
-    saveModalOpen.value = false
     message.success('Graph saved')
     emit('saved')
   } catch (e: unknown) {
@@ -271,12 +218,19 @@ function close() {
 <template>
   <a-modal
     :open="open"
-    :title="graphName ? `Data Graph — ${graphName}` : 'Data Graph'"
+    title="Data Graph"
     :footer="null"
     width="900px"
     destroy-on-close
     @update:open="(v: boolean) => !v && close()"
   >
+    <a-input
+      v-model:value="graphName"
+      placeholder="Graph name"
+      :maxlength="100"
+      style="margin-bottom:10px"
+    />
+
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px">
       <PointPicker
         :model-value="null"
@@ -286,7 +240,7 @@ function close() {
         :disabled="loadingPoints"
         @update:modelValue="onPick"
       />
-      <a-button type="primary" @click="openSaveModal">
+      <a-button type="primary" :loading="saving" @click="doSave">
         <template #icon><SaveOutlined /></template>
         Save Graph
       </a-button>
@@ -330,20 +284,5 @@ function close() {
         </div>
       </div>
     </template>
-
-    <a-modal
-      v-model:open="saveModalOpen"
-      title="Save Graph"
-      ok-text="Save"
-      :confirm-loading="saving"
-      @ok="doSave"
-    >
-      <a-input
-        v-model:value="saveNameInput"
-        placeholder="Graph name"
-        :maxlength="100"
-        @pressEnter="doSave"
-      />
-    </a-modal>
   </a-modal>
 </template>

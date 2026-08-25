@@ -87,6 +87,12 @@ def _routers():
     except ImportError:
         pass
 
+    try:
+        from src.api.routers.exports import router as exports_router
+        routers.append(exports_router)
+    except ImportError:
+        pass
+
     return routers
 
 
@@ -94,6 +100,14 @@ class _FakeEngine:
     """Stands in for app.state.engine -- devices.py's schedule_engine_reload()
     fires-and-forgets engine.reload(); tests don't need the real BACnet
     engine, just something with that coroutine so the call doesn't 503."""
+    def __init__(self) -> None:
+        # object_id -> live value, consulted by get_object_value() below.
+        # Empty by default (every point has "no live value yet"); tests
+        # exercising EDE export's "Current live values" mode populate this
+        # directly, mirroring the real SimEngine._prev_values it stands in
+        # for.
+        self.live_values: dict[int, object] = {}
+
     async def reload(self) -> None:
         pass
 
@@ -102,6 +116,16 @@ class _FakeEngine:
         # hot-add path (an enabled object on an already-enabled device) --
         # same reasoning as reload() above.
         pass
+
+    def get_object_value(self, object_id: int):
+        return self.live_values.get(object_id)
+
+    def get_simulation_providers(self) -> dict:
+        # simulation.py's create/reload handlers read this unconditionally
+        # (even for an enabled=False draft model) to attach a "runtime"
+        # summary to the response -- empty is correct here, since this
+        # fake never actually registers anything.
+        return {}
 
 
 @pytest.fixture

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -184,6 +185,30 @@ async def update_location(
     return updated
 
 
+@router.get("/{location_id}/deletion-impact")
+async def get_location_deletion_impact(
+    location_id: int,
+    request: Request,
+):
+    database = get_database(request)
+
+    existing = await asyncio.to_thread(
+        database.get_location,
+        location_id,
+    )
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Location not found",
+        )
+
+    return await asyncio.to_thread(
+        database.get_location_deletion_impact,
+        location_id,
+    )
+
+
 @router.delete(
     "/{location_id}",
     status_code=204,
@@ -191,6 +216,7 @@ async def update_location(
 async def delete_location(
     location_id: int,
     request: Request,
+    cascade: bool = False,
 ) -> Response:
     database = get_database(request)
 
@@ -205,10 +231,32 @@ async def delete_location(
             detail="Location not found",
         )
 
-    deleted = await asyncio.to_thread(
-        database.delete_location,
-        location_id,
-    )
+    if cascade:
+        try:
+            deleted = await asyncio.to_thread(
+                database.delete_location_cascade,
+                location_id,
+            )
+        except sqlite3.IntegrityError as exc:
+            # A cascade from one of this location's devices hit an
+            # aggregate member's ON DELETE RESTRICT (see
+            # model_store.ensure_simulation_model_schema). The admin UI
+            # checks GET .../deletion-impact before ever offering cascade
+            # delete, so this is a safety net, not the primary path --
+            # mirrors devices.py::delete_device's own coarser message.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Location {existing['name']!r} cannot be deleted: it "
+                    "contains a point that is still an aggregate-mapping "
+                    "member."
+                ),
+            ) from exc
+    else:
+        deleted = await asyncio.to_thread(
+            database.delete_location,
+            location_id,
+        )
 
     if not deleted:
         raise HTTPException(

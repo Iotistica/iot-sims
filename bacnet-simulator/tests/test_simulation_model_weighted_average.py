@@ -20,12 +20,17 @@ is missing/non-numeric (see FMUAggregateStepError's docstring) --
 weighted_average tolerates a bad INDIVIDUAL pair (missing/non-numeric
 value, missing/non-numeric/negative weight): that pair is simply excluded
 from the sum, the same way a real BAS drops a faulted sensor from a trend
-rather than refusing to compute anything. It only fails outright when the
-total valid weight is exactly 0 (every pair excluded, or every valid
-weight was itself 0) -- at that point it falls back to the same
-FMUInputResolutionError/FMUAggregateStepError behavior "max" already uses,
-per this feature's own explicit spec ("use the existing aggregate
-fallback/error behavior rather than producing NaN/Inf").
+rather than refusing to compute anything.
+
+When every valid weight is itself 0 (e.g. RTU return_air_temp_c weighted
+by VAV airflow, and every VAV reads 0 airflow because the upstream RTU
+hasn't established duct pressure yet -- a real startup deadlock: RTU can't
+initialize without a weight, but can't produce duct pressure without
+initializing), it falls back to a plain arithmetic mean of whichever
+values ARE valid rather than failing outright. It only fails (the same
+FMUInputResolutionError/FMUAggregateStepError behavior "max" uses) when
+there is no valid VALUE anywhere in the pair set -- i.e. nothing left to
+even average.
 """
 from __future__ import annotations
 
@@ -174,25 +179,33 @@ def test_weighted_average_zero_weight_pair_contributes_nothing(monkeypatch):
     assert captured["inputs"]["t_return_air_c"] == pytest.approx((20.0 + 24.0) / 2.0)
 
 
-# ─── 4. All weights zero -> fallback error behavior, not NaN/Inf ───────────
+# ─── 4. All weights zero -> plain-average startup fallback, not NaN/Inf ────
+# Regression coverage for the real RTU/VAV startup deadlock this fallback
+# fixes: RTU's return_air_temp_c weighted average needs VAV airflow as its
+# weight, but VAV airflow depends on RTU's own duct-pressure output, which
+# RTU can't produce until it initializes. Before this fallback, all-zero
+# weights (VAVs reporting 0 airflow because RTU hasn't started) hard-failed
+# initialize()/step() forever -- a genuine deadlock, not a data-quality
+# problem. See _resolve_weighted_average's docstring in providers/fmu.py.
 
-def test_weighted_average_all_zero_weights_aborts_initialize(monkeypatch):
+def test_weighted_average_all_zero_weights_falls_back_to_plain_average_on_initialize(monkeypatch):
     agg = FMUAggregateInput(
         variable="t_return_air_c", operation="weighted_average",
         point_ids=(101, 102, 103), weight_point_ids=(201, 202, 203),
     )
     provider = _provider(aggregate_inputs=[agg])
-    monkeypatch.setattr(provider._client, "health", lambda: (_ for _ in ()).throw(AssertionError("must not contact runtime")))
+    captured: dict = {}
+    monkeypatch.setattr(type(provider._client), "health", _fake_health)
+    monkeypatch.setattr(type(provider._client), "initialize", _capturing_initialize(captured))
 
     context = _weighted_average_context({101: 20.0, 102: 22.0, 103: 24.0, 201: 0.0, 202: 0.0, 203: 0.0})
+    provider.initialize(context)
 
-    with pytest.raises(FMUInputResolutionError) as excinfo:
-        provider.initialize(context)
-    assert "total valid weight is 0" in str(excinfo.value)
-    assert not math.isnan(0.0)  # the point: no NaN ever reaches the FMU -- initialize() raised instead
+    assert captured["inputs"]["t_return_air_c"] == pytest.approx((20.0 + 22.0 + 24.0) / 3.0)
+    assert not math.isnan(captured["inputs"]["t_return_air_c"])
 
 
-def test_weighted_average_all_zero_weights_aborts_step(monkeypatch):
+def test_weighted_average_all_zero_weights_falls_back_to_plain_average_on_step(monkeypatch):
     agg = FMUAggregateInput(
         variable="t_return_air_c", operation="weighted_average",
         point_ids=(101, 102, 103), weight_point_ids=(201, 202, 203),
@@ -202,20 +215,33 @@ def test_weighted_average_all_zero_weights_aborts_step(monkeypatch):
     monkeypatch.setattr(type(provider._client), "health", _fake_health)
     monkeypatch.setattr(type(provider._client), "initialize", lambda self, model_id, inputs=None: {"session_id": "s1", "state": "RUNNING"})
 
+    captured_payloads: list[dict] = []
+
+    def _fake_step(self, model_id, payload):
+        captured_payloads.append(dict(payload["inputs"]))
+        return FMURuntimeResponse(status_code=200, raw_body="{}", body={"state": "RUNNING", "current_time": 5.0, "zone_temp_c": 22.0})
+
+    monkeypatch.setattr(type(provider._client), "step", _fake_step)
+
     context = _weighted_average_context({101: 20.0, 102: 22.0, 103: 24.0, 201: 1.0, 202: 1.0, 203: 1.0})
     provider.initialize(context)
     provider.start()
 
-    # All VAVs go to 0 airflow mid-run (system off).
+    # All VAVs go to 0 airflow mid-run (e.g. RTU's own duct-pressure output
+    # dropped out) -- must keep running on the plain-average fallback, not
+    # error out.
     provider.set_inputs({201: 0.0, 202: 0.0, 203: 0.0})
-    monkeypatch.setattr(
-        type(provider._client), "step",
-        lambda self, model_id, payload: (_ for _ in ()).throw(AssertionError("must not contact runtime")),
-    )
-
     provider.step(5.0)
-    assert provider.get_status() == ProviderStatus.ERROR
-    assert "total valid weight is 0" in provider._error
+
+    assert provider.get_status() == ProviderStatus.RUNNING
+    assert captured_payloads[-1]["t_return_air_c"] == pytest.approx((20.0 + 22.0 + 24.0) / 3.0)
+
+    # Airflow returns -> transitions straight back to the real weighted
+    # average on the very next step, no separate state to reset.
+    provider.set_inputs({201: 2.0, 202: 1.0, 203: 1.0})
+    provider.step(5.0)
+    expected = (20.0 * 2.0 + 22.0 * 1.0 + 24.0 * 1.0) / (2.0 + 1.0 + 1.0)
+    assert captured_payloads[-1]["t_return_air_c"] == pytest.approx(expected)
 
 
 # ─── 5. Invalid/missing individual pairs are ignored, not fatal ────────────

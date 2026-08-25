@@ -62,10 +62,43 @@ def _present_value_default(behavior: str, params: dict) -> Optional[float]:
     return None
 
 
-def devices_to_ede(devices: list[dict], project_name: str = "") -> str:
+def _live_present_value(value: Any) -> Optional[float]:
+    """Formats a live Present_Value (as returned by SimEngine.get_object_value,
+    already normalize_present_value()-canonicalized -- bool for binary,
+    float/int for analog/multi-state) into the same plain-numeric shape
+    _present_value_default produces, so the Present-Value-Default column
+    stays consistent regardless of export mode. None (no live value yet,
+    e.g. a point that has never ticked) stays None -- callers must leave
+    the column blank rather than inventing a value."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def devices_to_ede(
+    devices: list[dict],
+    project_name: str = "",
+    *,
+    live_values: dict[int, Any] | None = None,
+) -> str:
     """Serialize devices (each with an "objects" list, same shape as a saved
     project's data) into an EDE CSV. Works for a single device or a whole
-    project — every row carries its own Device-Instance."""
+    project — every row carries its own Device-Instance.
+
+    live_values, when provided, switches the Present-Value-Default column
+    from each object's configured/default behavior value to its current
+    live Present_Value (keyed by object id -- e.g. {obj_id: engine.
+    get_object_value(obj_id)}). A point with no entry, or an entry of
+    None (FMU/provider-owned points that haven't produced a value yet),
+    exports blank rather than falling back to the configured default --
+    "current live values" mode never invents a value. live_values=None
+    (the default) preserves the original configuration-defaults export
+    exactly as before."""
     buf = io.StringIO()
     buf.write(f"#Project;{project_name}\n#EdeVersion;iotistica-1\n\n")
     writer = csv.writer(buf, delimiter=";", lineterminator="\n")
@@ -75,11 +108,14 @@ def devices_to_ede(devices: list[dict], project_name: str = "") -> str:
         for obj in dev.get("objects", []):
             otype = obj["object_type"]
             abbr = OBJECT_TYPE_ABBR.get(otype, otype)
-            try:
-                params = json.loads(obj.get("behavior_params") or "{}")
-            except (TypeError, ValueError):
-                params = {}
-            default = _present_value_default(obj.get("behavior", ""), params)
+            if live_values is not None:
+                default = _live_present_value(live_values.get(obj["id"]))
+            else:
+                try:
+                    params = json.loads(obj.get("behavior_params") or "{}")
+                except (TypeError, ValueError):
+                    params = {}
+                default = _present_value_default(obj.get("behavior", ""), params)
             writer.writerow([
                 f"{instance}.{abbr}{obj['object_instance']}",
                 instance,

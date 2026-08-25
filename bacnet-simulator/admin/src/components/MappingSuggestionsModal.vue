@@ -160,7 +160,12 @@ function apply() {
 
   for (const row of rows.value) {
     if (!row.included || !row.chosenPointId) continue
-    mappings[row.variable.name] = row.chosenPointId
+    // Keyed by (direction, name), matching SimulationModelDrawer.vue's
+    // form.mappings -- a model can declare an input and an output under
+    // the identical variable name (e.g. RTU's fan_command_pct), and a
+    // name-only key would collide, silently dropping one of the two
+    // suggestions or applying it to the wrong direction's row.
+    mappings[`${row.variable.direction}:${row.variable.name}`] = row.chosenPointId
     if (props.providerType === 'fmu' && row.variable.direction === 'input') {
       switchToPoint.push(row.variable.name)
     }

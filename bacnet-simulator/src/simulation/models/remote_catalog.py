@@ -7,7 +7,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .registry import MappingHints, ModelDefinition, VariableDefinition
+from .registry import MappingHints, ModelDefinition, ParameterDefinition, VariableDefinition
 
 
 _CACHE_TTL_SECONDS = 30.0
@@ -157,6 +157,42 @@ def _variable(data: dict[str, Any], direction: str) -> VariableDefinition:
     )
 
 
+def _string_parameter_definition(data: dict[str, Any]) -> ParameterDefinition:
+    # "file" (not plain "string") when the catalog flags this parameter's
+    # value as a file path (e.g. Weather's wea_filename) -- tells
+    # SimulationModelDrawer.vue to render an upload control (via
+    # /simulation/resources, remote_resources.py's relay to iot-models'
+    # generic /resources endpoint) instead of a free-text box. Any future
+    # string_parameters entry with is_file omitted/false stays a plain
+    # free-text "string" field, e.g. a text label rather than a file
+    # reference.
+    param_type = "file" if data.get("is_file") else "string"
+    return ParameterDefinition(
+        name=str(data["name"]),
+        label=str(data.get("label") or data["name"]),
+        type=param_type,
+        default=data.get("default"),
+        required=bool(data.get("required", False)),
+    )
+
+
+# Weather-specific: appended to that one model's parameters below, never
+# sourced from iot-models' model.json (iot-models has no idea this
+# parameter exists -- it only ever receives the plain warmup_seconds float
+# _build_fmu_provider computes from it, via the generic per-session
+# warmup override every model could use for its own reasons). Kept here,
+# hardcoded -- Weather-specific UX knowledge lives in bacnet-simulator, not
+# in the FMU runtime.
+_WEATHER_MODEL_SLUG = "Weather"
+_PLAYBACK_START_MONTH_PARAMETER = ParameterDefinition(
+    name="playback_start_month",
+    label="Playback Start Month",
+    type="month",
+    default=1,
+    required=False,
+)
+
+
 def definition_from_metadata(metadata: dict[str, Any]) -> ModelDefinition:
     model_id = str(metadata["id"])
     variables = [
@@ -171,12 +207,26 @@ def definition_from_metadata(metadata: dict[str, Any]) -> ModelDefinition:
             if isinstance(item, dict) and item.get("name")
         ],
     ]
+    # Session-lifetime FMI String parameters (e.g. Weather's wea_filename,
+    # eventually EnergyPlusThermalZone's epw_filename/wea_filename) --
+    # surfaced through the existing generic Parameters UI (renders a
+    # free-text input for type="string") rather than a bespoke picker for
+    # now. See _build_fmu_provider's own comment for how a value entered
+    # here actually reaches the FMU runtime as an initialize()-time
+    # string_parameters override.
+    parameters = tuple(
+        _string_parameter_definition(item)
+        for item in metadata.get("string_parameters", [])
+        if isinstance(item, dict) and item.get("name")
+    )
+    if str(metadata.get("slug") or "") == _WEATHER_MODEL_SLUG:
+        parameters = parameters + (_PLAYBACK_START_MONTH_PARAMETER,)
     return ModelDefinition(
         model_type=model_id,
         label=str(metadata.get("label") or model_id),
         provider_type="fmu",
         description=str(metadata.get("description") or ""),
-        parameters=(),
+        parameters=parameters,
         variables=tuple(variables),
         factory=lambda parameters: None,
         runtime_model=model_id,
