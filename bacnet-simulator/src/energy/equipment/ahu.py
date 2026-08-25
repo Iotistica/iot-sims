@@ -1,576 +1,346 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
 from math import isfinite
-from typing import Any
-
-
-AIR_DENSITY_KG_PER_M3 = 1.204
-AIR_SPECIFIC_HEAT_KJ_PER_KG_K = 1.006
-CFM_TO_CUBIC_METERS_PER_SECOND = 0.00047194745
-
-
-class AHUEnergySource(StrEnum):
-    MEASURED = "measured"
-    FAN_SPEED = "fan-speed"
-    AIR_SIDE_THERMAL = "air-side-thermal"
-    RATED_POWER = "rated-power"
-    UNAVAILABLE = "unavailable"
-
-
-class AHUEnergyConfidence(StrEnum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    NONE = "none"
 
 
 @dataclass(frozen=True)
 class AHUEnergyConfig:
     """
-    Static AHU characteristics.
+    Accounting configuration for AHU.mo.
 
-    supply_fan_rated_power_kw / return_fan_rated_power_kw:
-        Full-speed electrical input of each fan.
-
-    fan_power_exponent:
-        Approximation for VFD fan power. A value near 3.0 follows
-        the fan affinity-law relationship.
-
-    minimum_fan_power_fraction:
-        Minimum running fraction for drive and motor losses.
-
-    cooling_efficiency_cop:
-        Optional COP used to convert estimated cooling-coil thermal
-        load into upstream electrical power.
-
-    heating_efficiency:
-        Optional heating-system efficiency used to convert estimated
-        heating-coil output into upstream fuel or electrical input.
-
-    include_coil_energy:
-        When False, only fan electrical power is reported as AHU power.
+    Toronto/Ontario defaults are simplified simulation assumptions.
+    Override them with project-specific electricity rates and emissions
+    factors when available.
     """
 
-    supply_fan_rated_power_kw: float | None = None
-    return_fan_rated_power_kw: float | None = None
-
-    fan_power_exponent: float = 3.0
-    minimum_fan_power_fraction: float = 0.08
-
-    supply_fan_running_fraction: float = 0.85
-    return_fan_running_fraction: float = 0.85
-
-    cooling_efficiency_cop: float | None = None
-    heating_efficiency: float | None = None
-    include_coil_energy: bool = False
-
-    auxiliary_power_kw: float = 0.0
+    electricity_rate_per_kwh: float = 0.15
+    electricity_kg_co2e_per_kwh: float = 0.059
+    currency: str = "CAD"
+    region: str = "Toronto, Ontario"
 
     def validate(self) -> None:
-        for name, value in (
-            (
-                "supply_fan_rated_power_kw",
-                self.supply_fan_rated_power_kw,
-            ),
-            (
-                "return_fan_rated_power_kw",
-                self.return_fan_rated_power_kw,
-            ),
-        ):
-            if value is not None and value <= 0:
-                raise ValueError(
-                    f"{name} must be greater than zero"
-                )
+        _validate_nonnegative(
+            self.electricity_rate_per_kwh,
+            "electricity_rate_per_kwh",
+        )
+        _validate_nonnegative(
+            self.electricity_kg_co2e_per_kwh,
+            "electricity_kg_co2e_per_kwh",
+        )
 
-        if (
-            self.supply_fan_rated_power_kw is None
-            and self.return_fan_rated_power_kw is None
-        ):
-            raise ValueError(
-                "Provide at least one fan rated power"
-            )
-
-        if self.fan_power_exponent <= 0:
-            raise ValueError(
-                "fan_power_exponent must be greater than zero"
-            )
-
-        if not 0 <= self.minimum_fan_power_fraction <= 1:
-            raise ValueError(
-                "minimum_fan_power_fraction must be between 0 and 1"
-            )
-
-        for name, value in (
-            (
-                "supply_fan_running_fraction",
-                self.supply_fan_running_fraction,
-            ),
-            (
-                "return_fan_running_fraction",
-                self.return_fan_running_fraction,
-            ),
-        ):
-            if not 0 <= value <= 1.5:
-                raise ValueError(
-                    f"{name} must be between 0 and 1.5"
-                )
-
-        if (
-            self.cooling_efficiency_cop is not None
-            and self.cooling_efficiency_cop <= 0
-        ):
-            raise ValueError(
-                "cooling_efficiency_cop must be greater than zero"
-            )
-
-        if (
-            self.heating_efficiency is not None
-            and not 0 < self.heating_efficiency <= 1
-        ):
-            raise ValueError(
-                "heating_efficiency must be greater than 0 "
-                "and no greater than 1"
-            )
-
-        if self.auxiliary_power_kw < 0:
-            raise ValueError(
-                "auxiliary_power_kw cannot be negative"
-            )
+        if not self.currency.strip():
+            raise ValueError("currency cannot be empty")
+        if not self.region.strip():
+            raise ValueError("region cannot be empty")
 
 
 @dataclass(frozen=True)
 class AHUSnapshot:
     """
-    Live AHU values from Brick-tagged simulation points.
+    Direct values mapped from AHU.mo.
+
+    Required energy input:
+      AHU.PSupFan [W] -> supply_fan_power_kw [kW]
+
+    Optional thermal/plant diagnostics:
+      AHU.QCoolLoad     [W]    -> cooling_load_kw [kW]
+      AHU.QHeaLoad      [W]    -> heating_load_kw [kW]
+      AHU.VChiWat_flow  [m3/s] -> chilled_water_flow_m3_s
+      AHU.TChiWatRet    [K]    -> chilled_water_return_temperature_k
+      AHU input TChiWatSup [K] -> chilled_water_supply_temperature_k
+
+    Optional AHU operating diagnostics:
+      AHU.yFan, yCooVal, yHeaVal, cooCapacityFactor.
+
+    No power is reconstructed from fan speed, airflow, thermal load, COP,
+    valve position, or equipment ratings.
     """
 
-    measured_power_kw: float | None = None
+    supply_fan_power_kw: float
 
-    supply_fan_running: bool | None = None
-    return_fan_running: bool | None = None
+    cooling_load_kw: float | None = None
+    heating_load_kw: float | None = None
 
-    supply_fan_speed_fraction: float | None = None
-    supply_fan_speed_percent: float | None = None
+    chilled_water_flow_m3_s: float | None = None
+    chilled_water_supply_temperature_k: float | None = None
+    chilled_water_return_temperature_k: float | None = None
 
-    return_fan_speed_fraction: float | None = None
-    return_fan_speed_percent: float | None = None
-
-    supply_air_flow_cubic_meters_per_second: float | None = None
-    supply_air_flow_cfm: float | None = None
-
-    supply_air_temperature_c: float | None = None
-    return_air_temperature_c: float | None = None
-    mixed_air_temperature_c: float | None = None
-    outside_air_temperature_c: float | None = None
-
-    cooling_valve_position_percent: float | None = None
-    heating_valve_position_percent: float | None = None
-
-    def normalized_supply_speed(self) -> float | None:
-        return _normalized_fraction(
-            self.supply_fan_speed_fraction,
-            self.supply_fan_speed_percent,
-        )
-
-    def normalized_return_speed(self) -> float | None:
-        return _normalized_fraction(
-            self.return_fan_speed_fraction,
-            self.return_fan_speed_percent,
-        )
-
-    def normalized_air_flow_m3_s(self) -> float | None:
-        direct = _positive_or_zero(
-            self.supply_air_flow_cubic_meters_per_second
-        )
-        if direct is not None:
-            return direct
-
-        cfm = _positive_or_zero(
-            self.supply_air_flow_cfm
-        )
-        if cfm is not None:
-            return cfm * CFM_TO_CUBIC_METERS_PER_SECOND
-
-        return None
+    fan_command_fraction: float | None = None
+    cooling_valve_fraction: float | None = None
+    heating_valve_fraction: float | None = None
+    cooling_capacity_factor: float | None = None
 
 
 @dataclass(frozen=True)
 class AHUEnergyResult:
-    power_kw: float | None
-    interval_energy_kwh: float
-    total_energy_kwh: float
+    currency: str
+    region: str
 
-    supply_fan_power_kw: float | None
-    return_fan_power_kw: float | None
-    auxiliary_power_kw: float
+    # Electrical accounting owned by this AHU model.
+    electric_power_kw: float
+    supply_fan_power_kw: float
 
+    interval_electric_energy_kwh: float
+    total_electric_energy_kwh: float
+
+    interval_electric_cost: float
+    total_electric_cost: float
+
+    interval_electric_co2e_kg: float
+    total_electric_co2e_kg: float
+
+    # Thermal/plant diagnostics only. These are NOT converted to AHU
+    # electricity or fuel consumption in this accounting layer.
     cooling_load_kw: float | None
     heating_load_kw: float | None
 
-    cooling_input_power_kw: float | None
-    heating_input_power_kw: float | None
+    chilled_water_flow_m3_s: float | None
+    chilled_water_supply_temperature_k: float | None
+    chilled_water_return_temperature_k: float | None
 
-    source: AHUEnergySource
-    confidence: AHUEnergyConfidence
-    method: str
-
-    inputs: dict[str, Any] = field(default_factory=dict)
-    warnings: list[str] = field(default_factory=list)
+    fan_command_fraction: float | None
+    cooling_valve_fraction: float | None
+    heating_valve_fraction: float | None
+    cooling_capacity_factor: float | None
 
 
 class AHUEnergyModel:
-    def __init__(
-        self,
-        config: AHUEnergyConfig,
-    ) -> None:
+    """
+    Energy-accounting layer matched to the current AHU.mo.
+
+    AHU.mo directly exposes supply-fan electrical power as PSupFan.
+    Therefore this model uses that value as the sole AHU electrical-power
+    source of truth.
+
+    QCoolLoad and QHeaLoad are thermal loads. They are retained for reporting
+    but are not converted into electricity or fuel here:
+
+      * Chilled-water production/pumping energy belongs to the plant/chiller
+        accounting model.
+      * The current AHU.mo does not define the upstream energy source for its
+        idealized heating coil, so heating fuel/electricity must be accounted
+        for by the applicable upstream heating-system model.
+
+    There are deliberately no fallback power estimates.
+    """
+
+    def __init__(self, config: AHUEnergyConfig) -> None:
         config.validate()
         self.config = config
-        self.total_energy_kwh = 0.0
+        self.reset()
 
     def evaluate(
         self,
         snapshot: AHUSnapshot,
         elapsed_seconds: float,
     ) -> AHUEnergyResult:
-        if elapsed_seconds < 0:
+        if not isfinite(elapsed_seconds) or elapsed_seconds < 0:
             raise ValueError(
-                "elapsed_seconds cannot be negative"
+                "elapsed_seconds must be finite and non-negative"
             )
 
-        measured = _positive_or_zero(
-            snapshot.measured_power_kw
+        supply_fan_power_kw = _required_nonnegative(
+            snapshot.supply_fan_power_kw,
+            "supply_fan_power_kw",
         )
 
-        if measured is not None:
-            source = AHUEnergySource.MEASURED
-            confidence = AHUEnergyConfidence.HIGH
-            method = "measured-electric-power"
-            supply_power = None
-            return_power = None
-            fan_power = measured
-        else:
-            supply_power = self._fan_power(
-                rated_power_kw=(
-                    self.config.supply_fan_rated_power_kw
-                ),
-                running=snapshot.supply_fan_running,
-                speed_fraction=(
-                    snapshot.normalized_supply_speed()
-                ),
-                fallback_running_fraction=(
-                    self.config
-                    .supply_fan_running_fraction
-                ),
-            )
+        # For the current AHU.mo, PSupFan is the AHU's only explicitly
+        # modeled electrical-power output.
+        electric_power_kw = supply_fan_power_kw
 
-            return_power = self._fan_power(
-                rated_power_kw=(
-                    self.config.return_fan_rated_power_kw
-                ),
-                running=snapshot.return_fan_running,
-                speed_fraction=(
-                    snapshot.normalized_return_speed()
-                ),
-                fallback_running_fraction=(
-                    self.config
-                    .return_fan_running_fraction
-                ),
-            )
-
-            fan_values = [
-                value
-                for value in (
-                    supply_power,
-                    return_power,
-                )
-                if value is not None
-            ]
-
-            fan_power = (
-                sum(fan_values)
-                if fan_values
-                else None
-            )
-
-            has_speed = (
-                snapshot.normalized_supply_speed()
-                is not None
-                or snapshot.normalized_return_speed()
-                is not None
-            )
-
-            if fan_power is None:
-                source = AHUEnergySource.UNAVAILABLE
-                confidence = AHUEnergyConfidence.NONE
-                method = "insufficient-data"
-            elif has_speed:
-                source = AHUEnergySource.FAN_SPEED
-                confidence = AHUEnergyConfidence.MEDIUM
-                method = "rated-fan-power-times-speed-curve"
-            else:
-                source = AHUEnergySource.RATED_POWER
-                confidence = AHUEnergyConfidence.LOW
-                method = "rated-fan-power-running-factor"
-
-        cooling_load, heating_load = (
-            self._calculate_air_side_loads(snapshot)
+        cooling_load_kw = _optional_nonnegative(
+            snapshot.cooling_load_kw,
+            "cooling_load_kw",
+        )
+        heating_load_kw = _optional_nonnegative(
+            snapshot.heating_load_kw,
+            "heating_load_kw",
         )
 
-        cooling_input = None
-        if (
-            cooling_load is not None
-            and self.config.cooling_efficiency_cop
-            is not None
-        ):
-            cooling_input = (
-                cooling_load
-                / self.config.cooling_efficiency_cop
-            )
-
-        heating_input = None
-        if (
-            heating_load is not None
-            and self.config.heating_efficiency
-            is not None
-        ):
-            heating_input = (
-                heating_load
-                / self.config.heating_efficiency
-            )
-
-        auxiliary = self.config.auxiliary_power_kw
-
-        total_power = fan_power
-
-        if total_power is not None:
-            total_power += auxiliary
-
-            if self.config.include_coil_energy:
-                total_power += cooling_input or 0.0
-                total_power += heating_input or 0.0
-
-        interval_energy = (
-            total_power
-            * elapsed_seconds
-            / 3600.0
-            if total_power is not None
-            else 0.0
+        chilled_water_flow_m3_s = _optional_nonnegative(
+            snapshot.chilled_water_flow_m3_s,
+            "chilled_water_flow_m3_s",
+        )
+        chilled_water_supply_temperature_k = _optional_positive(
+            snapshot.chilled_water_supply_temperature_k,
+            "chilled_water_supply_temperature_k",
+        )
+        chilled_water_return_temperature_k = _optional_positive(
+            snapshot.chilled_water_return_temperature_k,
+            "chilled_water_return_temperature_k",
         )
 
-        self.total_energy_kwh += interval_energy
+        fan_command_fraction = _optional_fraction(
+            snapshot.fan_command_fraction,
+            "fan_command_fraction",
+        )
+        cooling_valve_fraction = _optional_fraction(
+            snapshot.cooling_valve_fraction,
+            "cooling_valve_fraction",
+        )
+        heating_valve_fraction = _optional_fraction(
+            snapshot.heating_valve_fraction,
+            "heating_valve_fraction",
+        )
+        cooling_capacity_factor = _optional_fraction(
+            snapshot.cooling_capacity_factor,
+            "cooling_capacity_factor",
+        )
 
-        warnings: list[str] = []
+        dt_h = elapsed_seconds / 3600.0
 
-        if source is AHUEnergySource.RATED_POWER:
-            warnings.append(
-                "Fan power was estimated from rated power "
-                "and a running factor."
-            )
+        interval_electric_energy_kwh = electric_power_kw * dt_h
 
-        if (
-            self.config.include_coil_energy
-            and cooling_load is not None
-            and cooling_input is None
-        ):
-            warnings.append(
-                "Cooling load was estimated, but no cooling COP "
-                "was configured."
-            )
+        interval_electric_cost = (
+            interval_electric_energy_kwh
+            * self.config.electricity_rate_per_kwh
+        )
 
-        if (
-            self.config.include_coil_energy
-            and heating_load is not None
-            and heating_input is None
-        ):
-            warnings.append(
-                "Heating load was estimated, but no heating "
-                "efficiency was configured."
-            )
+        interval_electric_co2e_kg = (
+            interval_electric_energy_kwh
+            * self.config.electricity_kg_co2e_per_kwh
+        )
 
-        if total_power is None:
-            warnings.append(
-                "No measured power or usable fan rating was available."
-            )
+        self.total_electric_energy_kwh += interval_electric_energy_kwh
+        self.total_electric_cost += interval_electric_cost
+        self.total_electric_co2e_kg += interval_electric_co2e_kg
 
         return AHUEnergyResult(
-            power_kw=total_power,
-            interval_energy_kwh=interval_energy,
-            total_energy_kwh=self.total_energy_kwh,
-            supply_fan_power_kw=supply_power,
-            return_fan_power_kw=return_power,
-            auxiliary_power_kw=auxiliary,
-            cooling_load_kw=cooling_load,
-            heating_load_kw=heating_load,
-            cooling_input_power_kw=cooling_input,
-            heating_input_power_kw=heating_input,
-            source=source,
-            confidence=confidence,
-            method=method,
-            inputs={
-                "supply_fan_speed_fraction": (
-                    snapshot.normalized_supply_speed()
-                ),
-                "return_fan_speed_fraction": (
-                    snapshot.normalized_return_speed()
-                ),
-                "air_flow_m3_s": (
-                    snapshot.normalized_air_flow_m3_s()
-                ),
-                "supply_air_temperature_c": (
-                    snapshot.supply_air_temperature_c
-                ),
-                "return_air_temperature_c": (
-                    snapshot.return_air_temperature_c
-                ),
-                "mixed_air_temperature_c": (
-                    snapshot.mixed_air_temperature_c
-                ),
-                "outside_air_temperature_c": (
-                    snapshot.outside_air_temperature_c
-                ),
-                "include_coil_energy": (
-                    self.config.include_coil_energy
-                ),
-            },
-            warnings=warnings,
+            currency=self.config.currency,
+            region=self.config.region,
+            electric_power_kw=electric_power_kw,
+            supply_fan_power_kw=supply_fan_power_kw,
+            interval_electric_energy_kwh=interval_electric_energy_kwh,
+            total_electric_energy_kwh=self.total_electric_energy_kwh,
+            interval_electric_cost=interval_electric_cost,
+            total_electric_cost=self.total_electric_cost,
+            interval_electric_co2e_kg=interval_electric_co2e_kg,
+            total_electric_co2e_kg=self.total_electric_co2e_kg,
+            cooling_load_kw=cooling_load_kw,
+            heating_load_kw=heating_load_kw,
+            chilled_water_flow_m3_s=chilled_water_flow_m3_s,
+            chilled_water_supply_temperature_k=(
+                chilled_water_supply_temperature_k
+            ),
+            chilled_water_return_temperature_k=(
+                chilled_water_return_temperature_k
+            ),
+            fan_command_fraction=fan_command_fraction,
+            cooling_valve_fraction=cooling_valve_fraction,
+            heating_valve_fraction=heating_valve_fraction,
+            cooling_capacity_factor=cooling_capacity_factor,
         )
 
     def reset(self) -> None:
-        self.total_energy_kwh = 0.0
-
-    def _fan_power(
-        self,
-        *,
-        rated_power_kw: float | None,
-        running: bool | None,
-        speed_fraction: float | None,
-        fallback_running_fraction: float,
-    ) -> float | None:
-        rated = _positive_or_zero(rated_power_kw)
-
-        if rated is None:
-            return None
-
-        if running is False:
-            return 0.0
-
-        if speed_fraction is not None:
-            speed = _clamp(
-                speed_fraction,
-                0.0,
-                1.0,
-            )
-
-            if speed <= 0:
-                return 0.0
-
-            power_fraction = max(
-                self.config.minimum_fan_power_fraction,
-                speed
-                ** self.config.fan_power_exponent,
-            )
-
-            return rated * power_fraction
-
-        if running is True:
-            return rated * fallback_running_fraction
-
-        return None
-
-    def _calculate_air_side_loads(
-        self,
-        snapshot: AHUSnapshot,
-    ) -> tuple[float | None, float | None]:
-        flow_m3_s = snapshot.normalized_air_flow_m3_s()
-
-        if flow_m3_s is None:
-            return None, None
-
-        supply = _finite_or_none(
-            snapshot.supply_air_temperature_c
-        )
-
-        reference = _finite_or_none(
-            snapshot.mixed_air_temperature_c
-        )
-
-        if reference is None:
-            reference = _finite_or_none(
-                snapshot.return_air_temperature_c
-            )
-
-        if supply is None or reference is None:
-            return None, None
-
-        mass_flow = flow_m3_s * AIR_DENSITY_KG_PER_M3
-        delta_t = supply - reference
-
-        thermal_kw = (
-            mass_flow
-            * AIR_SPECIFIC_HEAT_KJ_PER_KG_K
-            * abs(delta_t)
-        )
-
-        if delta_t < 0:
-            return thermal_kw, None
-
-        if delta_t > 0:
-            return None, thermal_kw
-
-        return 0.0, 0.0
+        self.total_electric_energy_kwh = 0.0
+        self.total_electric_cost = 0.0
+        self.total_electric_co2e_kg = 0.0
 
 
-def _normalized_fraction(
-    fraction: float | None,
-    percent: float | None,
+def snapshot_from_ahu_fmu(
+    *,
+    PSupFan_W: float,
+    QCoolLoad_W: float | None = None,
+    QHeaLoad_W: float | None = None,
+    VChiWat_flow_m3_s: float | None = None,
+    TChiWatSup_K: float | None = None,
+    TChiWatRet_K: float | None = None,
+    yFan: float | None = None,
+    yCooVal: float | None = None,
+    yHeaVal: float | None = None,
+    cooCapacityFactor: float | None = None,
+) -> AHUSnapshot:
+    """
+    Convenience adapter using the current AHU.mo signal names.
+
+    Modelica powers/heat flows are W; the accounting model uses kW.
+    """
+
+    return AHUSnapshot(
+        supply_fan_power_kw=_required_nonnegative(
+            PSupFan_W,
+            "PSupFan_W",
+        ) / 1000.0,
+        cooling_load_kw=_watts_to_optional_kw(
+            QCoolLoad_W,
+            "QCoolLoad_W",
+        ),
+        heating_load_kw=_watts_to_optional_kw(
+            QHeaLoad_W,
+            "QHeaLoad_W",
+        ),
+        chilled_water_flow_m3_s=VChiWat_flow_m3_s,
+        chilled_water_supply_temperature_k=TChiWatSup_K,
+        chilled_water_return_temperature_k=TChiWatRet_K,
+        fan_command_fraction=yFan,
+        cooling_valve_fraction=yCooVal,
+        heating_valve_fraction=yHeaVal,
+        cooling_capacity_factor=cooCapacityFactor,
+    )
+
+
+def _watts_to_optional_kw(
+    value: float | None,
+    name: str,
 ) -> float | None:
-    if fraction is not None:
-        value = _finite_or_none(fraction)
-        if value is not None:
-            return _clamp(value, 0.0, 1.0)
-
-    if percent is not None:
-        value = _finite_or_none(percent)
-        if value is not None:
-            return _clamp(
-                value / 100.0,
-                0.0,
-                1.0,
-            )
-
-    return None
+    if value is None:
+        return None
+    return _required_nonnegative(value, name) / 1000.0
 
 
-def _finite_or_none(
-    value: float | int | None,
+def _required_nonnegative(value: float, name: str) -> float:
+    result = float(value)
+    if not isfinite(result) or result < 0:
+        raise ValueError(
+            f"{name} must be finite and non-negative"
+        )
+    return result
+
+
+def _optional_nonnegative(
+    value: float | None,
+    name: str,
+) -> float | None:
+    if value is None:
+        return None
+    return _required_nonnegative(value, name)
+
+
+def _optional_positive(
+    value: float | None,
+    name: str,
 ) -> float | None:
     if value is None:
         return None
 
     result = float(value)
-
-    if not isfinite(result):
-        return None
+    if not isfinite(result) or result <= 0:
+        raise ValueError(
+            f"{name} must be finite and greater than zero"
+        )
 
     return result
 
 
-def _positive_or_zero(
-    value: float | int | None,
+def _optional_fraction(
+    value: float | None,
+    name: str,
 ) -> float | None:
-    result = _finite_or_none(value)
-
-    if result is None or result < 0:
+    if value is None:
         return None
+
+    result = float(value)
+    if not isfinite(result) or not 0.0 <= result <= 1.0:
+        raise ValueError(
+            f"{name} must be between 0 and 1"
+        )
 
     return result
 
 
-def _clamp(
-    value: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    return max(minimum, min(maximum, value))
+def _validate_nonnegative(value: float, name: str) -> None:
+    if not isfinite(value) or value < 0:
+        raise ValueError(
+            f"{name} must be finite and non-negative"
+        )
