@@ -68,19 +68,3 @@ class ModelDefinition:
         }
 
 
-def _no_factory(parameters: dict[str, Any]) -> None:
-    return None
-
-
-MODEL_REGISTRY: dict[str, ModelDefinition] = {}
-
-
-def get_model_definition(model_type: str) -> ModelDefinition:
-    try:
-        return MODEL_REGISTRY[model_type]
-    except KeyError as exc:
-        raise ValueError(f"Unknown simulation model type: {model_type}") from exc
-
-
-def get_model_catalog() -> list[dict[str, Any]]:
-    return [definition.catalog_entry() for definition in MODEL_REGISTRY.values()]

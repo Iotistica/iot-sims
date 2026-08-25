@@ -27,8 +27,8 @@ EquipmentScope = Literal["self", "upstream", "downstream", "any", "fallback"]
 # Coarse unit-family equivalence between a VariableDefinition's short unit
 # label (e.g. "°C") and the BACnet engineering-unit strings stored on
 # objects.units (e.g. "degrees-celsius"). Deliberately small -- only covers
-# units actually used by MODEL_REGISTRY today; an unmapped variable.unit is
-# simply skipped (neutral), never penalized.
+# units actually used by the model catalog today; an unmapped variable.unit
+# is simply skipped (neutral), never penalized.
 _UNIT_ALIASES: dict[str, frozenset[str]] = {
     "°C": frozenset({"degrees-celsius", "degrees celsius", "degrees-fahrenheit", "degrees fahrenheit"}),
     "%": frozenset({"percent"}),
