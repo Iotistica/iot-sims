@@ -15,7 +15,29 @@ EventCallback = Callable[[int | None, str, str], None]
 
 
 class FaultDetectionEngine:
-    def __init__(self, *, database: Any, simulation_engine: Any, registry: FaultRuleRegistry, event_callback: EventCallback | None = None) -> None:
+    """
+    Continuously evaluates applicable FDD rules against live device points.
+
+    Important semantic contract:
+      * database object.point_type is treated as the canonical semantic key
+        used by FaultContext.value(...).
+      * Raw FMU/BACnet/vendor names should be mapped upstream to canonical
+        semantics.
+      * If Brick does not contain an exact semantic, a project extension
+        semantic may be used. Do not force a point into an incorrect Brick
+        class merely to make a rule evaluable.
+      * Missing required semantics must remain missing (None); they must not
+        silently become 0 or False.
+    """
+
+    def __init__(
+        self,
+        *,
+        database: Any,
+        simulation_engine: Any,
+        registry: FaultRuleRegistry,
+        event_callback: EventCallback | None = None,
+    ) -> None:
         self.database = database
         self.simulation_engine = simulation_engine
         self.registry = registry
@@ -25,10 +47,13 @@ class FaultDetectionEngine:
     async def evaluate_all(self) -> list[FaultEvaluation]:
         devices = await asyncio.to_thread(self.database.get_devices)
         output: list[FaultEvaluation] = []
+
         for device in devices:
             if device.get("enabled"):
                 output.extend(await self.evaluate_device(device["id"]))
+
         return output
+
     async def _publish_alert(
         self,
         *,
@@ -36,10 +61,10 @@ class FaultDetectionEngine:
         evaluation: FaultEvaluation,
     ) -> None:
         """
-        Publish active and cleared FDD transitions into the existing
-        simulator alarm log.
+        Publish ACTIVE and CLEARED transitions into the simulator alarm log.
 
-        Pending and ordinary normal evaluations are intentionally ignored.
+        PENDING, NORMAL, and unevaluable-without-state-transition evaluations
+        are intentionally not published as alarms.
         """
         if evaluation.state == FaultState.ACTIVE:
             from_state = "normal"
@@ -114,17 +139,44 @@ class FaultDetectionEngine:
                 ),
             )
 
-    async def evaluate_device(self, device_id: int) -> list[FaultEvaluation]:
+    async def evaluate_device(
+        self,
+        device_id: int,
+    ) -> list[FaultEvaluation]:
         context = await self._build_context(device_id)
-        configs = await asyncio.to_thread(self.database.get_fault_rule_configs, device_id)
-        config_by_rule = {row["rule_id"]: row for row in configs}
+
+        configs = await asyncio.to_thread(
+            self.database.get_fault_rule_configs,
+            device_id,
+        )
+        config_by_rule = {
+            row["rule_id"]: row
+            for row in configs
+        }
+
         evaluations: list[FaultEvaluation] = []
 
         for rule in self.registry.for_equipment(context.equipment_type):
             config = config_by_rule.get(rule.definition.rule_id)
+
             if config is not None and not bool(config.get("enabled", 1)):
                 continue
-            parameters = json.loads(config.get("parameters") or "{}") if config else {}
+
+            parameters = (
+                json.loads(config.get("parameters") or "{}")
+                if config
+                else {}
+            )
+
+            # parameters may include rule thresholds plus semantic_aliases:
+            #
+            # {
+            #   "semantic_aliases": {
+            #       "Most_Open_VAV_Damper_Position": [
+            #           "myapp:Most_Open_VAV_Damper_Position"
+            #       ]
+            #   }
+            # }
             rule_context = FaultContext(
                 device_id=context.device_id,
                 device_name=context.device_name,
@@ -134,11 +186,34 @@ class FaultDetectionEngine:
                 points_by_type=context.points_by_type,
                 parameters=parameters,
             )
+
             result = rule.evaluate(rule_context)
-            persistence = float(config["persistence_seconds"]) if config and config.get("persistence_seconds") is not None else rule.definition.persistence_seconds
-            clear_seconds = float(config["clear_seconds"]) if config and config.get("clear_seconds") is not None else rule.definition.clear_seconds
-            evaluation = self._advance_state(device_id, rule.definition.rule_id, result, context.timestamp, persistence, clear_seconds)
+
+            persistence = (
+                float(config["persistence_seconds"])
+                if config
+                and config.get("persistence_seconds") is not None
+                else rule.definition.persistence_seconds
+            )
+
+            clear_seconds = (
+                float(config["clear_seconds"])
+                if config
+                and config.get("clear_seconds") is not None
+                else rule.definition.clear_seconds
+            )
+
+            evaluation = self._advance_state(
+                device_id=device_id,
+                rule_id=rule.definition.rule_id,
+                result=result,
+                now=context.timestamp,
+                persistence_seconds=persistence,
+                clear_seconds=clear_seconds,
+            )
+
             evaluations.append(evaluation)
+
             if evaluation.state != evaluation.previous_state:
                 await asyncio.to_thread(
                     self.database.record_fault_evaluation,
@@ -146,9 +221,7 @@ class FaultDetectionEngine:
                         "device_id": evaluation.device_id,
                         "rule_id": evaluation.rule_id,
                         "state": evaluation.state.value,
-                        "previous_state": (
-                            evaluation.previous_state.value
-                        ),
+                        "previous_state": evaluation.previous_state.value,
                         "severity": evaluation.severity.value,
                         "message": evaluation.message,
                         "evidence": json.dumps(
@@ -176,11 +249,12 @@ class FaultDetectionEngine:
                     device_name=context.device_name,
                     evaluation=evaluation,
                 )
+
         return evaluations
 
     async def _build_context(
-    self,
-    device_id: int,
+        self,
+        device_id: int,
     ) -> FaultContext:
         device = await asyncio.to_thread(
             self.database.get_device,
@@ -201,6 +275,9 @@ class FaultDetectionEngine:
         points_by_type: dict[str, list[PointSnapshot]] = {}
 
         for obj in objects:
+            # point_type is the canonical semantic lookup key consumed by
+            # FaultContext and the FDD rules. It may represent a Brick class
+            # or a controlled project semantic extension.
             point_type = obj.get("point_type")
 
             if not point_type:
@@ -228,8 +305,13 @@ class FaultDetectionEngine:
                 ),
             )
 
+            # Preserve the existing single-value lookup for context.value().
+            # points_by_type still retains every point of a semantic type.
             points[point_type] = snapshot
-            points_by_type.setdefault(point_type, []).append(snapshot)
+            points_by_type.setdefault(
+                point_type,
+                [],
+            ).append(snapshot)
 
         return FaultContext(
             device_id=device["id"],
@@ -243,68 +325,144 @@ class FaultDetectionEngine:
             parameters={},
         )
 
-    def _advance_state(self, device_id: int, rule_id: str, result: FaultResult, now: float, persistence_seconds: float, clear_seconds: float) -> FaultEvaluation:
-        runtime = self._runtime.setdefault((device_id, rule_id), RuleRuntimeState())
+    def _advance_state(
+        self,
+        *,
+        device_id: int,
+        rule_id: str,
+        result: FaultResult,
+        now: float,
+        persistence_seconds: float,
+        clear_seconds: float,
+    ) -> FaultEvaluation:
+        runtime = self._runtime.setdefault(
+            (device_id, rule_id),
+            RuleRuntimeState(),
+        )
         previous = runtime.state
+
         if not result.evaluable:
+            # Missing evidence is not proof of recovery.
+            #
+            # - A PENDING condition is abandoned because it never persisted
+            #   with continuous valid evidence.
+            # - An ACTIVE condition remains ACTIVE so the fault is not
+            #   silently cleared merely because a sensor/semantic vanished.
+            # - CLEARED advances to NORMAL as usual.
             runtime.condition_started_at = None
             runtime.clear_started_at = None
+
+            if runtime.state == FaultState.PENDING:
+                runtime.state = FaultState.NORMAL
+            elif runtime.state == FaultState.CLEARED:
+                runtime.state = FaultState.NORMAL
+                runtime.cleared_at = None
+
         elif result.condition_present:
             runtime.clear_started_at = None
             runtime.cleared_at = None
-            runtime.condition_started_at = runtime.condition_started_at or now
-            if now - runtime.condition_started_at >= persistence_seconds:
+
+            if runtime.condition_started_at is None:
+                runtime.condition_started_at = now
+
+            if (
+                now - runtime.condition_started_at
+                >= persistence_seconds
+            ):
                 runtime.state = FaultState.ACTIVE
-                runtime.activated_at = runtime.activated_at or now
+
+                if runtime.activated_at is None:
+                    runtime.activated_at = now
+
             else:
                 runtime.state = FaultState.PENDING
+
         else:
             runtime.condition_started_at = None
-            if runtime.state in {FaultState.ACTIVE, FaultState.PENDING}:
-                runtime.clear_started_at = runtime.clear_started_at or now
+
+            if runtime.state in {
+                FaultState.ACTIVE,
+                FaultState.PENDING,
+            }:
+                if runtime.clear_started_at is None:
+                    runtime.clear_started_at = now
+
                 if runtime.state == FaultState.PENDING:
+                    # A pending condition that recovers before persistence is
+                    # simply NORMAL; it was never an active fault.
                     runtime.state = FaultState.NORMAL
-                elif now - runtime.clear_started_at >= clear_seconds:
+                    runtime.clear_started_at = None
+
+                elif (
+                    now - runtime.clear_started_at
+                    >= clear_seconds
+                ):
                     runtime.state = FaultState.CLEARED
                     runtime.cleared_at = now
                     runtime.activated_at = None
+                    runtime.clear_started_at = None
+
             elif runtime.state == FaultState.CLEARED:
                 runtime.state = FaultState.NORMAL
                 runtime.clear_started_at = None
+                runtime.cleared_at = None
+
             else:
                 runtime.state = FaultState.NORMAL
+
         runtime.last_message = result.message
-        return FaultEvaluation(device_id, rule_id, runtime.state, previous, result.message, result.severity, result.evidence, now, runtime.activated_at, runtime.cleared_at)
+        runtime.last_evaluable = result.evaluable
+
+        return FaultEvaluation(
+            device_id=device_id,
+            rule_id=rule_id,
+            state=runtime.state,
+            previous_state=previous,
+            message=result.message,
+            severity=result.severity,
+            evidence=result.evidence,
+            timestamp=now,
+            evaluable=result.evaluable,
+            condition_started_at=runtime.condition_started_at,
+            activated_at=runtime.activated_at,
+            cleared_at=runtime.cleared_at,
+        )
 
     def _log_transition(
-    self,
-    device_name: str,
-    evaluation: FaultEvaluation,
-        ) -> None:
-            if self.event_callback is None:
-                return
+        self,
+        device_name: str,
+        evaluation: FaultEvaluation,
+    ) -> None:
+        if self.event_callback is None:
+            return
 
-            if evaluation.state == FaultState.ACTIVE:
-                level = (
-                    "error"
-                    if evaluation.severity.value == "critical"
-                    else "warn"
-                )
-
-            elif evaluation.state == FaultState.PENDING:
-                level = "warn"
-
-            else:
-                level = "info"
-
-            self.event_callback(
-                evaluation.device_id,
-                level,
-                (
-                    f"FDD {evaluation.rule_id}: "
-                    f"{evaluation.previous_state.value} -> "
-                    f"{evaluation.state.value} on "
-                    f"{device_name}: "
-                    f"{evaluation.message}"
-                ),
+        if evaluation.state == FaultState.ACTIVE:
+            level = (
+                "error"
+                if evaluation.severity.value == "critical"
+                else "warn"
             )
+
+        elif evaluation.state == FaultState.PENDING:
+            level = "warn"
+
+        else:
+            level = "info"
+
+        suffix = (
+            ""
+            if evaluation.evaluable
+            else " (rule currently not evaluable)"
+        )
+
+        self.event_callback(
+            evaluation.device_id,
+            level,
+            (
+                f"FDD {evaluation.rule_id}: "
+                f"{evaluation.previous_state.value} -> "
+                f"{evaluation.state.value} on "
+                f"{device_name}: "
+                f"{evaluation.message}{suffix}"
+            ),
+        )
