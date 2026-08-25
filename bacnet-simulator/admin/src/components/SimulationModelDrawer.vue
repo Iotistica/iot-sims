@@ -849,17 +849,9 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
             Auto Map
           </a-button>
         </div>
-        <a-alert
-          type="info"
-          show-icon
-          style="margin-bottom:14px"
-          :message="form.provider_type === 'fmu'
-            ? 'FMU inputs may use constants/defaults or BACnet points. FMU outputs are owned by this model while it is enabled.'
-            : 'Inputs may come from other controllers. Output points are owned by this model while it is enabled.'"
-        />
 
         <template v-if="form.provider_type === 'fmu'">
-          <a-divider orientation="left">Inputs / Defaults</a-divider>
+          <a-divider orientation="left">Inputs</a-divider>
           <a-form-item
             v-for="v in inputs"
             :key="`input:${v.name}`"
@@ -1000,7 +992,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
             </div>
           </a-form-item>
 
-          <a-divider orientation="left">Output Mapping</a-divider>
+          <a-divider orientation="left">Outputs</a-divider>
         </template>
 
         <a-form-item
