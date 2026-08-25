@@ -47,6 +47,26 @@ class FaultResult:
 
 @dataclass(frozen=True)
 class FaultEvaluation:
+    """
+    Stateful result returned by the FDD engine.
+
+    evaluable:
+        False means the rule could not currently be evaluated because one or
+        more required canonical semantics/points were unavailable. This is
+        deliberately different from condition_present=False.
+
+    condition_started_at:
+        Timestamp when the currently abnormal condition first began. For an
+        ACTIVE fault this may precede activated_at by persistence_seconds.
+
+    activated_at:
+        Timestamp when the rule satisfied its persistence requirement and
+        became ACTIVE.
+
+    cleared_at:
+        Timestamp when an ACTIVE fault satisfied its clear-time requirement.
+    """
+
     device_id: int
     rule_id: str
     state: FaultState
@@ -55,5 +75,8 @@ class FaultEvaluation:
     severity: FaultSeverity
     evidence: list[FaultEvidence]
     timestamp: float
+
+    evaluable: bool = True
+    condition_started_at: float | None = None
     activated_at: float | None = None
     cleared_at: float | None = None
