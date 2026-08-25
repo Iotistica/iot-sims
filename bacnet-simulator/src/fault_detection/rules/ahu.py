@@ -6,13 +6,196 @@ from ..context import FaultContext
 from ..models import FaultDefinition, FaultEvidence, FaultResult, FaultSeverity
 from .base import FaultRule
 
+# IMPORTANT: semantic strings used by rules below are canonical application
+# semantics. They may be backed by Brick, a project extension namespace, or
+# another ontology. Do not force an incorrect Brick class when no exact class
+# exists; map/alias the concept in the semantic layer instead.
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Canonical semantic layer
 # ---------------------------------------------------------------------------
+#
+# Rules in this module depend on stable application semantics, not directly
+# on raw FMU/BACnet names and not on Brick being able to represent every
+# concept exactly.
+#
+# Resolution order for a canonical semantic key:
+#   1. context.value(canonical_key)
+#   2. project aliases supplied in:
+#        context.parameters["semantic_aliases"]
+#      Example:
+#        {
+#          "Most_Open_VAV_Damper_Position": ["myapp:Most_Open_VAV_Damper_Position"],
+#          "Cooling_Thermal_Power_Sensor": ["myapp:Cooling_Thermal_Power_Sensor"],
+#        }
+#   3. built-in compatibility aliases below
+#
+# This lets the same FDD rule work with:
+#   - a standard Brick class/alias when one exists,
+#   - a project-specific semantic extension when Brick has no exact class,
+#   - legacy semantic names during migration.
+#
+# The mapping from raw points (for example AHU.mo's VChiWat_flow or a BACnet
+# object name) to these semantic keys belongs in FaultContext / the semantic
+# mapping layer, not in the rule logic itself.
 
-def _value(context: FaultContext, point: str):
-    return context.value(point)
+CANONICAL_SEMANTICS: dict[str, dict[str, object]] = {
+    "Supply_Fan_Command": {
+        "brick": "Supply_Fan_Command",
+        "description": "Supply-fan command or normalized enable/speed command.",
+    },
+    "Supply_Fan_Status": {
+        "brick": "Supply_Fan_Status",
+        "description": "Proven supply-fan running status.",
+    },
+    "Supply_Fan_Power": {
+        "brick": None,
+        "description": "Supply-fan electric power; project semantic if no exact Brick class is used.",
+    },
+    "Supply_Air_Flow_Sensor": {
+        "brick": "Supply_Air_Flow_Sensor",
+        "description": "Supply-air volumetric-flow measurement.",
+    },
+    "Supply_Air_Temperature_Sensor": {
+        "brick": "Supply_Air_Temperature_Sensor",
+        "description": "Supply-air temperature measurement.",
+    },
+    "Supply_Air_Temperature_Setpoint": {
+        "brick": "Supply_Air_Temperature_Setpoint",
+        "description": "Supply-air temperature setpoint.",
+    },
+    "Cooling_Command": {
+        "brick": None,
+        "description": "Normalized cooling-coil/valve command; project semantic when needed.",
+    },
+    "Heating_Command": {
+        "brick": None,
+        "description": "Normalized heating-coil command; project semantic when needed.",
+    },
+    "Chilled_Water_Flow_Sensor": {
+        "brick": None,
+        "description": "Chilled-water flow through the AHU cooling coil.",
+    },
+    "Chilled_Water_Supply_Temperature": {
+        "brick": None,
+        "description": "Chilled-water temperature entering the AHU cooling coil.",
+    },
+    "Chilled_Water_Return_Temperature": {
+        "brick": None,
+        "description": "Chilled-water temperature leaving the AHU cooling coil.",
+    },
+    "Cooling_Thermal_Power_Sensor": {
+        "brick": None,
+        "description": "Cooling thermal power transferred by the AHU coil.",
+    },
+    "Outside_Air_Temperature_Sensor": {
+        "brick": "Outside_Air_Temperature_Sensor",
+        "description": "Outdoor-air temperature measurement.",
+    },
+    "Return_Air_Temperature_Sensor": {
+        "brick": "Return_Air_Temperature_Sensor",
+        "description": "Return-air temperature measurement.",
+    },
+    "Mixed_Air_Temperature_Sensor": {
+        "brick": "Mixed_Air_Temperature_Sensor",
+        "description": "Mixed-air temperature measurement.",
+    },
+    "Outside_Air_Damper_Position_Sensor": {
+        "brick": None,
+        "description": "Actual outdoor-air damper position/fraction.",
+    },
+    "Outside_Air_Damper_Command": {
+        "brick": None,
+        "description": "Outdoor-air damper command/fraction.",
+    },
+    "Supply_Air_Static_Pressure_Sensor": {
+        "brick": "Supply_Air_Static_Pressure_Sensor",
+        "description": "Supply-duct static-pressure measurement.",
+    },
+    "Supply_Air_Static_Pressure_Setpoint": {
+        "brick": "Supply_Air_Static_Pressure_Setpoint",
+        "description": "Supply-duct static-pressure setpoint.",
+    },
+    "Most_Open_VAV_Damper_Position": {
+        "brick": None,
+        "description": "Maximum downstream VAV damper position; project semantic.",
+    },
+}
+
+
+BUILTIN_SEMANTIC_ALIASES: dict[str, tuple[str, ...]] = {
+    # Common project/legacy variants. These are semantic aliases, not raw
+    # FMU/BACnet names.
+    "Cooling_Command": (
+        "Cooling_Valve_Command",
+        "Cooling_Coil_Command",
+    ),
+    "Heating_Command": (
+        "Heating_Valve_Command",
+        "Heating_Coil_Command",
+    ),
+    "Chilled_Water_Flow_Sensor": (
+        "Cooling_Coil_Chilled_Water_Flow_Sensor",
+    ),
+    "Chilled_Water_Supply_Temperature": (
+        "Cooling_Coil_Entering_Water_Temperature_Sensor",
+        "Entering_Chilled_Water_Temperature_Sensor",
+    ),
+    "Chilled_Water_Return_Temperature": (
+        "Cooling_Coil_Leaving_Water_Temperature_Sensor",
+        "Leaving_Chilled_Water_Temperature_Sensor",
+    ),
+    "Cooling_Thermal_Power_Sensor": (
+        "Cooling_Load",
+        "Cooling_Coil_Thermal_Power",
+    ),
+    "Outside_Air_Damper_Position_Sensor": (
+        "Outside_Air_Damper_Position",
+    ),
+    "Most_Open_VAV_Damper_Position": (
+        "Maximum_VAV_Damper_Position",
+        "Most_Open_Terminal_Damper_Position",
+    ),
+}
+
+
+def _semantic_aliases(context: FaultContext, canonical_key: str) -> tuple[str, ...]:
+    configured = context.parameters.get("semantic_aliases", {})
+    configured_aliases = ()
+
+    if isinstance(configured, dict):
+        value = configured.get(canonical_key, ())
+        if isinstance(value, str):
+            configured_aliases = (value,)
+        elif isinstance(value, (list, tuple, set)):
+            configured_aliases = tuple(str(item) for item in value)
+
+    return configured_aliases + BUILTIN_SEMANTIC_ALIASES.get(canonical_key, ())
+
+
+def _value(context: FaultContext, canonical_key: str):
+    """
+    Resolve a canonical application semantic.
+
+    A missing Brick class does not make the rule unusable: map the raw point
+    to the canonical key or provide a project semantic alias through
+    context.parameters["semantic_aliases"].
+    """
+    value = context.value(canonical_key)
+    if value is not None:
+        return value
+
+    for alias in _semantic_aliases(context, canonical_key):
+        value = context.value(alias)
+        if value is not None:
+            return value
+
+    return None
+
+
+def _semantic_requirement(*canonical_keys: str) -> str:
+    return ", ".join(canonical_keys)
 
 
 def _number(value):
@@ -1198,6 +1381,62 @@ class OutdoorAirDamperCommandPositionMismatch(FaultRule):
                 ),
             ],
         )
+
+
+# ---------------------------------------------------------------------------
+# Semantic coverage / integration helpers
+# ---------------------------------------------------------------------------
+
+def semantic_resolution_report(
+    context: FaultContext,
+) -> dict[str, dict[str, object]]:
+    """
+    Report whether each canonical semantic can currently be resolved.
+
+    This is useful for UI/FDD coverage reporting. A semantic can resolve via
+    the canonical name itself, a project extension alias, or a built-in
+    compatibility alias.
+    """
+    report: dict[str, dict[str, object]] = {}
+
+    for canonical_key, metadata in CANONICAL_SEMANTICS.items():
+        resolved_key = None
+        value = context.value(canonical_key)
+
+        if value is not None:
+            resolved_key = canonical_key
+        else:
+            for alias in _semantic_aliases(context, canonical_key):
+                alias_value = context.value(alias)
+                if alias_value is not None:
+                    resolved_key = alias
+                    value = alias_value
+                    break
+
+        report[canonical_key] = {
+            "resolved": resolved_key is not None,
+            "resolved_key": resolved_key,
+            "value": value,
+            "brick": metadata.get("brick"),
+            "description": metadata.get("description"),
+        }
+
+    return report
+
+
+def semantic_coverage_fraction(
+    context: FaultContext,
+) -> float:
+    """Return the fraction of canonical AHU semantics that currently resolve."""
+    report = semantic_resolution_report(context)
+    if not report:
+        return 1.0
+
+    resolved = sum(
+        1 for item in report.values()
+        if bool(item["resolved"])
+    )
+    return resolved / len(report)
 
 
 # ---------------------------------------------------------------------------
