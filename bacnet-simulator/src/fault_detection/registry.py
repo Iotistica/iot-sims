@@ -5,8 +5,8 @@ from .rules.sensors import FrozenSensorRule
 
 # These modules use canonical application semantics and may resolve points
 # through Brick classes, project-specific semantic extensions, or aliases.
-from .rules.ahu_fault_rules_semantic import AHU_FAULT_RULES
-from .rules.rtu_fault_rules_semantic import RTU_FAULT_RULES
+from .rules.ahu import AHU_FAULT_RULES
+from .rules.rtu import RTU_FAULT_RULES
 
 
 class FaultRuleRegistry:

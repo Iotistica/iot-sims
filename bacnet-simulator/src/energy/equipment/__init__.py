@@ -3,8 +3,6 @@ from .chiller import (
     ChillerEnergyModel,
     ChillerEnergyResult,
     ChillerSnapshot,
-    EnergyConfidence,
-    EnergySource,
 )
 
 __all__ = [
@@ -12,6 +10,4 @@ __all__ = [
     "ChillerEnergyModel",
     "ChillerEnergyResult",
     "ChillerSnapshot",
-    "EnergyConfidence",
-    "EnergySource",
 ]
