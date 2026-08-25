@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from .rules.ahu import SupplyAirTemperatureDeviation, SupplyFanCommandStatusMismatch
 from .rules.base import FaultRule
 from .rules.sensors import FrozenSensorRule
+
+# These modules use canonical application semantics and may resolve points
+# through Brick classes, project-specific semantic extensions, or aliases.
+from .rules.ahu_fault_rules_semantic import AHU_FAULT_RULES
+from .rules.rtu_fault_rules_semantic import RTU_FAULT_RULES
 
 
 class FaultRuleRegistry:
@@ -21,8 +25,8 @@ class FaultRuleRegistry:
         return list(self._rules.values())
 
     def for_equipment(
-    self,
-    equipment_type: str | None,
+        self,
+        equipment_type: str | None,
     ) -> list[FaultRule]:
         if not equipment_type:
             return [
@@ -34,17 +38,25 @@ class FaultRuleRegistry:
         return [
             rule
             for rule in self._rules.values()
-            if rule.definition.equipment_type
-            in {
-                "*",
-                equipment_type,
-            }
+            if rule.definition.equipment_type in {"*", equipment_type}
         ]
 
 
 def build_default_registry() -> FaultRuleRegistry:
-    return FaultRuleRegistry([
-        SupplyFanCommandStatusMismatch(),
-        SupplyAirTemperatureDeviation(),
+    """
+    Register the full semantic AHU + RTU FDD libraries.
+
+    Equipment filtering still happens in for_equipment(), so registering all
+    rules here does not cause AHU rules to execute on RTUs or vice versa.
+
+    Rules whose required semantics are unavailable return evaluable=False;
+    they should not be removed merely because one installation lacks a point.
+    """
+
+    rules: list[FaultRule] = [
+        *(rule_class() for rule_class in AHU_FAULT_RULES),
+        *(rule_class() for rule_class in RTU_FAULT_RULES),
         FrozenSensorRule(),
-    ])
+    ]
+
+    return FaultRuleRegistry(rules)
