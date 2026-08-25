@@ -1,430 +1,186 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
 from math import isfinite
-from typing import Any
-
-
-class LightingEnergySource(StrEnum):
-    MEASURED = "measured"
-    DIMMING_LEVEL = "dimming-level"
-    ON_OFF_STATUS = "on-off-status"
-    OCCUPANCY = "occupancy"
-    UNAVAILABLE = "unavailable"
-
-
-class LightingEnergyConfidence(StrEnum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    NONE = "none"
 
 
 @dataclass(frozen=True)
 class LightingEnergyConfig:
     """
-    Static lighting characteristics.
+    Utility-cost and emissions factors for lighting energy accounting.
 
-    rated_power_kw:
-        Total full-output electrical power for the fixture, zone,
-        or lighting group represented by this model.
+    Defaults are simplified Toronto/Ontario assumptions:
+      electricity_rate_per_kwh = 0.15 CAD/kWh
+      electricity_kg_co2e_per_kwh = 0.059 kg CO2e/kWh
 
-    standby_power_kw:
-        Power used when lighting is off but controls/drivers remain active.
-
-    minimum_dimmed_power_fraction:
-        Minimum fraction of rated power while dimmed above zero.
-
-    dimming_exponent:
-        Controls the dimming curve. Use 1.0 for linear behavior.
-        Values above 1.0 reduce power faster at low dim levels.
-
-    occupied_default_level_percent:
-        Fallback dim level when only occupancy is available.
+    Override these values when project-specific tariffs or emissions factors
+    are available.
     """
 
-    rated_power_kw: float
-    standby_power_kw: float = 0.0
-    minimum_dimmed_power_fraction: float = 0.0
-    dimming_exponent: float = 1.0
-    occupied_default_level_percent: float = 100.0
+    electricity_rate_per_kwh: float = 0.15
+    electricity_kg_co2e_per_kwh: float = 0.059
+    currency: str = "CAD"
+    region: str = "Toronto, Ontario"
 
     def validate(self) -> None:
-        if self.rated_power_kw <= 0:
+        if not isfinite(self.electricity_rate_per_kwh) or self.electricity_rate_per_kwh < 0:
+            raise ValueError("electricity_rate_per_kwh must be finite and non-negative")
+
+        if (
+            not isfinite(self.electricity_kg_co2e_per_kwh)
+            or self.electricity_kg_co2e_per_kwh < 0
+        ):
             raise ValueError(
-                "rated_power_kw must be greater than zero"
+                "electricity_kg_co2e_per_kwh must be finite and non-negative"
             )
 
-        if self.standby_power_kw < 0:
-            raise ValueError(
-                "standby_power_kw cannot be negative"
-            )
+        if not self.currency.strip():
+            raise ValueError("currency cannot be empty")
 
-        if not 0 <= self.minimum_dimmed_power_fraction <= 1:
-            raise ValueError(
-                "minimum_dimmed_power_fraction must be between 0 and 1"
-            )
-
-        if self.dimming_exponent <= 0:
-            raise ValueError(
-                "dimming_exponent must be greater than zero"
-            )
-
-        if not 0 <= self.occupied_default_level_percent <= 100:
-            raise ValueError(
-                "occupied_default_level_percent must be between 0 and 100"
-            )
+        if not self.region.strip():
+            raise ValueError("region cannot be empty")
 
 
 @dataclass(frozen=True)
 class LightingSnapshot:
     """
-    Live values from Brick-tagged simulation points.
+    Direct lighting power from the simulation/FMU/BAS adapter.
+
+    power_kw is required and is the source of truth for energy accounting.
+
+    The other values are optional reporting/diagnostic fields only. They do
+    not affect the energy calculation.
     """
 
-    measured_power_kw: float | None = None
-    measured_energy_kwh: float | None = None
-
-    on: bool | None = None
-    occupancy: bool | None = None
+    power_kw: float
 
     lighting_level_fraction: float | None = None
     lighting_level_percent: float | None = None
+    on: bool | None = None
+    occupancy: bool | None = None
 
     def normalized_level_fraction(self) -> float | None:
         if self.lighting_level_fraction is not None:
-            return _clamp(
-                float(self.lighting_level_fraction),
-                0.0,
-                1.0,
+            value = _required_finite(
+                self.lighting_level_fraction,
+                "lighting_level_fraction",
             )
+            return _clamp(value, 0.0, 1.0)
 
         if self.lighting_level_percent is not None:
-            return _clamp(
-                float(self.lighting_level_percent) / 100.0,
-                0.0,
-                1.0,
+            value = _required_finite(
+                self.lighting_level_percent,
+                "lighting_level_percent",
             )
+            return _clamp(value / 100.0, 0.0, 1.0)
 
         return None
 
 
 @dataclass(frozen=True)
 class LightingEnergyResult:
-    power_kw: float | None
-    interval_energy_kwh: float
-    total_energy_kwh: float
+    currency: str
+    region: str
 
+    power_kw: float
     lighting_level_fraction: float | None
     on: bool | None
     occupancy: bool | None
 
-    source: LightingEnergySource
-    confidence: LightingEnergyConfidence
-    method: str
+    interval_energy_kwh: float
+    total_energy_kwh: float
 
-    inputs: dict[str, Any] = field(default_factory=dict)
-    warnings: list[str] = field(default_factory=list)
+    interval_cost: float
+    total_cost: float
+
+    interval_co2e_kg: float
+    total_co2e_kg: float
 
 
 class LightingEnergyModel:
-    def __init__(
-        self,
-        config: LightingEnergyConfig,
-    ) -> None:
+    """
+    Accounting-only lighting energy model.
+
+    This class does not estimate power from:
+      - rated lighting power
+      - dimming level
+      - on/off status
+      - occupancy
+      - schedules
+
+    The calling simulation/FMU/BAS integration must provide power_kw directly.
+    Optional dimming, on/off, and occupancy values are retained only for
+    reporting and diagnostics.
+    """
+
+    def __init__(self, config: LightingEnergyConfig) -> None:
         config.validate()
         self.config = config
-        self.total_energy_kwh = 0.0
+        self.reset()
 
     def evaluate(
         self,
         snapshot: LightingSnapshot,
         elapsed_seconds: float,
     ) -> LightingEnergyResult:
-        if elapsed_seconds < 0:
-            raise ValueError(
-                "elapsed_seconds cannot be negative"
-            )
+        if not isfinite(elapsed_seconds) or elapsed_seconds < 0:
+            raise ValueError("elapsed_seconds must be finite and non-negative")
 
-        calculation = (
-            self._from_measured_power(snapshot)
-            or self._from_dimming_level(snapshot)
-            or self._from_on_off(snapshot)
-            or self._from_occupancy(snapshot)
-            or self._unavailable(snapshot)
+        power_kw = _required_nonnegative(snapshot.power_kw, "power_kw")
+        lighting_level_fraction = snapshot.normalized_level_fraction()
+
+        dt_h = elapsed_seconds / 3600.0
+
+        interval_energy_kwh = power_kw * dt_h
+        interval_cost = (
+            interval_energy_kwh * self.config.electricity_rate_per_kwh
         )
-
-        power_kw = calculation["power_kw"]
-
-        interval_energy_kwh = (
-            max(0.0, power_kw)
-            * elapsed_seconds
-            / 3600.0
-            if power_kw is not None
-            else 0.0
+        interval_co2e_kg = (
+            interval_energy_kwh * self.config.electricity_kg_co2e_per_kwh
         )
 
         self.total_energy_kwh += interval_energy_kwh
+        self.total_cost += interval_cost
+        self.total_co2e_kg += interval_co2e_kg
 
         return LightingEnergyResult(
+            currency=self.config.currency,
+            region=self.config.region,
             power_kw=power_kw,
-            interval_energy_kwh=interval_energy_kwh,
-            total_energy_kwh=self.total_energy_kwh,
-            lighting_level_fraction=(
-                calculation["lighting_level_fraction"]
-            ),
+            lighting_level_fraction=lighting_level_fraction,
             on=snapshot.on,
             occupancy=snapshot.occupancy,
-            source=calculation["source"],
-            confidence=calculation["confidence"],
-            method=calculation["method"],
-            inputs=calculation["inputs"],
-            warnings=calculation["warnings"],
+            interval_energy_kwh=interval_energy_kwh,
+            total_energy_kwh=self.total_energy_kwh,
+            interval_cost=interval_cost,
+            total_cost=self.total_cost,
+            interval_co2e_kg=interval_co2e_kg,
+            total_co2e_kg=self.total_co2e_kg,
         )
 
     def reset(self) -> None:
         self.total_energy_kwh = 0.0
-
-    def _from_measured_power(
-        self,
-        snapshot: LightingSnapshot,
-    ) -> dict[str, Any] | None:
-        power_kw = _positive_or_zero(
-            snapshot.measured_power_kw
-        )
-
-        if power_kw is None:
-            return None
-
-        return self._calculation(
-            power_kw=power_kw,
-            lighting_level_fraction=(
-                snapshot.normalized_level_fraction()
-            ),
-            source=LightingEnergySource.MEASURED,
-            confidence=LightingEnergyConfidence.HIGH,
-            method="measured-electric-power",
-            inputs={
-                "measured_power_kw": power_kw,
-            },
-        )
-
-    def _from_dimming_level(
-        self,
-        snapshot: LightingSnapshot,
-    ) -> dict[str, Any] | None:
-        level = snapshot.normalized_level_fraction()
-
-        if level is None:
-            return None
-
-        if snapshot.on is False or level <= 0:
-            power_kw = self.config.standby_power_kw
-            effective_level = 0.0
-        else:
-            effective_level = level
-
-            dimmed_fraction = (
-                effective_level
-                ** self.config.dimming_exponent
-            )
-
-            if effective_level > 0:
-                dimmed_fraction = max(
-                    self.config.minimum_dimmed_power_fraction,
-                    dimmed_fraction,
-                )
-
-            power_kw = (
-                self.config.rated_power_kw
-                * dimmed_fraction
-                + self.config.standby_power_kw
-            )
-
-        return self._calculation(
-            power_kw=power_kw,
-            lighting_level_fraction=effective_level,
-            source=LightingEnergySource.DIMMING_LEVEL,
-            confidence=LightingEnergyConfidence.HIGH,
-            method="rated-power-times-dimming-curve",
-            inputs={
-                "rated_power_kw": (
-                    self.config.rated_power_kw
-                ),
-                "lighting_level_fraction": effective_level,
-                "dimming_exponent": (
-                    self.config.dimming_exponent
-                ),
-                "minimum_dimmed_power_fraction": (
-                    self.config
-                    .minimum_dimmed_power_fraction
-                ),
-                "standby_power_kw": (
-                    self.config.standby_power_kw
-                ),
-            },
-        )
-
-    def _from_on_off(
-        self,
-        snapshot: LightingSnapshot,
-    ) -> dict[str, Any] | None:
-        if snapshot.on is None:
-            return None
-
-        power_kw = (
-            self.config.rated_power_kw
-            + self.config.standby_power_kw
-            if snapshot.on
-            else self.config.standby_power_kw
-        )
-
-        return self._calculation(
-            power_kw=power_kw,
-            lighting_level_fraction=(
-                1.0 if snapshot.on else 0.0
-            ),
-            source=LightingEnergySource.ON_OFF_STATUS,
-            confidence=LightingEnergyConfidence.MEDIUM,
-            method="rated-power-from-on-off-status",
-            inputs={
-                "on": snapshot.on,
-                "rated_power_kw": (
-                    self.config.rated_power_kw
-                ),
-                "standby_power_kw": (
-                    self.config.standby_power_kw
-                ),
-            },
-        )
-
-    def _from_occupancy(
-        self,
-        snapshot: LightingSnapshot,
-    ) -> dict[str, Any] | None:
-        if snapshot.occupancy is None:
-            return None
-
-        if not snapshot.occupancy:
-            power_kw = self.config.standby_power_kw
-            level = 0.0
-        else:
-            level = (
-                self.config
-                .occupied_default_level_percent
-                / 100.0
-            )
-
-            dimmed_fraction = (
-                level
-                ** self.config.dimming_exponent
-            )
-
-            if level > 0:
-                dimmed_fraction = max(
-                    self.config.minimum_dimmed_power_fraction,
-                    dimmed_fraction,
-                )
-
-            power_kw = (
-                self.config.rated_power_kw
-                * dimmed_fraction
-                + self.config.standby_power_kw
-            )
-
-        return self._calculation(
-            power_kw=power_kw,
-            lighting_level_fraction=level,
-            source=LightingEnergySource.OCCUPANCY,
-            confidence=LightingEnergyConfidence.LOW,
-            method="occupancy-default-lighting-level",
-            inputs={
-                "occupancy": snapshot.occupancy,
-                "occupied_default_level_percent": (
-                    self.config
-                    .occupied_default_level_percent
-                ),
-                "rated_power_kw": (
-                    self.config.rated_power_kw
-                ),
-            },
-            warnings=[
-                "Lighting power was inferred from occupancy."
-            ],
-        )
-
-    def _unavailable(
-        self,
-        snapshot: LightingSnapshot,
-    ) -> dict[str, Any]:
-        return self._calculation(
-            power_kw=None,
-            lighting_level_fraction=(
-                snapshot.normalized_level_fraction()
-            ),
-            source=LightingEnergySource.UNAVAILABLE,
-            confidence=LightingEnergyConfidence.NONE,
-            method="insufficient-data",
-            inputs={},
-            warnings=[
-                "No measured power, dimming level, on/off status, "
-                "or occupancy value was available."
-            ],
-        )
-
-    @staticmethod
-    def _calculation(
-        *,
-        power_kw: float | None,
-        lighting_level_fraction: float | None,
-        source: LightingEnergySource,
-        confidence: LightingEnergyConfidence,
-        method: str,
-        inputs: dict[str, Any],
-        warnings: list[str] | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "power_kw": power_kw,
-            "lighting_level_fraction": (
-                lighting_level_fraction
-            ),
-            "source": source,
-            "confidence": confidence,
-            "method": method,
-            "inputs": inputs,
-            "warnings": warnings or [],
-        }
+        self.total_cost = 0.0
+        self.total_co2e_kg = 0.0
 
 
-def _finite_or_none(
-    value: float | int | None,
-) -> float | None:
-    if value is None:
-        return None
-
+def _required_finite(value: float | int, name: str) -> float:
     result = float(value)
 
     if not isfinite(result):
-        return None
+        raise ValueError(f"{name} must be finite")
 
     return result
 
 
-def _positive_or_zero(
-    value: float | int | None,
-) -> float | None:
-    result = _finite_or_none(value)
+def _required_nonnegative(value: float | int, name: str) -> float:
+    result = _required_finite(value, name)
 
-    if result is None or result < 0:
-        return None
+    if result < 0:
+        raise ValueError(f"{name} must be non-negative")
 
     return result
 
 
-def _clamp(
-    value: float,
-    minimum: float,
-    maximum: float,
-) -> float:
+def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
