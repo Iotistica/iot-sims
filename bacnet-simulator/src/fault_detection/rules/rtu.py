@@ -8,6 +8,21 @@ from .base import FaultRule
 
 
 # ===========================================================================
+# RULE DESCRIPTION CONVENTION
+# ===========================================================================
+#
+# Each FaultDefinition.description below explains:
+#   - Target: the equipment behavior or control sequence being checked.
+#   - Detection intent: the abnormal condition the rule is designed to find.
+#   - Likely causes: examples of faults/signals that may produce the symptom.
+#
+# Descriptions are diagnostic guidance, not guaranteed root-cause statements.
+# A rule should report evidence and be correlated with other rules before
+# declaring a specific mechanical root cause.
+# ===========================================================================
+
+
+# ===========================================================================
 # UPSTREAM INTEGRATION REQUIREMENTS
 # ===========================================================================
 #
@@ -346,7 +361,9 @@ class SupplyFanCommandStatusMismatch(FaultRule):
         rule_id="rtu.supply_fan.command_status_mismatch",
         name="RTU supply fan command/status mismatch",
         equipment_type="Rooftop_Unit",
-        description="Supply fan is commanded on while status remains off.",
+        description=(
+            "Target: supply-fan start/proof sequence. Detects a fan that is commanded on but does not prove running. Intended to identify fan/VFD/interlock failures, status-point failures, or other conditions preventing airflow after a start command."
+        ),
         persistence_seconds=30.0,
         clear_seconds=15.0,
         severity=FaultSeverity.CRITICAL,
@@ -384,7 +401,9 @@ class SupplyFanFailedToStop(FaultRule):
         rule_id="rtu.supply_fan.failed_to_stop",
         name="RTU supply fan failed to stop",
         equipment_type="Rooftop_Unit",
-        description="Supply fan status remains on after command is removed.",
+        description=(
+            "Target: supply-fan stop sequence. Detects a fan that remains proven on after its command is removed. Intended to identify stuck relays/contactors, VFD command problems, latched controls, or incorrect fan-status feedback."
+        ),
         persistence_seconds=45.0,
         clear_seconds=15.0,
         severity=FaultSeverity.WARNING,
@@ -423,7 +442,9 @@ class SupplyFanPowerStatusMismatch(FaultRule):
         rule_id="rtu.supply_fan.power_status_mismatch",
         name="RTU supply fan power/status mismatch",
         equipment_type="Rooftop_Unit",
-        description="Supply-fan power is inconsistent with fan status.",
+        description=(
+            "Target: consistency between supply-fan status and electrical power. Flags cases where the fan is reported on with near-zero power, or reported off while meaningful fan power remains. Useful for identifying bad status points, failed current/power sensing, or abnormal fan/VFD operation."
+        ),
         persistence_seconds=60.0,
         clear_seconds=30.0,
         severity=FaultSeverity.WARNING,
@@ -469,7 +490,9 @@ class LowSupplyAirflow(FaultRule):
         rule_id="rtu.supply_fan.low_airflow",
         name="RTU low supply airflow",
         equipment_type="Rooftop_Unit",
-        description="Supply fan is running but supply airflow remains too low.",
+        description=(
+            "Target: air-delivery performance while the supply fan is running. Detects airflow below a configured minimum and can indicate fan degradation, blocked filters/ducts, closed dampers, belt/mechanical problems, or incorrect airflow measurement."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.WARNING,
@@ -512,7 +535,9 @@ class SupplyAirTemperatureDeviation(FaultRule):
         rule_id="rtu.sat.setpoint_deviation",
         name="RTU supply-air temperature deviation",
         equipment_type="Rooftop_Unit",
-        description="Supply-air temperature remains outside setpoint tolerance.",
+        description=(
+            "Target: overall supply-air-temperature control performance. Detects sustained SAT error beyond tolerance while the fan is operating. This is a symptom-level rule that should be combined with heating, cooling, economizer, and airflow evidence to determine the likely root cause."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -555,7 +580,9 @@ class CoolingIneffective(FaultRule):
         rule_id="rtu.cooling.ineffective",
         name="RTU cooling ineffective",
         equipment_type="Rooftop_Unit",
-        description="Cooling is heavily commanded but SAT remains too warm.",
+        description=(
+            "Target: DX cooling effectiveness. Detects high cooling demand while SAT remains too warm. Intended to reveal inadequate compressor capacity, refrigerant/circuit issues, airflow problems, unfavorable entering conditions, control faults, or other causes of insufficient cooling response."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -600,7 +627,9 @@ class HeatingIneffective(FaultRule):
         rule_id="rtu.heating.ineffective",
         name="RTU heating ineffective",
         equipment_type="Rooftop_Unit",
-        description="Heating is heavily commanded but SAT remains too cold.",
+        description=(
+            "Target: RTU heating effectiveness. Detects high heating demand while SAT remains too cold. Intended to identify burner/furnace problems in gas RTUs, heat-pump capacity shortfall in heat-pump RTUs, airflow issues, or control/actuator failures."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -645,7 +674,9 @@ class SimultaneousHeatingCooling(FaultRule):
         rule_id="rtu.heating_cooling.simultaneous",
         name="RTU simultaneous heating and cooling",
         equipment_type="Rooftop_Unit",
-        description="Heating and cooling are active at the same time.",
+        description=(
+            "Target: conflicting thermal commands. Detects heating and cooling active at the same time, which usually indicates control conflict, sequence error, sensor/setpoint problems, or unnecessary energy use."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.WARNING,
@@ -685,7 +716,9 @@ class CoolingCommandNoCompressorPower(FaultRule):
         rule_id="rtu.cooling.command_no_compressor_power",
         name="Cooling command with no compressor power",
         equipment_type="Rooftop_Unit",
-        description="Cooling is active but DX compressor power remains near zero.",
+        description=(
+            "Target: DX compressor response to cooling demand. Detects cooling command without corresponding compressor electrical power. Intended to reveal compressor/VFD/contactor failure, safeties/lockouts, control output failure, or incorrect compressor-power sensing."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.CRITICAL,
@@ -730,7 +763,9 @@ class CompressorPowerWithoutCooling(FaultRule):
         rule_id="rtu.cooling.compressor_power_without_cooling",
         name="Compressor power without cooling",
         equipment_type="Rooftop_Unit",
-        description="DX compressor consumes power while cooling command/load is near zero.",
+        description=(
+            "Target: compressor shutdown/off-state behavior. Detects compressor electrical power while cooling command and cooling load are near zero. Intended to identify stuck contactors, sequencing errors, false power measurements, or unwanted compressor operation."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.WARNING,
@@ -779,7 +814,9 @@ class CoolingCOPOutOfRange(FaultRule):
         rule_id="rtu.cooling.cop_out_of_range",
         name="Cooling COP out of expected range",
         equipment_type="Rooftop_Unit",
-        description="Effective cooling COP is outside the configured physical/expected range.",
+        description=(
+            "Target: cooling-system efficiency plausibility. Detects effective compressor COP outside a configured expected range while cooling is active. Useful for identifying degraded performance, bad load/power measurements, refrigerant problems, or model/calibration errors."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -824,7 +861,9 @@ class CoolingCapacityShortfall(FaultRule):
         rule_id="rtu.cooling.capacity_shortfall",
         name="Cooling capacity shortfall",
         equipment_type="Rooftop_Unit",
-        description="Cooling command is high while delivered cooling is well below available capacity.",
+        description=(
+            "Target: delivered-versus-available cooling capacity. Detects high cooling demand when delivered cooling remains materially below the model's available capacity. Intended to identify compressor/coil degradation, control limitation, airflow issues, or inconsistent capacity/load signals."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -873,7 +912,9 @@ class CompressorStageMismatch(FaultRule):
         rule_id="rtu.cooling.stage_mismatch",
         name="Cooling compressor stage mismatch",
         equipment_type="Rooftop_Unit",
-        description="Reported compressor stage is inconsistent with cooling PLR.",
+        description=(
+            "Target: staged-compressor sequencing. Detects disagreement between reported compressor stage and cooling part-load state. Intended for two-stage RTUs and useful for finding staging logic errors, failed stage outputs, or inconsistent diagnostic points."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.WARNING,
@@ -916,7 +957,9 @@ class GasHeatingCommandNoFuelInput(FaultRule):
         rule_id="rtu.gas_heating.command_no_fuel_input",
         name="Gas heating command with no fuel input",
         equipment_type="Rooftop_Unit",
-        description="Heating is active but gas input power remains near zero.",
+        description=(
+            "Target: gas-furnace response to heating demand. Detects heating command without meaningful gas input. Intended to identify ignition failure, gas-valve/safety lockout, burner failure, fuel-supply interruption, or incorrect gas-power/fuel-flow measurement."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.CRITICAL,
@@ -961,7 +1004,9 @@ class GasInputWithoutHeating(FaultRule):
         rule_id="rtu.gas_heating.fuel_input_without_heating",
         name="Gas input without heating",
         equipment_type="Rooftop_Unit",
-        description="Gas input is present while heating command/load is near zero.",
+        description=(
+            "Target: gas-furnace off-state safety/energy consistency. Detects gas input while heating command and heating load are inactive. Intended to reveal valve leakage, control/sequence errors, incorrect fuel measurement, or unsafe/unwanted burner operation."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.CRITICAL,
@@ -1010,7 +1055,9 @@ class GasHeatingEfficiencyMismatch(FaultRule):
         rule_id="rtu.gas_heating.efficiency_mismatch",
         name="Gas heating efficiency mismatch",
         equipment_type="Rooftop_Unit",
-        description="Delivered heating divided by gas input is outside the expected efficiency range.",
+        description=(
+            "Target: gas-heating energy conversion consistency. Compares delivered heating to gas input and flags an efficiency outside the configured range. Useful for degraded combustion/heat transfer, incorrect efficiency assumptions, sensor errors, or inconsistent energy signals."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -1062,7 +1109,9 @@ class HeatPumpCommandNoHeatingCompressorPower(FaultRule):
         rule_id="rtu.heat_pump.command_no_heating_compressor_power",
         name="Heat-pump command with no heating compressor power",
         equipment_type="Rooftop_Unit",
-        description="Heating is active but heat-pump compressor power remains near zero.",
+        description=(
+            "Target: heat-pump compressor response in heating mode. Detects heating demand without heating-compressor electrical power. Intended to identify compressor/reversing-cycle lockout, controls failure, safeties, contactor/VFD failure, or incorrect power sensing."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.CRITICAL,
@@ -1103,7 +1152,9 @@ class HeatingCOPOutOfRange(FaultRule):
         rule_id="rtu.heat_pump.heating_cop_out_of_range",
         name="Heat-pump heating COP out of range",
         equipment_type="Rooftop_Unit",
-        description="Heating COP is outside the configured expected range.",
+        description=(
+            "Target: heat-pump heating efficiency plausibility. Detects heating COP outside the expected range while heating is active. Useful for degraded heat-pump performance, defrost/low-ambient issues, sensor errors, or model/calibration problems."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -1149,7 +1200,9 @@ class OutdoorAirDamperCommandPositionMismatch(FaultRule):
         rule_id="rtu.economizer.damper_command_position_mismatch",
         name="RTU outdoor-air damper command/position mismatch",
         equipment_type="Rooftop_Unit",
-        description="Outdoor-air damper position does not track its command.",
+        description=(
+            "Target: outdoor-air damper actuator tracking. Detects a sustained difference between economizer command and actual damper position. Intended to identify stuck/binding dampers, failed actuators/linkages, override conditions, or incorrect position feedback."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.WARNING,
@@ -1191,7 +1244,9 @@ class MixedAirTemperatureOutOfRange(FaultRule):
         rule_id="rtu.economizer.mixed_air_temperature_out_of_range",
         name="RTU mixed-air temperature out of physical range",
         equipment_type="Rooftop_Unit",
-        description="Mixed-air temperature is outside the plausible OA/RA range.",
+        description=(
+            "Target: physical plausibility of mixed-air temperature. Detects TMix outside the range bounded by outdoor- and return-air temperatures while the fan is operating. Strongly suggests sensor error, incorrect point association, or invalid mixing/airflow behavior."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.WARNING,
@@ -1237,7 +1292,9 @@ class MixedAirTemperatureMismatch(FaultRule):
         rule_id="rtu.economizer.mixed_air_temperature_mismatch",
         name="RTU mixed-air temperature mismatch",
         equipment_type="Rooftop_Unit",
-        description="Mixed-air temperature differs from OA/RA mixing expectation.",
+        description=(
+            "Target: economizer/mixing consistency. Compares measured mixed-air temperature with the temperature predicted from outdoor-air fraction, outdoor temperature, and return temperature. Intended to identify damper-position errors, poor mixing, sensor bias, or mapping problems."
+        ),
         persistence_seconds=180.0,
         clear_seconds=90.0,
         severity=FaultSeverity.WARNING,
@@ -1290,7 +1347,9 @@ class EconomizerNotUsingFreeCooling(FaultRule):
         rule_id="rtu.economizer.not_using_free_cooling",
         name="RTU economizer not using free cooling",
         equipment_type="Rooftop_Unit",
-        description="Outdoor air is favorable but OA damper remains near minimum during cooling demand.",
+        description=(
+            "Target: economizer free-cooling utilization. Detects favorable outdoor conditions and cooling demand while the outdoor-air damper stays near minimum. Intended to identify disabled/stuck economizer operation, bad control logic, actuator faults, or incorrect outdoor-air sensing."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -1347,7 +1406,9 @@ class EconomizerExcessiveOutdoorAir(FaultRule):
         rule_id="rtu.economizer.excessive_outdoor_air",
         name="RTU excessive outdoor air",
         equipment_type="Rooftop_Unit",
-        description="OA damper remains well above minimum when economizer conditions are unfavorable.",
+        description=(
+            "Target: unnecessary outdoor-air intake. Detects the outdoor-air damper substantially above minimum when economizer conditions are unfavorable. Intended to identify stuck/overridden dampers, control errors, or excess ventilation causing avoidable heating/cooling energy use."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -1394,7 +1455,9 @@ class OutdoorAirflowDamperMismatch(FaultRule):
         rule_id="rtu.ventilation.outdoor_airflow_damper_mismatch",
         name="RTU outdoor-airflow/damper mismatch",
         equipment_type="Rooftop_Unit",
-        description="Measured outdoor-air flow is inconsistent with supply airflow and OA damper fraction.",
+        description=(
+            "Target: consistency between outdoor-airflow measurement and damper/supply-airflow state. Detects measured outdoor airflow that does not agree with the expected fraction of supply flow. Useful for identifying airflow-sensor bias, damper/actuator issues, leakage, or mapping errors."
+        ),
         persistence_seconds=180.0,
         clear_seconds=90.0,
         severity=FaultSeverity.WARNING,
@@ -1449,7 +1512,9 @@ class SupplyStaticPressureHigh(FaultRule):
         rule_id="rtu.static_pressure.high",
         name="RTU supply static pressure high",
         equipment_type="Rooftop_Unit",
-        description="Supply duct static pressure remains above setpoint tolerance.",
+        description=(
+            "Target: supply-duct static-pressure control. Detects pressure persistently above setpoint. Intended to identify fan-control tuning issues, excessive fan speed, blocked/closed downstream paths, reset problems, or sensor/setpoint errors that can waste fan energy."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -1487,7 +1552,9 @@ class SupplyStaticPressureLow(FaultRule):
         rule_id="rtu.static_pressure.low",
         name="RTU supply static pressure low",
         equipment_type="Rooftop_Unit",
-        description="Supply duct static pressure remains below setpoint tolerance.",
+        description=(
+            "Target: supply-duct static-pressure control. Detects pressure persistently below setpoint while the fan is running. Intended to identify insufficient fan capacity/speed, duct leakage, open dampers/high demand, filter/air-path restrictions, or static-pressure sensing problems."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -1525,7 +1592,9 @@ class StaticPressureResetMismatch(FaultRule):
         rule_id="rtu.static_pressure.reset_mismatch",
         name="RTU static-pressure reset mismatch",
         equipment_type="Rooftop_Unit",
-        description="Most-open VAV damper position and RTU static-pressure setpoint are inconsistent.",
+        description=(
+            "Target: VAV static-pressure reset sequence. Compares the most-open downstream VAV damper with the expected RTU static-pressure setpoint. Intended to identify reset-sequence faults, incorrect VAV aggregation, bad setpoint mapping, or unnecessarily high/low fan pressure targets."
+        ),
         persistence_seconds=300.0,
         clear_seconds=120.0,
         severity=FaultSeverity.WARNING,
@@ -1584,7 +1653,9 @@ class TotalElectricPowerComponentMismatch(FaultRule):
         rule_id="rtu.energy.total_power_component_mismatch",
         name="RTU total electric power/component mismatch",
         equipment_type="Rooftop_Unit",
-        description="Reported RTU total electric power is inconsistent with available component powers.",
+        description=(
+            "Target: RTU electrical-energy signal consistency. Compares reported total electric power with the sum of available component powers such as supply fan and cooling/heating compressors. Useful for detecting missing loads, double counting, unit/mapping errors, or bad power signals."
+        ),
         persistence_seconds=120.0,
         clear_seconds=60.0,
         severity=FaultSeverity.WARNING,
