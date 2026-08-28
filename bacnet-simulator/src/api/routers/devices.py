@@ -167,6 +167,13 @@ async def list_devices(
         get_devices_with_disabled_simulation_model,
         database,
     )
+    replay_recording_ids = [
+        int(d["replay_recording_id"]) for d in devices if d.get("replay_recording_id") is not None
+    ]
+    replay_recording_names = await asyncio.to_thread(
+        database.get_replay_recording_names,
+        replay_recording_ids,
+    )
 
     for device in devices:
         device[
@@ -180,6 +187,12 @@ async def list_devices(
         device["active_simulation_model"] = active_model
         device["simulation_model_stopped"] = (
             active_model is None and device_id in stopped_simulation_device_ids
+        )
+        recording_id = device.get("replay_recording_id")
+        device["active_replay_recording"] = (
+            {"id": recording_id, "name": replay_recording_names[recording_id]}
+            if recording_id is not None and recording_id in replay_recording_names
+            else None
         )
 
     return devices

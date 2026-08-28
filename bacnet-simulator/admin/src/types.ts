@@ -28,6 +28,8 @@ export interface Device {
   simulation_mode?: 'simulation' | 'mirror' | 'replay'
   /** ID of the external source device for Twin/Replay modes; null for ordinary simulated devices. */
   source_device_id?: number | null
+  /** ID of the ReplayRecording driving this device's values; only set when simulation_mode==='replay'. */
+  replay_recording_id?: number | null
   /** Server-computed summary of the enabled explicit simulation model driving this device's output points. */
   active_simulation_model?: {
     id: number
@@ -38,6 +40,8 @@ export interface Device {
   } | null
   /** Server-computed: true when this device has an explicit simulation model configured but currently disabled (stopped). */
   simulation_model_stopped?: boolean
+  /** Server-computed: the recording driving this device's values, when simulation_mode==='replay'. */
+  active_replay_recording?: { id: number; name: string } | null
 }
 
 export interface Location {
@@ -234,7 +238,7 @@ export interface NotificationClass {
 export interface EnergyModelConfig {
   id: number
   device_id: number
-  model_type: 'chiller' | 'ahu' | 'lighting' | 'boiler'
+  model_type: 'chiller' | 'ahu' | 'lighting' | 'boiler' | 'rtu'
   instance_key: string
   enabled: boolean
   parameters: Record<string, number | boolean | null | undefined>
@@ -307,6 +311,136 @@ export interface TrendLogRecord {
   ts: string
   value: string
   status_flags: string
+}
+
+export interface ReplayRecordingPoint {
+  id: number
+  recording_id: number
+  source_object_id: number | null
+  object_type: string
+  object_instance: number
+  object_name: string
+  point_type: string | null
+  units: string | null
+}
+
+export interface ReplayRecording {
+  id: number
+  source_device_id: number
+  name: string
+  description: string
+  status: 'recording' | 'completed'
+  sample_interval_seconds: number
+  maximum_samples: number
+  buffer_mode: 'overwrite' | 'stop'
+  started_at: string
+  ended_at: string | null
+  created_at: string
+  point_count: number
+  sample_count: number
+  sample_index_min: number | null
+  sample_index_max: number | null
+  points?: ReplayRecordingPoint[]
+}
+
+
+export interface ReplayPlaybackState {
+  status: 'playing' | 'paused' | 'stopped'
+  current_sample_index: number
+  speed: number
+  loop: boolean
+  last_advance_wall_time: number | null
+}
+
+// ── Calibration ─────────────────────────────────────────────────────────
+// Standalone screen (CalibrationView.vue) gluing a completed Recording to
+// iot-models' calibration API. Field names mirror the backend/iot-models
+// response shapes verbatim -- see src/api/routers/calibration.py.
+
+export interface CalibrationModelSummary {
+  id: string
+  slug?: string
+  label: string
+  description?: string | null
+  calibration_enabled: boolean
+}
+
+export interface CalibrationRecordingSummary {
+  id: number
+  source_device_id: number
+  device_name: string | null
+  name: string
+  description: string
+  status: 'recording' | 'completed'
+  sample_interval_seconds: number
+  point_count: number
+  sample_count: number
+  started_at: string
+  ended_at: string | null
+}
+
+export interface CalibrationMappingAlternative {
+  point_id: number
+  point_name: string
+  score: number
+  reasons: string[]
+}
+
+export interface CalibrationMappingVariable {
+  name: string
+  direction: 'input' | 'output'
+  unit: string | null
+  required: boolean
+  suggested_point_id: number | null
+  confidence: 'high' | 'medium' | 'low' | 'none' | string
+  reasons: string[]
+  alternatives: CalibrationMappingAlternative[]
+}
+
+export interface CalibrationRecordingPoint {
+  id: number
+  name: string
+  units: string | null
+  point_type: string | null
+  object_type: string
+}
+
+export interface CalibrationMappingSuggestions {
+  variables: CalibrationMappingVariable[]
+  points: CalibrationRecordingPoint[]
+}
+
+export interface CalibrationJob {
+  job_id: string
+  model_id: string
+  method: string
+  dataset_id: string
+  status: 'QUEUED' | 'VALIDATING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  experiment_id: string | null
+  created_at: number
+  started_at: number | null
+  completed_at: number | null
+  error: string | null
+}
+
+export interface CalibrationResult {
+  job_id: string
+  experiment_id: string | null
+  model_id: string
+  method: string
+  dataset_id: string
+  objective: {
+    metric: string | null
+    baseline: number | null
+    best: number | null
+    improvement_pct: number | null
+  }
+  best_parameters: Record<string, number>
+  execution: {
+    evaluations: number | null
+    failed_evaluations: number
+    duration_seconds: number
+  }
 }
 
 export interface ScheduleTimeValue {

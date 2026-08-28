@@ -1,5 +1,5 @@
 import { api } from './api'
-import type { Device, SemanticEntity, SimObject } from './types'
+import type { Device, SemanticEntity, SimObject, ReplayRecording } from './types'
 import type { SimulationModelPayload } from './api'
 import { coerceValueForObjectType } from './objectValue'
 
@@ -301,5 +301,72 @@ export async function copyDeviceAndObjects(
     objectCount: srcObjects.length,
     objectIdMap,
     simulationModelCount,
+  }
+}
+
+interface CreateReplayDeviceOptions {
+  name: string
+  deviceInstance: number
+  sourceDeviceId: number
+  recording: ReplayRecording
+  locationId?: number | null
+}
+
+/**
+ * Replay mode's clone is deliberately NOT built through copyDeviceAndObjects
+ * above: that function's object list (srcObjects: SimObject[]) and its
+ * semantic-graph/simulation-model copying both assume real, currently-
+ * existing source object rows -- neither applies to a recording, which is a
+ * frozen historical snapshot (replay_recording_points, not `objects`) that
+ * may already outlive the source device's current object structure. Objects
+ * are seeded at a neutral default (0/false/first state) -- replay_playback_loop
+ * drives their real values once playback starts, the same way a Twin's
+ * objects start at whatever mirror_sync_loop next reads.
+ */
+export async function createReplayDevice(
+  source: Device,
+  opts: CreateReplayDeviceOptions,
+): Promise<CopyDeviceResult> {
+  const created = await api.devices.create({
+    device_instance: opts.deviceInstance,
+    name:            opts.name,
+    description:     source.description,
+    vendor_name:     source.vendor_name,
+    model_name:      source.model_name,
+    enabled:         source.enabled,
+    firmware_revision:        source.firmware_revision,
+    protocol_revision:        source.protocol_revision,
+    max_apdu_length_accepted: source.max_apdu_length_accepted,
+    segmentation_supported:   source.segmentation_supported,
+    location_id:              opts.locationId !== undefined ? opts.locationId : source.location_id,
+    equipment_type:           null,
+    simulation_mode:          'replay',
+    source_device_id:         opts.sourceDeviceId,
+    replay_recording_id:      opts.recording.id,
+  })
+
+  const objectIdMap: Record<number, number> = {}
+  const points = opts.recording.points ?? []
+  for (const p of points) {
+    const defaultValue = coerceValueForObjectType(p.object_type, 0, 2)
+    const copied = await api.objects.create(created.id, {
+      object_type:      p.object_type,
+      object_instance:  p.object_instance,
+      name:             p.object_name,
+      units:            p.units ?? 'no-units',
+      behavior:         'constant',
+      behavior_params:  JSON.stringify({ value: defaultValue }),
+      enabled:          1,
+      number_of_states: 2,
+      point_type:       p.point_type ?? null,
+    })
+    objectIdMap[p.id] = copied.id
+  }
+
+  return {
+    device: created,
+    objectCount: points.length,
+    objectIdMap,
+    simulationModelCount: 0,
   }
 }

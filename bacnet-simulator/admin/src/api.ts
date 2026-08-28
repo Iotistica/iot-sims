@@ -20,6 +20,13 @@ import type {
   EventEnrollment,
   TrendLog,
   TrendLogRecord,
+  ReplayRecording,
+  ReplayPlaybackState,
+  CalibrationModelSummary,
+  CalibrationRecordingSummary,
+  CalibrationMappingSuggestions,
+  CalibrationJob,
+  CalibrationResult,
   Schedule,
   ScheduleEvaluation,
   PriorityArrayInfo,
@@ -481,7 +488,12 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
     del: (id: number) => req<{ ok: boolean; model_id: number; runtime_id: string }>(`/simulation/models/${id}`, { method: 'DELETE' }),
-    pointOptions: () => req<SimulationModelPointOption[]>('/simulation/points/options'),
+    // deviceId scopes candidates to that device's one-hop Brick controller
+    // topology (Controller -> controls -> Equipment -> feeds -> Equipment/
+    // Location) server-side; omitted/undefined keeps the full project-wide
+    // list, same as before.
+    pointOptions: (deviceId?: number) =>
+      req<SimulationModelPointOption[]>(`/simulation/points/options${deviceId != null ? `?device_id=${deviceId}` : ''}`),
     mappingSuggestions: (body: { model_type: string; provider_type: string; created_from_device_id: number | null; current_model_id?: number | null }) =>
       req<MappingSuggestionsResponse>('/simulation/models/mapping-suggestions', { method: 'POST', body: JSON.stringify(body) }),
     mappingSuggestionAi: (body: { model_type: string; variable: string; created_from_device_id: number | null; current_model_id?: number | null }) =>
@@ -809,6 +821,49 @@ export const api = {
     },
     trigger: (id: number) => req<{ ok: boolean; sequence_number: number; value: unknown }>(`/trend-logs/${id}/trigger`, { method: 'POST' }),
     clear:   (id: number) => req<{ ok: boolean }>(`/trend-logs/${id}/clear`, { method: 'POST' }),
+  },
+  replayRecordings: {
+    list: (deviceId: number) => req<ReplayRecording[]>(`/devices/${deviceId}/replay-recordings`),
+    create: (deviceId: number, b: {
+      name: string; description?: string; point_ids?: number[] | null
+      sample_interval_seconds: number; maximum_samples: number; buffer_mode: 'overwrite' | 'stop'
+    }) => req<ReplayRecording>(`/devices/${deviceId}/replay-recordings`, { method: 'POST', body: JSON.stringify(b) }),
+    get:  (id: number) => req<ReplayRecording>(`/replay-recordings/${id}`),
+    update: (id: number, b: {
+      name: string; description?: string
+      sample_interval_seconds: number; maximum_samples: number; buffer_mode: 'overwrite' | 'stop'
+    }) => req<ReplayRecording>(`/replay-recordings/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    stop: (id: number) => req<ReplayRecording>(`/replay-recordings/${id}/stop`, { method: 'POST' }),
+    del:  (id: number) => req<null>(`/replay-recordings/${id}`, { method: 'DELETE' }),
+    exportSamples: (id: number, name: string) => downloadFile(`/replay-recordings/${id}/samples`, `${name}.csv`),
+  },
+  replayPlayback: {
+    state: (deviceId: number) => req<ReplayPlaybackState>(`/devices/${deviceId}/replay/state`),
+    play:  (deviceId: number) => req<ReplayPlaybackState>(`/devices/${deviceId}/replay/play`, { method: 'POST' }),
+    pause: (deviceId: number) => req<ReplayPlaybackState>(`/devices/${deviceId}/replay/pause`, { method: 'POST' }),
+    stop:  (deviceId: number) => req<ReplayPlaybackState>(`/devices/${deviceId}/replay/stop`, { method: 'POST' }),
+    seek:  (deviceId: number, sampleIndex: number) =>
+      req<ReplayPlaybackState>(`/devices/${deviceId}/replay/seek`, { method: 'POST', body: JSON.stringify({ sample_index: sampleIndex }) }),
+    setLoop: (deviceId: number, loop: boolean) =>
+      req<ReplayPlaybackState>(`/devices/${deviceId}/replay/loop`, { method: 'POST', body: JSON.stringify({ loop }) }),
+    setSpeed: (deviceId: number, speed: number) =>
+      req<ReplayPlaybackState>(`/devices/${deviceId}/replay/speed`, { method: 'POST', body: JSON.stringify({ speed }) }),
+  },
+
+  calibration: {
+    listModels: ()     => req<CalibrationModelSummary[]>('/calibration/models'),
+    listRecordings: (modelId?: string | null) =>
+      req<CalibrationRecordingSummary[]>(`/calibration/recordings${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`),
+    mappingSuggestions: (recordingId: number, modelId: string) =>
+      req<CalibrationMappingSuggestions>(`/calibration/mapping-suggestions?recording_id=${recordingId}&model_id=${encodeURIComponent(modelId)}`),
+    createJob: (b: { recording_id: number; model_id: string; mapping: Record<string, number> }) =>
+      req<CalibrationJob>('/calibration/jobs', { method: 'POST', body: JSON.stringify(b) }),
+    getJob: (jobId: string, modelId: string) =>
+      req<CalibrationJob>(`/calibration/jobs/${jobId}?model_id=${encodeURIComponent(modelId)}`),
+    getResults: (jobId: string, modelId: string) =>
+      req<CalibrationResult>(`/calibration/jobs/${jobId}/results?model_id=${encodeURIComponent(modelId)}`),
+    cancelJob: (jobId: string, modelId: string) =>
+      req<CalibrationJob>(`/calibration/jobs/${jobId}/cancel?model_id=${encodeURIComponent(modelId)}`, { method: 'POST' }),
   },
 
   schedules: {

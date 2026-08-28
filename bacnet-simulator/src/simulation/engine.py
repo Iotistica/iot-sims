@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from bacpypes3.basetypes import (
@@ -126,6 +127,20 @@ class SimEngine:
         self._enrollment_runtime: dict[int, alarms.AlarmRuntime] = {}
         # Mirror propagation: obj DB id -> last normalized value injected by mirror_sync_loop
         self._mirror_values: dict[int, Any] = {}
+        # Replay propagation: obj DB id -> last normalized value injected by
+        # replay_playback_loop. Kept separate from _mirror_values so
+        # /sim/state diagnostics don't conflate Twin (live external mirror)
+        # and Replay (recorded-data playback) devices.
+        self._replay_values: dict[int, Any] = {}
+        # device DB id -> in-memory playback transport state (never
+        # persisted -- a restart resets every Replay device to stopped-at-
+        # first-sample, an accepted simplification). See _get_replay_state.
+        self._replay_playback: dict[int, dict[str, Any]] = {}
+        # device DB id -> the sample_index whose values are currently
+        # written into this device's objects -- lets advance_replay_playback
+        # tell "already showing this frame" apart from "needs re-injecting"
+        # (a seek while paused/stopped still needs one injection).
+        self._replay_applied_index: dict[int, int] = {}
         # trend_log DB id → last value actually recorded, for COV-triggered
         # logging (not persisted — same simplification as the above)
         self._trend_log_last_value: dict[int, Any] = {}
@@ -437,71 +452,194 @@ class SimEngine:
         """
         return self._provider_input_value(point_id, {})
 
+    def _step_one_provider(
+        self,
+        provider_id: str,
+        provider: SimulationProvider,
+        inputs: dict[int, Any],
+        dt: float,
+    ) -> tuple[dict[int, Any], dict[str, Any], str | None] | None:
+        """Steps a single provider (set_inputs / start-if-needed / step /
+        get_outputs / diagnostics) and returns (outputs, diagnostics,
+        runtime_state), or None on failure (already logged here). Called
+        directly for a wave with only one provider, or via
+        ThreadPoolExecutor.submit for a wave with more than one -- FMU
+        providers each own their own FMURuntimeClient/session (see
+        FMUSimulationProvider.__init__), so concurrent calls for *different*
+        providers never touch shared client/session state. Deliberately
+        touches no *engine* shared state either (self._provider_diagnostics/
+        self._model_input_shadow_values/generated_values) -- the caller
+        merges every wave's results back in sequentially, in registration
+        order, once the whole wave has finished, so concurrent calls here
+        never race on those dict writes."""
+        try:
+            provider.set_inputs(inputs)
+            if provider.get_status() != ProviderStatus.RUNNING:
+                provider.start()
+            # Timed separately from the rest of this method (set_inputs/
+            # get_outputs/diagnostics are in-memory and fast) -- step()
+            # is the one call that can be a real blocking HTTP round trip
+            # to the FMU runtime, and is the thing tick_loop's own overrun
+            # warning is actually explained by when it fires.
+            step_started_at = time.monotonic()
+            provider.step(dt)
+            step_duration = time.monotonic() - step_started_at
+            if step_duration > dependencies.TICK_SECONDS:
+                log.warning(
+                    "Provider %s (%s) step() took %.2fs, exceeding TICK_SECONDS=%.2fs",
+                    provider_id,
+                    type(provider).__name__,
+                    step_duration,
+                    dependencies.TICK_SECONDS,
+                )
+            else:
+                log.debug(
+                    "Provider %s (%s) step() took %.2fs",
+                    provider_id,
+                    type(provider).__name__,
+                    step_duration,
+                )
+            outputs = dict(provider.get_outputs())
+            diagnostics = {}
+            if hasattr(provider, "get_diagnostics"):
+                try:
+                    diagnostics = provider.get_diagnostics()
+                except Exception as exc:
+                    diagnostics = {"diagnostics_error": str(exc)}
+            runtime_state = str(
+                diagnostics.get("runtime_state")
+                or diagnostics.get("status")
+                or ""
+            ) or None
+            return outputs, diagnostics, runtime_state
+        except Exception:
+            log.exception(
+                "Simulation provider %s (%s) failed during tick",
+                provider_id,
+                type(provider).__name__,
+            )
+            return None
+
     def _run_registered_providers(
         self,
         dt: float,
         generated_values: dict[int, Any],
     ) -> dict[int, Any]:
-        """Run every non-built-in provider once in deterministic order."""
-        for provider_id, provider in list(self._providers.items()):
-            if provider_id == "builtin":
-                continue
+        """Run every non-built-in provider once, staged into dependency
+        "waves" and stepped concurrently within each wave.
 
-            inputs = {
-                point_id: value
-                for point_id in self._provider_input_points.get(provider_id, set())
-                if (value := self._provider_input_value(point_id, generated_values))
-                is not None
+        Providers are mostly independent FMU-backed devices whose step() is
+        a blocking HTTP round trip to the external FMU runtime -- stepping
+        them one at a time made a single tick's duration the *sum* of every
+        device's round trip (confirmed live: Replay Recording exports showed
+        5-6 consecutive identical samples, ~20-30s, across every point on a
+        device at once, on projects with several FMU-backed devices).
+
+        Full unordered parallelism would silently break a documented
+        contract this project actively relies on (RTU -> VAV chaining,
+        confirmed live via FMU INPUT RESOLVE log lines): "providers execute
+        in registration order; if provider B reads a point produced by
+        provider A and A was registered first, B sees A's value from the
+        same tick" (see register_simulation_provider's own docstring).
+        Wave staging preserves that exactly -- a provider's wave is
+        1 + max(wave of any *earlier-registered* provider whose output
+        points intersect this provider's input points), so a dependent
+        provider always lands in a strictly later wave than what it depends
+        on, and waves run strictly sequentially (only providers *within* a
+        wave -- the common case, since most FMU-backed devices here are
+        independent systems -- run concurrently). Only earlier-registered
+        providers are considered because, under the original sequential
+        semantics, a provider can never see a *later*-registered provider's
+        same-tick output anyway (it hasn't run yet) -- so there's no real
+        dependency edge in that direction, and no cycle detection is needed.
+        """
+        provider_items = [
+            (provider_id, provider)
+            for provider_id, provider in self._providers.items()
+            if provider_id != "builtin"
+        ]
+
+        wave_of: dict[str, int] = {}
+        waves: dict[int, list[tuple[str, SimulationProvider]]] = {}
+        for idx, (provider_id, provider) in enumerate(provider_items):
+            input_points = self._provider_input_points.get(provider_id, set())
+            max_dep_wave = -1
+            for earlier_id, _earlier_provider in provider_items[:idx]:
+                if input_points & self._provider_output_points.get(earlier_id, set()):
+                    max_dep_wave = max(max_dep_wave, wave_of[earlier_id])
+            wave_of[provider_id] = max_dep_wave + 1
+            waves.setdefault(max_dep_wave + 1, []).append((provider_id, provider))
+
+        for wave_num in sorted(waves):
+            wave_providers = waves[wave_num]
+
+            # Inputs are resolved from the pre-wave generated_values snapshot
+            # -- unchanged for the whole wave, since same-wave providers run
+            # concurrently and must not observe each other's outputs (that's
+            # exactly what wave staging exists to prevent).
+            wave_inputs = {
+                provider_id: {
+                    point_id: value
+                    for point_id in self._provider_input_points.get(provider_id, set())
+                    if (value := self._provider_input_value(point_id, generated_values))
+                    is not None
+                }
+                for provider_id, _provider in wave_providers
             }
 
-            try:
-                provider.set_inputs(inputs)
-                if provider.get_status() != ProviderStatus.RUNNING:
-                    provider.start()
-                provider.step(dt)
-                outputs = dict(provider.get_outputs())
-                diagnostics = {}
-                if hasattr(provider, "get_diagnostics"):
-                    try:
-                        diagnostics = provider.get_diagnostics()
-                    except Exception as exc:
-                        diagnostics = {"diagnostics_error": str(exc)}
+            if len(wave_providers) == 1:
+                # Skip ThreadPoolExecutor overhead for the common
+                # single-provider-per-wave case.
+                only_id, only_provider = wave_providers[0]
+                results = {
+                    only_id: self._step_one_provider(
+                        only_id, only_provider, wave_inputs[only_id], dt,
+                    )
+                }
+            else:
+                with ThreadPoolExecutor(max_workers=min(8, len(wave_providers))) as pool:
+                    futures = {
+                        provider_id: pool.submit(
+                            self._step_one_provider, provider_id, provider, wave_inputs[provider_id], dt,
+                        )
+                        for provider_id, provider in wave_providers
+                    }
+                    results = {provider_id: future.result() for provider_id, future in futures.items()}
+
+            # Merge this wave's results back sequentially, in registration
+            # order -- same shared-state writes the original loop made,
+            # just deferred until the whole wave has finished stepping.
+            for provider_id, provider in wave_providers:
+                result = results[provider_id]
+                if result is None:
+                    continue  # failure already logged in _step_one_provider
+
+                inputs = wave_inputs[provider_id]
+                outputs, diagnostics, runtime_state = result
+
                 self._provider_diagnostics[provider_id] = diagnostics
-                runtime_state = str(
-                    diagnostics.get("runtime_state")
-                    or diagnostics.get("status")
-                    or ""
-                ) or None
                 for point_id, value in inputs.items():
                     self._model_input_shadow_values[int(point_id)] = (value, runtime_state)
-            except Exception:
-                log.exception(
-                    "Simulation provider %s (%s) failed during tick",
-                    provider_id,
-                    type(provider).__name__,
-                )
-                continue
 
-            declared_outputs = self._provider_output_points.get(provider_id, set())
-            for point_id, value in outputs.items():
-                point_id = int(point_id)
-                if point_id not in declared_outputs:
-                    log.warning(
-                        "Provider %s emitted undeclared output point %s; ignoring",
-                        provider_id,
-                        point_id,
-                    )
-                    continue
-                if self._point_output_owner.get(point_id) != provider_id:
-                    log.warning(
-                        "Provider %s no longer owns output point %s; ignoring",
-                        provider_id,
-                        point_id,
-                    )
-                    continue
-                generated_values[point_id] = value
+                declared_outputs = self._provider_output_points.get(provider_id, set())
+                for point_id, value in outputs.items():
+                    point_id = int(point_id)
+                    if point_id not in declared_outputs:
+                        log.warning(
+                            "Provider %s emitted undeclared output point %s; ignoring",
+                            provider_id,
+                            point_id,
+                        )
+                        continue
+                    if self._point_output_owner.get(point_id) != provider_id:
+                        log.warning(
+                            "Provider %s no longer owns output point %s; ignoring",
+                            provider_id,
+                            point_id,
+                        )
+                        continue
+                    generated_values[point_id] = value
 
-            if provider_id != "builtin":
                 log.info(
                     "Simulation provider output batch: provider=%s type=%s "
                     "dt=%s inputs=%s outputs=%s diagnostics=%s",
@@ -1269,13 +1407,18 @@ class SimEngine:
             dev = dev_map.get(obj_row["device_id"])
             if not dev:
                 continue
-            if dev.get("simulation_mode", "simulation") == "mirror":
-                # Behaviors stay stored but inactive; mirror_sync_loop drives the value.
-                mirror_val = self._mirror_values.get(obj_id)
+            sim_mode = dev.get("simulation_mode", "simulation")
+            if sim_mode in ("mirror", "replay"):
+                # Behaviors stay stored but inactive; mirror_sync_loop (mirror)
+                # or replay_playback_loop (replay) drives the value out of band.
+                injected_val = (
+                    self._mirror_values.get(obj_id) if sim_mode == "mirror"
+                    else self._replay_values.get(obj_id)
+                )
                 payload = self._twin_snapshot_payload(
                     obj_id,
                     obj_row,
-                    mirror_val,
+                    injected_val,
                     provider_outputs,
                 )
                 if payload is not None:
@@ -1437,6 +1580,168 @@ class SimEngine:
             self._prev_values[obj_id] = written_val
             if dev is not None:
                 self._upsert_current_value_snapshot(dev, obj, normalized)
+
+    async def inject_replay_values(
+        self,
+        device_id: int,
+        values: dict[tuple[str, int], Any],
+        objects: list[dict],
+    ) -> None:
+        """Propagate one recorded snapshot's present-values into a Replay
+        simulated device. Called only by advance_replay_playback -- never
+        from the HTTP layer. Mirrors inject_mirror_values exactly, writing
+        into the separate _replay_values cache instead of _mirror_values
+        (see that field's own comment)."""
+        dev = await asyncio.to_thread(self.db.get_device, device_id)
+        for obj in objects:
+            key = (obj["object_type"], obj["object_instance"])
+            if key not in values:
+                continue
+            val = values[key]
+            if val is None:
+                continue
+            obj_id = obj["id"]
+            entry = self._objects.get(obj_id)
+            if not entry:
+                continue
+            bacnet_obj, _ = entry
+            normalized = normalize_present_value(obj["object_type"], val)
+            written_val = self._update_value(bacnet_obj, obj["object_type"], normalized)
+            self._replay_values[obj_id] = normalized
+            self._prev_values[obj_id] = written_val
+            if dev is not None:
+                self._upsert_current_value_snapshot(dev, obj, normalized)
+
+    # ─── Replay playback transport ──────────────────────────────────────────
+    # In-memory only (see _replay_playback's own comment). Pause holds the
+    # current sample; explicit Stop resets to the recording's first sample;
+    # reaching the end naturally (no loop) holds the last sample instead of
+    # resetting -- see advance_replay_playback for where that distinction is
+    # actually applied.
+
+    def _get_replay_state(self, device_id: int) -> dict[str, Any]:
+        state = self._replay_playback.get(device_id)
+        if state is None:
+            state = {
+                "status": "stopped",
+                "current_sample_index": 0,
+                "speed": 1.0,
+                "loop": False,
+                "last_advance_wall_time": None,
+            }
+            self._replay_playback[device_id] = state
+        return state
+
+    def get_replay_state(self, device_id: int) -> dict[str, Any]:
+        return dict(self._get_replay_state(device_id))
+
+    def replay_play(self, device_id: int) -> dict[str, Any]:
+        state = self._get_replay_state(device_id)
+        state["status"] = "playing"
+        state["last_advance_wall_time"] = time.monotonic()
+        return state
+
+    def replay_pause(self, device_id: int) -> dict[str, Any]:
+        state = self._get_replay_state(device_id)
+        state["status"] = "paused"
+        return state
+
+    async def replay_stop(self, device_id: int) -> dict[str, Any]:
+        """Unlike Pause (holds position) or a natural end (holds the last
+        sample), an explicit Stop resets back to the recording's actual
+        first sample_index -- not literally 0, since buffer_mode='overwrite'
+        eviction can leave a recording's stored range starting above 0."""
+        state = self._get_replay_state(device_id)
+        state["status"] = "stopped"
+        first_index = 0
+        device = await asyncio.to_thread(self.db.get_device, device_id)
+        recording_id = device.get("replay_recording_id") if device else None
+        if recording_id is not None:
+            bounds = await asyncio.to_thread(
+                self.db.get_replay_recording_sample_index_bounds, recording_id
+            )
+            if bounds is not None:
+                first_index = bounds[0]
+        state["current_sample_index"] = first_index
+        return state
+
+    def replay_seek(self, device_id: int, sample_index: int) -> dict[str, Any]:
+        state = self._get_replay_state(device_id)
+        state["current_sample_index"] = max(0, sample_index)
+        return state
+
+    def replay_set_loop(self, device_id: int, loop: bool) -> dict[str, Any]:
+        state = self._get_replay_state(device_id)
+        state["loop"] = loop
+        return state
+
+    def replay_set_speed(self, device_id: int, speed: float) -> dict[str, Any]:
+        state = self._get_replay_state(device_id)
+        state["speed"] = speed
+        return state
+
+    async def advance_replay_playback(self, device: dict) -> None:
+        """Called once per REPLAY_PLAYBACK_POLL_SECONDS (see
+        replay_playback_loop) for every simulation_mode='replay' device.
+        Advances playback position when playing (Polled recordings are
+        evenly spaced, so sample_interval_seconds/speed IS "the recorded
+        timing between samples" -- no per-frame timestamp lookup needed),
+        and re-injects values whenever the current position doesn't match
+        what's actually applied yet (covers Play advancing AND a Seek that
+        happened while paused/stopped)."""
+        device_id = device["id"]
+        recording_id = device.get("replay_recording_id")
+        if recording_id is None:
+            return
+        recording = await asyncio.to_thread(self.db.get_replay_recording, recording_id)
+        bounds = await asyncio.to_thread(
+            self.db.get_replay_recording_sample_index_bounds, recording_id
+        )
+        if not recording or bounds is None:
+            return
+        min_index, max_index = bounds
+        state = self._get_replay_state(device_id)
+        if state["current_sample_index"] < min_index or state["current_sample_index"] > max_index:
+            state["current_sample_index"] = min_index
+
+        if state["status"] == "playing":
+            interval = max(0.01, recording["sample_interval_seconds"]) / max(0.01, state["speed"])
+            last = state["last_advance_wall_time"] or time.monotonic()
+            elapsed = time.monotonic() - last
+            steps = int(elapsed // interval)
+            if steps > 0:
+                state["last_advance_wall_time"] = last + steps * interval
+                for _ in range(steps):
+                    if state["current_sample_index"] >= max_index:
+                        if state["loop"]:
+                            state["current_sample_index"] = min_index
+                        else:
+                            # Natural end: hold the last sample, distinct
+                            # from an explicit Stop's reset-to-first.
+                            state["status"] = "stopped"
+                            break
+                    else:
+                        state["current_sample_index"] += 1
+
+        if self._replay_applied_index.get(device_id) == state["current_sample_index"]:
+            return
+
+        point_lookup = {p["id"]: p for p in recording["points"]}
+        samples = await asyncio.to_thread(
+            self.db.get_replay_recording_samples, recording_id, state["current_sample_index"]
+        )
+        values: dict[tuple[str, int], Any] = {}
+        for s in samples:
+            p = point_lookup.get(s["recording_point_id"])
+            if not p:
+                continue
+            try:
+                values[(p["object_type"], p["object_instance"])] = json.loads(s["value"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+        objects = await asyncio.to_thread(self.db.get_objects, device_id)
+        await self.inject_replay_values(device_id, values, objects)
+        self._replay_applied_index[device_id] = state["current_sample_index"]
 
     async def _evaluate_alarm(
         self, obj_id: int, obj_row: dict, dev: dict, val: Any, cfg: dict, notification_classes: dict[int, dict],
@@ -1694,27 +1999,43 @@ class SimEngine:
         log.info("BACnet stack stopped")
 
     async def add_object_hot(self, device_instance: int, obj_row: dict) -> None:
-        """Hot-add a single object to the running BACnet app without full reload."""
+        """Hot-add a single object to the running BACnet app without full reload.
+
+        Takes _reload_lock -- the same lock reload() holds for its own
+        teardown/rebuild of self.app/self._objects/self._device_slots (see
+        _reload_lock's own comment). Without this, a hot-add racing a
+        concurrent reload() (routine: creating a device schedules a
+        fire-and-forget reload(), and each object POSTed onto that device
+        right after schedules its own fire-and-forget hot-add -- exactly
+        what cloning a multi-point device does, back-to-back) could land
+        while reload() is mid-teardown/rebuild and get silently discarded:
+        confirmed live where an 11-object clone ended up with only the
+        first 3 objects actually registered in self._objects, the rest
+        present in the DB but never reachable on the BACnet wire or in any
+        snapshot/injection path. Queuing behind the lock instead of racing
+        it makes the hot-add always land after any in-flight reload's
+        rebuild has settled."""
         if not self.app:
             return
-        slot = self._device_slots.get(device_instance, 0)
-        dev_obj = self.app._virtual_devices.get(device_instance)
-        dev_name = str(dev_obj.objectName) if dev_obj else ""
-        bacnet_obj, behavior = self._create_object(obj_row, slot, dev_name)
-        self.app.add_object(bacnet_obj)
-        self._objects[obj_row["id"]] = (bacnet_obj, behavior)
-        dev = self.db.get_device(int(obj_row["device_id"]))
-        if (
-            dev
-            and dev.get("simulation_mode", "simulation") != "mirror"
-            and int(obj_row["id"]) not in self._point_output_owner
-        ):
-            self._builtin_provider.sync_point_config(self._point_config_from_row(obj_row))
-        if dev_obj:
-            existing = list(self.app._virtual_object_lists.get(device_instance, []))
-            existing.append(bacnet_obj.objectIdentifier)
-            dev_obj.objectList = existing
-            self.app._virtual_object_lists[device_instance] = existing
+        async with self._reload_lock:
+            slot = self._device_slots.get(device_instance, 0)
+            dev_obj = self.app._virtual_devices.get(device_instance)
+            dev_name = str(dev_obj.objectName) if dev_obj else ""
+            bacnet_obj, behavior = self._create_object(obj_row, slot, dev_name)
+            self.app.add_object(bacnet_obj)
+            self._objects[obj_row["id"]] = (bacnet_obj, behavior)
+            dev = self.db.get_device(int(obj_row["device_id"]))
+            if (
+                dev
+                and dev.get("simulation_mode", "simulation") != "mirror"
+                and int(obj_row["id"]) not in self._point_output_owner
+            ):
+                self._builtin_provider.sync_point_config(self._point_config_from_row(obj_row))
+            if dev_obj:
+                existing = list(self.app._virtual_object_lists.get(device_instance, []))
+                existing.append(bacnet_obj.objectIdentifier)
+                dev_obj.objectList = existing
+                self.app._virtual_object_lists[device_instance] = existing
 
     def set_manual_value(self, obj_id: int, value: Any) -> bool:
         if obj_id not in self._objects:

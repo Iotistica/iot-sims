@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
-  ApiOutlined, CopyOutlined, DeleteOutlined, DeploymentUnitOutlined,
-  DownloadOutlined, EditOutlined, EllipsisOutlined, FolderAddOutlined,
-  FolderOutlined, LineChartOutlined, PlusOutlined, SearchOutlined,
-  AlertOutlined, CalendarOutlined, DownOutlined, ScheduleOutlined, ThunderboltOutlined,
-  ExperimentOutlined, ClusterOutlined, UploadOutlined, ApartmentOutlined,
+  ApiOutlined, DeploymentUnitOutlined,
+  EditOutlined, FolderAddOutlined,
+  FolderOutlined, PlusOutlined, SearchOutlined,
+  DownOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons-vue'
 import type { BACnetDiscoveryConnection, Device, Equipment, Location, Meta } from '../types'
-import { buildLocationTreeOptions, flattenLocationTree } from '../locationTree'
 import { getLocationIcon } from '../locationIcons'
 import { getEquipmentIcon, getControllerIcon } from '../equipmentIcons'
 
@@ -54,21 +53,7 @@ const emit = defineEmits<{
   'discover-all': []
   'discover-connection': [connection: BACnetDiscoveryConnection]
   'manage-discovery': []
-  'assign-device-location': [device: Device, locationId: number]
-  'create-simulated-copy': [device: Device]
-  'remove-external-device': [device: Device]
-  'duplicate-device': [device: Device]
-  'export-ede': [device: Device]
-  'import-ede': [device: Device]
-  'export-brick': [device: Device]
-  'notification-classes': [device: Device]
-  'event-enrollments': [device: Device]
-  'trend-logs': [device: Device]
-  'schedules': [device: Device]
-  'calendars': [device: Device]
-  'energy-model': [device: Device]
   'simulation-model': [device: Device]
-  'view-traffic': [device: Device]
   'update:width': [value: number]
 }>()
 
@@ -181,7 +166,6 @@ const sidebarTree = computed<SidebarTreeNode[]>(() => {
 const sidebarRawCount = computed(() => props.devices.length + props.locations.length + props.equipment.length)
 const sidebarFilteredCount = computed(() => deviceSearch.value.trim() ? filteredDevices.value.length : sidebarRawCount.value)
 const hasExternalDevices = computed(() => props.devices.some(d => d.source_type === 'external-bacnet'))
-const moveToOptions = computed(() => flattenLocationTree(buildLocationTreeOptions(props.locations)))
 const selectedTreeKeys = computed<string[]>(() => {
   if (props.selectedDevice) return ['device-' + props.selectedDevice.id]
   if (props.selectedEquipment) return ['equipment-' + props.selectedEquipment.id]
@@ -270,6 +254,10 @@ function simulationProviderLabel(device: Device): string | null {
   return provider
 }
 
+function replayRecordingLabel(device: Device): string {
+  return device.active_replay_recording ? `Replay: ${device.active_replay_recording.name}` : 'Replay'
+}
+
 function simulationProviderColor(device: Device): string {
   const provider = device.active_simulation_model?.provider_type
   if (provider === 'fmu') return 'purple'
@@ -309,21 +297,7 @@ const onDiscoverClick = () => emit('discover')
 const onDiscoverAllClick = () => emit('discover-all')
 const onDiscoverConnectionClick = (connection: BACnetDiscoveryConnection) => emit('discover-connection', connection)
 const onManageDiscoveryClick = () => emit('manage-discovery')
-const assignDeviceToLocation = (d: Device, id: number) => emit('assign-device-location', d, id)
-const openCreateSimulatedCopy = (d: Device) => emit('create-simulated-copy', d)
-const removeExternalDevice = (d: Device) => emit('remove-external-device', d)
-const duplicateDevice = (d: Device) => emit('duplicate-device', d)
-const exportDeviceEde = (d: Device) => emit('export-ede', d)
-const importDeviceEde = (d: Device) => emit('import-ede', d)
-const exportDeviceBrick = (d: Device) => emit('export-brick', d)
-const openNotificationClasses = (d: Device) => emit('notification-classes', d)
-const openEventEnrollments = (d: Device) => emit('event-enrollments', d)
-const openTrendLogs = (d: Device) => emit('trend-logs', d)
-const openSchedules = (d: Device) => emit('schedules', d)
-const openCalendars = (d: Device) => emit('calendars', d)
-const openEnergyModel = (d: Device) => emit('energy-model', d)
 const openSimulationModel = (d: Device) => emit('simulation-model', d)
-const viewTraffic = (d: Device) => emit('view-traffic', d)
 const toggleTreeExpansion = () => {
   expandedKeys.value = isTreeFullyExpanded.value ? [] : expandableTreeKeys.value
 }
@@ -494,31 +468,6 @@ const toggleTreeExpansion = () => {
                   </div>
                 </div>
                 <a-tag color="default" style="font-size:10px;margin:0;line-height:16px">External</a-tag>
-                <a-space :size="2" @click.stop>
-                  <a-dropdown :trigger="['click']">
-                    <a-button type="text" size="small" title="More">
-                      <template #icon><EllipsisOutlined /></template>
-                    </a-button>
-                    <template #overlay>
-                      <a-menu>
-                        <a-menu-item-group key="move-to" title="Move to">
-                          <template v-for="locationOpt in moveToOptions" :key="'move-' + locationOpt.id">
-                            <a-menu-item @click.stop.prevent="assignDeviceToLocation(node.device, locationOpt.id)">
-                              <span :style="{ paddingLeft: (8 * locationOpt.depth) + 'px' }">{{ locationOpt.label }}</span>
-                            </a-menu-item>
-                          </template>
-                        </a-menu-item-group>
-                        <a-menu-item key="create-simulated-copy" @click="openCreateSimulatedCopy(node.device)">
-                          <CopyOutlined /> Create Simulation
-                        </a-menu-item>
-                        <a-menu-divider />
-                        <a-menu-item key="remove" danger @click="removeExternalDevice(node.device)">
-                          <DeleteOutlined /> Remove
-                        </a-menu-item>
-                      </a-menu>
-                    </template>
-                  </a-dropdown>
-                </a-space>
               </div>
 
               <!-- Discovered group (frontend-only synthetic node) -->
@@ -553,11 +502,12 @@ const toggleTreeExpansion = () => {
                 <div style="flex:1;min-width:0">
                   <div style="display:flex;align-items:center;gap:4px;overflow:hidden">
                     <span style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ node.device.name }}</span>
-                    <a-tooltip v-if="node.device.simulation_mode !== 'mirror' && node.device.simulation_model_stopped" title="Simulation stopped — model disabled">
+                    <a-tooltip v-if="!['mirror','replay'].includes(node.device.simulation_mode ?? 'simulation') && node.device.simulation_model_stopped" title="Simulation stopped — model disabled">
                       <a-tag color="default" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
                     </a-tooltip>
-                    <a-tag v-else-if="node.device.simulation_mode !== 'mirror'" color="green" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
+                    <a-tag v-else-if="!['mirror','replay'].includes(node.device.simulation_mode ?? 'simulation')" color="green" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
                     <a-tag v-if="node.device.simulation_mode === 'mirror'" color="blue" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Twin</a-tag>
+                    <a-tag v-if="node.device.simulation_mode === 'replay'" color="purple" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">{{ replayRecordingLabel(node.device) }}</a-tag>
                     <a-tooltip v-if="simulationProviderLabel(node.device)" :title="simulationProviderTitle(node.device)">
                       <a-tag :color="simulationProviderColor(node.device)" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">
                         {{ simulationProviderLabel(node.device) }}
@@ -573,54 +523,6 @@ const toggleTreeExpansion = () => {
                     </a-tooltip>
                   </div>
                 </div>
-                <a-space :size="2" @click.stop>
-                  <a-dropdown :trigger="['click']">
-                    <a-button type="text" size="small" title="More">
-                      <template #icon><EllipsisOutlined /></template>
-                    </a-button>
-                    <template #overlay>
-                      <a-menu>
-                        <a-menu-item key="duplicate" @click="duplicateDevice(node.device)">
-                          <CopyOutlined /> Duplicate
-                        </a-menu-item>
-                        <a-menu-divider />
-                        <a-menu-item key="export-ede" @click="exportDeviceEde(node.device)">
-                          <DownloadOutlined /> Export EDE
-                        </a-menu-item>
-                        <a-menu-item key="import-ede" @click="importDeviceEde(node.device)">
-                          <UploadOutlined /> Import EDE
-                        </a-menu-item>
-                        <a-menu-item key="export-brick" @click="exportDeviceBrick(node.device)">
-                          <DownloadOutlined /> Export Brick Schema (.ttl)
-                        </a-menu-item>
-                        <a-menu-divider />
-                        <a-menu-item key="notification-classes" @click="openNotificationClasses(node.device)">
-                          <AlertOutlined /> Notification Classes
-                        </a-menu-item>
-                        <a-menu-item key="event-enrollments" @click="openEventEnrollments(node.device)">
-                          <AlertOutlined /> Event Enrollments
-                        </a-menu-item>
-                        <a-menu-item key="trend-logs" @click="openTrendLogs(node.device)">
-                          <LineChartOutlined /> Trend Logs
-                        </a-menu-item>
-                        <a-menu-item key="schedules" @click="openSchedules(node.device)">
-                          <CalendarOutlined /> Schedules
-                        </a-menu-item>
-                        <a-menu-item key="calendars" @click="openCalendars(node.device)">
-                          <ScheduleOutlined /> Calendars
-                        </a-menu-item>
-                        <a-menu-divider />
-                        <a-menu-item key="energy-model" @click="openEnergyModel(node.device)">
-                          <ThunderboltOutlined /> Energy Model
-                        </a-menu-item>
-                       
-                        <a-menu-item key="view-traffic" @click="viewTraffic(node.device)">
-                          <ClusterOutlined /> View Traffic
-                        </a-menu-item>
-                      </a-menu>
-                    </template>
-                  </a-dropdown>
-                </a-space>
               </div>
             </template>
             </a-tree>

@@ -775,6 +775,70 @@ def _migration_017_energy_model_configs_instance_key(conn: sqlite3.Connection) -
         )
 
 
+def _migration_019_replay_recording_tables(conn: sqlite3.Connection) -> None:
+    """Replay Recording (application-managed, SQLite-backed device-wide
+    recording of an external BACnet device's values) -- see the "Replay"
+    mode in CreateSimulatedCopyModal.vue, previously hard-disabled with no
+    backing data model. Mirrors trend_logs/trend_log_records' shape
+    (config row + child sample rows), except a recording is device-wide
+    (many points sampled together per cycle) rather than one log per
+    point, so there's an extra replay_recording_points table between them
+    recording which points were selected and their identity at record
+    time (kept even if the source device/object later changes or is
+    deleted -- source_object_id is ON DELETE SET NULL, not CASCADE, so a
+    recording stays usable for Replay regardless)."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS replay_recordings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'recording' CHECK(status IN ('recording','completed')),
+            sample_interval_seconds REAL NOT NULL,
+            maximum_samples INTEGER NOT NULL,
+            buffer_mode TEXT NOT NULL CHECK(buffer_mode IN ('overwrite','stop')),
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            ended_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_replay_recordings_device ON replay_recordings(source_device_id);
+
+        CREATE TABLE IF NOT EXISTS replay_recording_points (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL REFERENCES replay_recordings(id) ON DELETE CASCADE,
+            source_object_id INTEGER REFERENCES objects(id) ON DELETE SET NULL,
+            object_type TEXT NOT NULL,
+            object_instance INTEGER NOT NULL,
+            object_name TEXT NOT NULL,
+            point_type TEXT,
+            units TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_replay_recording_points_recording ON replay_recording_points(recording_id);
+
+        CREATE TABLE IF NOT EXISTS replay_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL REFERENCES replay_recordings(id) ON DELETE CASCADE,
+            recording_point_id INTEGER NOT NULL REFERENCES replay_recording_points(id) ON DELETE CASCADE,
+            sample_index INTEGER NOT NULL,
+            timestamp TEXT NOT NULL,
+            value TEXT NOT NULL,
+            reliability TEXT,
+            out_of_service INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_replay_samples_recording_index ON replay_samples(recording_id, sample_index);
+        CREATE INDEX IF NOT EXISTS idx_replay_samples_recording_ts ON replay_samples(recording_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_replay_samples_point_index ON replay_samples(recording_point_id, sample_index);
+        """
+    )
+    existing_dev_cols = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
+    if "replay_recording_id" not in existing_dev_cols:
+        conn.execute(
+            "ALTER TABLE devices ADD COLUMN replay_recording_id "
+            "INTEGER REFERENCES replay_recordings(id) ON DELETE SET NULL"
+        )
+
+
 class Migration(NamedTuple):
     version: int
     name: str
@@ -799,4 +863,14 @@ MIGRATIONS: list[Migration] = [
     Migration(15, "functional_test_runs_target_device_nullable", _migration_015_functional_test_runs_target_device_nullable),
     Migration(16, "semantic_entities_equipment_and_controller", _migration_016_semantic_entities_equipment_and_controller),
     Migration(17, "energy_model_configs_instance_key", _migration_017_energy_model_configs_instance_key),
+    # Note: version 18 was previously "objects_value_modifier_enabled" in an
+    # earlier branch of this codebase and has already been recorded as
+    # applied in real deployments' schema_migrations tables -- reusing it
+    # here made this migration silently no-op forever (run_migrations only
+    # checks the version number against schema_migrations, not the name or
+    # function body), so replay_recording_tables took the next free number
+    # (19) instead. Never reuse a version number once any real database may
+    # have recorded it applied, even if the original migration's function
+    # no longer exists in the current codebase.
+    Migration(19, "replay_recording_tables", _migration_019_replay_recording_tables),
 ]

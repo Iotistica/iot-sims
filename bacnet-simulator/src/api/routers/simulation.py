@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Optional
 from urllib.error import HTTPError
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
@@ -962,7 +962,7 @@ def _provider_catalog() -> list[dict[str, Any]]:
     return [
         {
             "provider_type": "builtin",
-            "label": "Built-in",
+            "label": "Default (No Simulation Model)",
             "available": True,
             "persistent_model_required": False,
             "description": (
@@ -1287,6 +1287,22 @@ async def list_simulation_resources(request: Request):
 # Auto Map: deterministic + AI-assisted point-mapping suggestions
 # ---------------------------------------------------------------------------
 
+async def _controller_topology_scope(
+    database: Any, created_from_device_id: Optional[int],
+) -> Optional[set[int]]:
+    """Shared by all three Auto Map endpoints below and by
+    /simulation/points/options, so the manual pickers and Auto Map are
+    always constrained by the exact same one-hop Controller/`controls`/
+    `feeds` scope (see Database.get_controller_topology_point_ids). None
+    (no device id, or the topology can't be resolved for it) means "don't
+    restrict" -- callers pass it straight through unchanged."""
+    if created_from_device_id is None:
+        return None
+    return await asyncio.to_thread(
+        database.get_controller_topology_point_ids, created_from_device_id,
+    )
+
+
 @router.post("/simulation/models/mapping-suggestions")
 async def simulation_mapping_suggestions(
     payload: MappingSuggestionsRequest,
@@ -1300,12 +1316,15 @@ async def simulation_mapping_suggestions(
 
     definition = _runtime_definition(database, payload.model_type)
 
+    allowed_point_ids = await _controller_topology_scope(database, payload.created_from_device_id)
+
     suggestions = await asyncio.to_thread(
         suggest_mappings_for_model,
         definition,
         payload.created_from_device_id,
         database,
         excluding_model_id=payload.current_model_id,
+        allowed_point_ids=allowed_point_ids,
     )
 
     return {"variables": [asdict(s) for s in suggestions]}
@@ -1338,12 +1357,15 @@ async def simulation_mapping_suggestion_ai(
             ),
         )
 
+    allowed_point_ids = await _controller_topology_scope(database, payload.created_from_device_id)
+
     candidates, scope_used, related_name = await asyncio.to_thread(
         build_shortlist,
         variable,
         payload.created_from_device_id,
         database,
         excluding_model_id=payload.current_model_id,
+        allowed_point_ids=allowed_point_ids,
     )
 
     equipment_context = None
@@ -1437,6 +1459,8 @@ async def simulation_variable_candidates(
             ),
         )
 
+    allowed_point_ids = await _controller_topology_scope(database, payload.created_from_device_id)
+
     candidates, scope_used, related_name = await asyncio.to_thread(
         build_shortlist,
         variable,
@@ -1444,6 +1468,7 @@ async def simulation_variable_candidates(
         database,
         limit=payload.limit,
         excluding_model_id=payload.current_model_id,
+        allowed_point_ids=allowed_point_ids,
     )
 
     return {
@@ -1454,10 +1479,23 @@ async def simulation_variable_candidates(
     }
 
 
-def _list_simulation_point_options(database: Any) -> list[dict[str, Any]]:
+def _list_simulation_point_options(
+    database: Any, point_ids: Optional[set[int]] = None,
+) -> list[dict[str, Any]]:
+    """point_ids=None: every point in the project (today's behavior,
+    unchanged). point_ids=<set>: restrict to exactly those object ids -- an
+    empty set short-circuits to [] rather than issuing a WHERE o.id IN ()
+    (invalid SQL)."""
+    if point_ids is not None and not point_ids:
+        return []
     with database._conn() as conn:
+        where = ""
+        params: list[Any] = []
+        if point_ids is not None:
+            where = f" WHERE o.id IN ({','.join('?' for _ in point_ids)})"
+            params = list(point_ids)
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 o.id,
                 o.name,
@@ -1471,9 +1509,10 @@ def _list_simulation_point_options(database: Any) -> list[dict[str, Any]]:
                 o.point_type,
                 d.name AS device_name
             FROM objects o
-            JOIN devices d ON d.id = o.device_id
+            JOIN devices d ON d.id = o.device_id{where}
             ORDER BY d.name COLLATE NOCASE, o.name COLLATE NOCASE, o.id
-            """
+            """,
+            params,
         ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -1492,9 +1531,17 @@ def _list_simulation_point_options(database: Any) -> list[dict[str, Any]]:
 
 
 @router.get("/simulation/points/options")
-async def simulation_point_options(request: Request):
+async def simulation_point_options(request: Request, device_id: Optional[int] = None):
+    """device_id: when given, narrows candidates to the one-hop Brick
+    controller topology around that device (see
+    Database.get_controller_topology_point_ids) -- Controller -> controls ->
+    Equipment, plus Equipment directly upstream/downstream via `feeds`, plus
+    points on Locations directly fed by that Equipment. Falls back to the
+    full unscoped list (today's behavior) whenever the topology can't be
+    resolved (no Controller role, or it controls no Equipment)."""
     database = get_database(request)
-    return await asyncio.to_thread(_list_simulation_point_options, database)
+    point_ids = await _controller_topology_scope(database, device_id)
+    return await asyncio.to_thread(_list_simulation_point_options, database, point_ids)
 
 
 # ---------------------------------------------------------------------------

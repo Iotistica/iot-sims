@@ -47,6 +47,17 @@ class AppContext:
 # ─── Cadence / live-reloadable settings ────────────────────────────────────────
 TICK_SECONDS = 5.0  # cadence of the engine tick loop; see tick_loop()/tick()
 MIRROR_POLL_SECONDS = 3.0  # cadence of mirror_sync_loop; matches frontend 3 s external-device poll
+# replay_recording_loop doesn't poll at a fixed cadence -- it sleeps until the
+# next recording's own sample_interval_seconds is actually due (see
+# _next_replay_recording_sleep_seconds in simulation/runtime.py). This is only
+# the fallback re-check ceiling for when nothing is currently due (e.g. no
+# active recordings yet), so a newly-started recording is still picked up
+# promptly without the loop needing to be woken explicitly.
+REPLAY_RECORDING_IDLE_CEILING_SECONDS = 5.0
+# cadence of replay_playback_loop -- independent of TICK_SECONDS since a
+# recording's sample_interval_seconds (and playback speed) can be much finer
+# than the 5s tick.
+REPLAY_PLAYBACK_POLL_SECONDS = 0.2
 SIMULATION_RECOVERY_SECONDS = 30.0  # cadence of simulation_recovery_loop(); deliberately coarser
 # than TICK_SECONDS -- each recovery attempt can involve a real ~300s-simulated FMU warmup
 # (measured 250-800ms wall-clock per model), so this must not compete with tick timing.

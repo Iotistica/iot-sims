@@ -9,6 +9,7 @@ from ..monitoring.event_log import _log_event
 from .model_store import (
     get_simulation_model,
     list_enabled_simulation_models,
+    purge_unsupported_simulation_models,
 )
 from .models.remote_catalog import (
     get_remote_model_definition,
@@ -577,6 +578,14 @@ def reconcile_enabled_models(database: Any, engine: Any) -> dict[str, Any]:
 
     Built-in is never touched. Explicit model providers are rebuilt from DB.
     """
+    for purged in purge_unsupported_simulation_models(database):
+        _log_event(
+            purged.get("created_from_device_id"), "info",
+            f'Removed simulation model "{purged["name"]}" '
+            f'(unsupported provider type: {purged["provider_type"]})',
+            category="simulation",
+        )
+
     settings = database.get_settings()
     persisted = [
         {**config, "_settings": settings}

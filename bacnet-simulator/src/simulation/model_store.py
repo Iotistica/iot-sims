@@ -629,43 +629,89 @@ def list_enabled_simulation_models(database: Any) -> list[dict]:
     ]
 
 
+# provider_type values register_model_config (model_runtime.py) can still
+# load, plus 'system' -- the legacy provider_type list_simulation_models
+# already filters out of every normal listing (include_legacy_system) and
+# reconcile_enabled_models never attempts to register. Anything else is a
+# provider whose implementation is gone from the codebase (e.g. 'weather',
+# removed in 47a1a46 in favor of the FMU-based Weather.mo model) with no
+# code path left that can ever load it again.
+_REGISTRABLE_OR_LEGACY_PROVIDER_TYPES = ("fmu", "learned", "system")
+
+
+def purge_unsupported_simulation_models(database: Any) -> list[dict[str, Any]]:
+    """
+    Deletes any simulation_model_configs row whose provider_type names a
+    provider no longer implemented anywhere in this codebase.
+
+    Without this, such a row survives every restart untouched:
+    reconcile_enabled_models keeps trying (and failing) to register it,
+    logging the same "FMU registration failed (Unsupported provider type:
+    ...)" event forever, AND the Simulation Model drawer keeps hydrating
+    from it every time it's opened for that device, showing settings for a
+    provider that no longer exists and can't be edited or applied. Deleting
+    the row (ON DELETE CASCADE takes its mappings/aggregate rows/exposures
+    with it) is the correct fix, not a fallback/reconstruction -- there is
+    no current schema this data could be migrated into automatically, and
+    the device already falls back to built-in behavior for a point with no
+    surviving output mapping, same as any other removed simulation model.
+    """
+    ensure_simulation_model_schema(database)
+    placeholders = ",".join("?" for _ in _REGISTRABLE_OR_LEGACY_PROVIDER_TYPES)
+    with database._conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, name, provider_type, created_from_device_id
+            FROM simulation_model_configs
+            WHERE provider_type NOT IN ({placeholders})
+            """,
+            _REGISTRABLE_OR_LEGACY_PROVIDER_TYPES,
+        ).fetchall()
+        if rows:
+            conn.execute(
+                f"DELETE FROM simulation_model_configs WHERE provider_type NOT IN ({placeholders})",
+                _REGISTRABLE_OR_LEGACY_PROVIDER_TYPES,
+            )
+            conn.commit()
+    return [dict(row) for row in rows]
+
+
 def get_active_simulation_models_by_device(database: Any) -> dict[int, dict]:
     """
-    Return the enabled explicit simulation model driving each device.
+    Return the enabled explicit simulation model configured for each
+    device.
 
-    Simulation models own output points, not devices directly, so this derives
-    the device badge from enabled output mappings. If a device is driven by
-    more than one model, keep the first model for the label and expose the
-    count so the UI can make that ambiguity visible later if needed.
+    Keyed by created_from_device_id -- the device a model was configured
+    for -- not by whether any of its outputs happen to be mapped to a
+    point yet. A model with an FMU selected and running but zero output
+    mappings still owns/drives its device (e.g. still consuming inputs,
+    still worth showing as active); requiring a mapping made the badge
+    disappear for exactly that case. If a device is driven by more than
+    one model, keep the first model for the label and expose the count
+    so the UI can make that ambiguity visible later if needed.
     """
     ensure_simulation_model_schema(database)
     with database._conn() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT
-                o.device_id,
-                c.id,
-                c.name,
-                c.provider_type,
-                c.model_type
-            FROM simulation_model_configs c
-            JOIN simulation_model_mappings m ON m.model_config_id=c.id
-            JOIN objects o ON o.id=m.point_id
-        WHERE c.enabled=1 AND m.direction='output'
-            AND c.provider_type<>'system'
-        ORDER BY o.device_id, c.id
+            SELECT
+                created_from_device_id AS device_id,
+                id,
+                name,
+                provider_type,
+                model_type
+            FROM simulation_model_configs
+            WHERE enabled=1
+                AND provider_type<>'system'
+                AND created_from_device_id IS NOT NULL
+            ORDER BY created_from_device_id, id
             """
         ).fetchall()
 
     result: dict[int, dict] = {}
-    seen_models: dict[int, set[int]] = {}
     for row in rows:
         device_id = int(row["device_id"])
         model_id = int(row["id"])
-        seen_for_device = seen_models.setdefault(device_id, set())
-        if model_id in seen_for_device:
-            continue
-        seen_for_device.add(model_id)
 
         if device_id not in result:
             result[device_id] = {
@@ -688,18 +734,20 @@ def get_devices_with_disabled_simulation_model(database: Any) -> set[int]:
     Used only to distinguish, in the admin UI's device badge, "device has
     no explicit simulation model at all" from "device's simulation model
     is configured but not running" -- devices with an *enabled* model are
-    already covered by get_active_simulation_models_by_device.
+    already covered by get_active_simulation_models_by_device. Keyed by
+    created_from_device_id, same reasoning as that function -- a stopped
+    model with no output mappings yet should still read as "stopped", not
+    silently look like "no model at all".
     """
     ensure_simulation_model_schema(database)
     with database._conn() as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT o.device_id
-            FROM simulation_model_configs c
-            JOIN simulation_model_mappings m ON m.model_config_id=c.id
-            JOIN objects o ON o.id=m.point_id
-        WHERE c.enabled=0 AND m.direction='output'
-            AND c.provider_type<>'system'
+            SELECT DISTINCT created_from_device_id AS device_id
+            FROM simulation_model_configs
+            WHERE enabled=0
+                AND provider_type<>'system'
+                AND created_from_device_id IS NOT NULL
             """
         ).fetchall()
     return {int(row["device_id"]) for row in rows}

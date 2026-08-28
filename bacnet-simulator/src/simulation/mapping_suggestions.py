@@ -170,8 +170,32 @@ def discover_candidates(
     variable: VariableDefinition,
     created_from_device_id: int | None,
     database: Any,
+    *,
+    allowed_point_ids: set[int] | None = None,
 ) -> tuple[list[PointCandidate], EquipmentScope, str | None]:
-    """Returns (candidates, equipment_scope_used, related_equipment_name)."""
+    """Returns (candidates, equipment_scope_used, related_equipment_name).
+
+    allowed_point_ids, when given, is a hard post-filter applied uniformly
+    to whichever branch below resolves candidates -- e.g. the one-hop
+    Controller/`controls`/`feeds` topology scope from
+    Database.get_controller_topology_point_ids. It never changes which
+    branch runs or that branch's own fallback behavior; it only trims the
+    final candidate list before it's returned/scored, so a variable can end
+    up with zero candidates (no suggestion) without that being treated as a
+    reason to fall further back to device/fleet-wide scoring."""
+    candidates, scope, related_name = _discover_candidates_unfiltered(
+        variable, created_from_device_id, database,
+    )
+    if allowed_point_ids is not None:
+        candidates = [c for c in candidates if c.id in allowed_point_ids]
+    return candidates, scope, related_name
+
+
+def _discover_candidates_unfiltered(
+    variable: VariableDefinition,
+    created_from_device_id: int | None,
+    database: Any,
+) -> tuple[list[PointCandidate], EquipmentScope, str | None]:
     hints = variable.mapping_hints
     scope: str = hints.equipment_scope if hints else "self"
 
@@ -318,9 +342,11 @@ def suggest_mapping_for_variable(
     database: Any,
     *,
     excluding_model_id: int | None = None,
+    allowed_point_ids: set[int] | None = None,
 ) -> MappingSuggestion:
     candidates, scope_used, related_name = discover_candidates(
         variable, created_from_device_id, database,
+        allowed_point_ids=allowed_point_ids,
     )
 
     if variable.direction == "output" and candidates:
@@ -405,6 +431,7 @@ def suggest_mappings_for_model(
     database: Any,
     *,
     excluding_model_id: int | None = None,
+    allowed_point_ids: set[int] | None = None,
 ) -> list[MappingSuggestion]:
     return [
         suggest_mapping_for_variable(
@@ -412,6 +439,7 @@ def suggest_mappings_for_model(
             created_from_device_id,
             database,
             excluding_model_id=excluding_model_id,
+            allowed_point_ids=allowed_point_ids,
         )
         for variable in model_definition.variables
     ]
@@ -424,6 +452,7 @@ def build_shortlist(
     *,
     limit: int = 8,
     excluding_model_id: int | None = None,
+    allowed_point_ids: set[int] | None = None,
 ) -> tuple[list[PointCandidate], str, str | None]:
     """Deterministic top-K candidates for the AI fallback -- same discovery
     + scoring path as suggest_mapping_for_variable, but returned regardless
@@ -431,6 +460,7 @@ def build_shortlist(
     only shortlist to choose from."""
     candidates, scope_used, related_name = discover_candidates(
         variable, created_from_device_id, database,
+        allowed_point_ids=allowed_point_ids,
     )
 
     if variable.direction == "output" and candidates:

@@ -345,7 +345,19 @@ class FMUSimulationProvider(SimulationProvider):
         context.metadata["initial_point_inputs"]) or they're reported as
         unresolved instead of silently falling back to a metadata default.
         """
-        inputs: dict[str, Any] = dict(self._input_defaults)
+        # A saved config can carry a null Constant default (e.g. a numeric
+        # field left empty at save time, or a variable added to the model
+        # after the config was first saved) -- iot-models' /initialize
+        # inputs field is dict[str, float], so a single null value fails
+        # Pydantic validation for the *whole* request, not just that
+        # field. Coerced to 0.0 here as a last-resort default; the drawer
+        # itself should already backfill a real default on save (see
+        # SimulationModelDrawer.vue's needsInputDefault), this is
+        # defense-in-depth for configs saved before that existed.
+        inputs: dict[str, Any] = {
+            name: (value if value is not None else 0.0)
+            for name, value in self._input_defaults.items()
+        }
         unresolved: list[str] = []
         simulation_model_id = (
             self._context.metadata.get("simulation_model_id") if self._context else None

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import { BulbOutlined } from '@ant-design/icons-vue'
@@ -29,6 +29,11 @@ const props = defineProps<{
   pointOptions: SimulationModelPointOption[]
   currentMappings: Record<string, number | undefined>
   currentModelId?: number | null
+  // Scopes the table to just this direction's variables -- set by the
+  // Inputs/Outputs section's own inline "Auto Map" button in
+  // SimulationModelDrawer.vue. null/omitted shows both (unused today, kept
+  // for any future caller that wants the combined view).
+  direction?: 'input' | 'output' | null
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
@@ -83,7 +88,10 @@ watch(() => props.open, async (v) => {
       current_model_id: props.currentModelId ?? null,
     })
     const suggestionByVariable = new Map(result.variables.map(v => [v.variable, v]))
-    const variables: ModalVariable[] = [...props.model.inputs, ...props.model.outputs]
+    const allVariables: ModalVariable[] = [...props.model.inputs, ...props.model.outputs]
+    const variables = props.direction
+      ? allVariables.filter(variable => variable.direction === props.direction)
+      : allVariables
 
     rows.value = variables.map((variable) => {
       const suggestion = suggestionByVariable.get(variable.name) ?? emptySuggestion(variable)
@@ -145,13 +153,22 @@ async function useAi(row: VariableRow) {
   }
 }
 
+// Every column gets an explicit width -- without one, ant-design-vue sizes
+// "Suggested Point"/"Reason" to their content (a long reason string like
+// "No upstream relationship found -- searched device/fleet-wide" or a long
+// device/point name) and stretches the whole table wider than fits on
+// screen. Pixel widths alone don't guarantee everything fits (depends on
+// the viewport), so "ai" is also pinned with fixed: 'right' -- the
+// standard Ant Design Table pattern for an action column -- so "Use AI"
+// stays visible and clickable even when the table needs its own
+// horizontal scrollbar for the rest of the columns.
 const columns: TableColumnsType<VariableRow> = [
-  { title: '', key: 'included', width: 36 },
-  { title: 'Model Variable', key: 'variable', width: 200 },
-  { title: 'Suggested Point', key: 'point' },
-  { title: 'Confidence', key: 'confidence', width: 120 },
-  { title: 'Reason', key: 'reason' },
-  { title: '', key: 'ai', width: 90 },
+  { title: '', key: 'included', width: 32 },
+  { title: 'Model Variable', key: 'variable', width: 180 },
+  { title: 'Suggested Point', key: 'point', width: 220 },
+  { title: 'Confidence', key: 'confidence', width: 100 },
+  { title: 'Reason', key: 'reason', width: 210 },
+  { title: '', key: 'ai', width: 90, fixed: 'right' },
 ]
 
 function apply() {
@@ -179,13 +196,19 @@ function apply() {
     applying.value = false
   }
 }
+
+const directionLabel = computed(() => {
+  if (props.direction === 'input') return ' (Inputs)'
+  if (props.direction === 'output') return ' (Outputs)'
+  return ''
+})
 </script>
 
 <template>
   <a-modal
     :open="open"
-    :title="`Mapping Suggestions — ${model?.label ?? ''}`"
-    width="860px"
+    :title="`Mapping Suggestions — ${model?.label ?? ''}${directionLabel}`"
+    width="920px"
     ok-text="Apply Selected"
     :confirm-loading="applying"
     :ok-button-props="{ disabled: loading }"
@@ -199,6 +222,7 @@ function apply() {
         :columns="columns"
         :pagination="false"
         :show-sorter-tooltip="false"
+        :scroll="{ x: 832 }"
         size="small"
         row-key="variable.name"
       >
@@ -241,7 +265,10 @@ function apply() {
             <a-tag v-if="(record as VariableRow).suggestion.source === 'ai'" color="purple" style="margin:0 0 0 4px">AI</a-tag>
           </template>
           <template v-else-if="column.key === 'reason'">
-            <span style="font-size:12px;color:var(--text-secondary)">{{ reasonText((record as VariableRow).suggestion) }}</span>
+            <span
+              :title="reasonText((record as VariableRow).suggestion)"
+              style="font-size:12px;color:var(--text-secondary);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            >{{ reasonText((record as VariableRow).suggestion) }}</span>
           </template>
           <template v-else-if="column.key === 'ai'">
             <a-button v-if="showUseAi((record as VariableRow).suggestion)" size="small" :loading="(record as VariableRow).aiLoading" @click="useAi(record as VariableRow)">

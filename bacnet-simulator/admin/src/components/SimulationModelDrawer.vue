@@ -74,7 +74,6 @@ const saving = ref(false)
 const catalog = ref<ModelCatalogEntry[]>([])
 const providers = ref<SimulationProviderCatalogEntry[]>([])
 const points = ref<PointOption[]>([])
-const advancedOpen = ref<string[]>([])
 
 // File-type Parameter upload (see remote_catalog.py's is_file/"file" param
 // type) -- one shared hidden <input>, not one per parameter, since only one
@@ -182,10 +181,18 @@ async function refreshWeatherProvenance() {
 }
 const savedModelId = ref<number | null>(null)
 const mappingModalOpen = ref(false)
+// Set by the Inputs/Outputs section's own "Auto Map" button (inline with
+// that section's own divider, not a single combined button above both) --
+// scopes MappingSuggestionsModal to just that direction's variables.
+const mappingModalDirection = ref<'input' | 'output' | null>(null)
+function openMappingModal(direction: 'input' | 'output') {
+  mappingModalDirection.value = direction
+  mappingModalOpen.value = true
+}
 const savingDraft = ref(false)
 
 const form = reactive({
-  provider_type: 'fmu' as SimulationModelPayload['provider_type'],
+  provider_type: 'fmu' as SimulationProviderType,
   model_type: '',
   name: '',
   enabled: true,
@@ -221,7 +228,7 @@ const form = reactive({
 const variableCandidateScores = ref<Record<string, Map<number, number>>>({})
 
 const providerOptions = computed(() => providers.value
-  .filter(p => p.provider_type !== 'builtin' && p.provider_type !== 'learned')
+  .filter(p => p.provider_type !== 'learned')
   .map(p => ({
     value: p.provider_type,
     label: p.label,
@@ -230,8 +237,11 @@ const providerOptions = computed(() => providers.value
 const filteredCatalog = computed(() => catalog.value.filter(m => m.provider_type === form.provider_type))
 const selectedProvider = computed(() => providers.value.find(p => p.provider_type === form.provider_type) ?? null)
 const selectedModel = computed(() => filteredCatalog.value.find(m => m.model_type === form.model_type) ?? null)
+// Parameters flagged "advanced" (e.g. EnergyPlusThermalZone's wea_filename,
+// which an epw_filename upload already auto-derives -- see
+// onResourceFileChange's sibling-autofill) are resolved and submitted like
+// any other parameter, just never shown their own control here.
 const commonParameters = computed(() => selectedModel.value?.parameters.filter(p => !p.advanced) ?? [])
-const advancedParameters = computed(() => selectedModel.value?.parameters.filter(p => p.advanced) ?? [])
 const inputs = computed(() => selectedModel.value?.inputs ?? [])
 const outputs = computed(() => selectedModel.value?.outputs ?? [])
 const variables = computed(() => [...inputs.value, ...outputs.value])
@@ -367,6 +377,20 @@ function inputMismatch(v: CatalogVariable): { point: PointOption; pointValue: nu
     : null
 }
 
+// A saved config's input_defaults can hold `null` (not just an absent key)
+// for a variable whose numeric field was left empty at save time --
+// Vue's v-model:value for an empty a-input-number is `undefined`, but
+// `JSON.stringify(NaN)` (an intermediate state some numeric bindings can
+// pass through) produces `null`, which survives the round trip and isn't
+// caught by an `=== undefined` check on reload. Catches that plus a
+// literal NaN so hydrateFromSavedModel always backfills a real default
+// rather than sending an unusable value through to iot-models' /initialize
+// (that endpoint's `inputs` field is dict[str, float] -- a null value
+// fails Pydantic validation for the whole request, not just that field).
+function needsInputDefault(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === 'number' && Number.isNaN(value))
+}
+
 function defaultForInput(v: CatalogVariable): unknown {
   if (v.default !== undefined) return v.default
   if (v.name === 'heating_setpoint_c') return 20
@@ -391,7 +415,6 @@ function resetForModel(modelType: string) {
   form.aggregateOperation = {}
   form.aggregatePairs = {}
   form.inputExposures = {}
-  advancedOpen.value = []
   weatherProvenance.value = null
   for (const p of model?.parameters ?? []) {
     if (p.default !== undefined) form.parameters[p.name] = p.default
@@ -410,7 +433,21 @@ function resetForModel(modelType: string) {
 }
 
 function resetForProvider(providerType: SimulationProviderType) {
-  if (providerType === 'builtin' || providerType === 'learned') return
+  if (providerType === 'learned') return
+  if (providerType === 'builtin') {
+    form.provider_type = 'builtin'
+    form.model_type = ''
+    form.parameters = {}
+    form.mappings = {}
+    form.inputSources = {}
+    form.inputDefaults = {}
+    form.aggregatePoints = {}
+    form.aggregateOperation = {}
+    form.aggregatePairs = {}
+    form.inputExposures = {}
+    weatherProvenance.value = null
+    return
+  }
   form.provider_type = providerType
   const first = catalog.value.find(m => m.provider_type === providerType)
   if (first) resetForModel(first.model_type)
@@ -474,14 +511,13 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
     form.inputSources[v.name] = savedSource === 'constant' || savedSource === 'point' || savedSource === 'aggregate'
       ? savedSource
       : (mappings[mappingKey(v)] != null ? 'point' : (aggregatePoints[v.name]?.length ? 'aggregate' : 'constant'))
-    if (form.inputDefaults[v.name] === undefined) form.inputDefaults[v.name] = defaultForInput(v)
+    if (needsInputDefault(form.inputDefaults[v.name])) form.inputDefaults[v.name] = defaultForInput(v)
     if (form.aggregatePoints[v.name] === undefined) form.aggregatePoints[v.name] = []
     if (form.aggregateOperation[v.name] === undefined) form.aggregateOperation[v.name] = 'max'
     if (form.aggregatePairs[v.name] === undefined) form.aggregatePairs[v.name] = []
     if (form.inputExposures[v.name] === undefined) form.inputExposures[v.name] = undefined
     if (form.inputSources[v.name] === 'aggregate') void loadVariableCandidates(v)
   }
-  advancedOpen.value = []
   void refreshWeatherProvenance()
 }
 
@@ -492,7 +528,7 @@ async function load() {
     ;[providers.value, catalog.value, points.value] = await Promise.all([
       api.simulationProviders.catalog(),
       api.simulationModels.catalog(),
-      api.simulationModels.pointOptions(),
+      api.simulationModels.pointOptions(props.device.id),
     ])
     savedModelId.value = null
 
@@ -516,8 +552,7 @@ async function load() {
       }
     }
 
-    const first = catalog.value.find(m => m.provider_type === 'fmu') ?? catalog.value[0]
-    if (first) resetForModel(first.model_type)
+    resetForProvider('builtin')
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Failed to load simulation model catalog')
   } finally {
@@ -575,7 +610,7 @@ function validateMappings(requireComplete: boolean): boolean {
 }
 
 function buildPayload(apply: boolean): SimulationModelPayload | null {
-  if (!props.device || !selectedModel.value) return null
+  if (!props.device || !selectedModel.value || form.provider_type === 'builtin') return null
   const modelName = `${props.device.name} ${selectedModel.value.label}`.trim()
 
   // Enabled/disabled is a persisted-state field, deliberately independent
@@ -660,6 +695,23 @@ function buildPayload(apply: boolean): SimulationModelPayload | null {
 }
 
 async function persist(apply: boolean) {
+  if (form.provider_type === 'builtin') {
+    if (savedModelId.value == null) { emit('update:open', false); return }
+    const busy = apply ? saving : savingDraft
+    busy.value = true
+    try {
+      await api.simulationModels.del(savedModelId.value)
+      message.success('Simulation model removed -- device reverted to built-in behavior')
+      emit('update:open', false)
+      emit('saved')
+    } catch (e: unknown) {
+      message.error((e as Error).message ?? 'Failed to remove simulation model')
+    } finally {
+      busy.value = false
+    }
+    return
+  }
+
   const payload = buildPayload(apply)
   if (!payload) return
   if (!validateMappings(apply)) return
@@ -753,6 +805,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
           </div>
         </a-form-item>
 
+        <template v-if="form.provider_type !== 'builtin'">
         <a-form-item label="Model" required>
           <a-select
             v-model:value="form.model_type"
@@ -764,7 +817,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
           </div>
         </a-form-item>
 
-        <template v-if="commonParameters.length || advancedParameters.length">
+        <template v-if="commonParameters.length">
           <a-divider orientation="left">Parameters</a-divider>
           <input
             ref="resourceFileInput"
@@ -804,54 +857,15 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
               style="width:100%"
             />
           </a-form-item>
-
-          <a-collapse v-if="advancedParameters.length" v-model:activeKey="advancedOpen" ghost style="margin-top:4px">
-            <a-collapse-panel key="advanced" header="Advanced">
-              <a-form-item v-for="p in advancedParameters" :key="p.name" :label="p.label">
-                <a-switch v-if="p.type === 'boolean'" v-model:checked="(form.parameters[p.name] as boolean)" />
-                <div v-else-if="p.type === 'file'" style="display:flex;gap:10px;align-items:center">
-                  <a-button size="small" :loading="resourceUploading === p.name" @click="pickResourceFile(p.name)">
-                    <template #icon><UploadOutlined /></template>
-                    {{ form.parameters[p.name] ? 'Replace' : 'Upload' }}
-                  </a-button>
-                  <span v-if="form.parameters[p.name]" style="font-size:12px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                    {{ resourceFileLabel(form.parameters[p.name]) }}
-                  </span>
-                </div>
-                <a-select
-                  v-else-if="p.type === 'month'"
-                  v-model:value="(form.parameters[p.name] as number)"
-                  style="width:220px"
-                >
-                  <a-select-option v-for="m in 12" :key="m" :value="m">{{ monthOptionLabel(m) }}</a-select-option>
-                </a-select>
-                <a-input
-                  v-else-if="p.type === 'string'"
-                  v-model:value="(form.parameters[p.name] as string)"
-                  style="width:100%"
-                />
-                <a-input-number
-                  v-else
-                  v-model:value="(form.parameters[p.name] as number)"
-                  :min="p.minimum ?? undefined"
-                  :max="p.maximum ?? undefined"
-                  :addon-after="p.unit ?? undefined"
-                  style="width:100%"
-                />
-              </a-form-item>
-            </a-collapse-panel>
-          </a-collapse>
         </template>
 
-        <a-divider orientation="left">Point Mapping</a-divider>
-        <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
-          <a-button size="small" :disabled="!selectedModel" @click="mappingModalOpen = true">
-            Auto Map
-          </a-button>
-        </div>
-
         <template v-if="form.provider_type === 'fmu'">
-          <a-divider orientation="left">Inputs</a-divider>
+          <div v-if="inputs.length" style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);margin:16px 0 12px;padding-bottom:8px">
+            <span style="font-size:14px;font-weight:600;color:var(--text-primary)">Inputs</span>
+            <a-button size="small" :disabled="!selectedModel" @click="openMappingModal('input')">
+              Auto Map
+            </a-button>
+          </div>
           <a-form-item
             v-for="v in inputs"
             :key="`input:${v.name}`"
@@ -943,7 +957,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
                     :options="aggregatePointOptions(v.name)"
                     option-filter-prop="label"
                     placeholder="Select value point"
-                    style="flex:1"
+                    style="flex:1;min-width:0"
                   />
                   <a-select
                     v-model:value="pair.weight"
@@ -951,7 +965,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
                     :options="aggregatePointOptions(v.name)"
                     option-filter-prop="label"
                     placeholder="Select weight point"
-                    style="flex:1"
+                    style="flex:1;min-width:0"
                   />
                   <a-button
                     type="text" danger size="small"
@@ -992,7 +1006,12 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
             </div>
           </a-form-item>
 
-          <a-divider orientation="left">Outputs</a-divider>
+          <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);margin:16px 0 12px;padding-bottom:8px">
+            <span style="font-size:14px;font-weight:600;color:var(--text-primary)">Outputs</span>
+            <a-button size="small" :disabled="!selectedModel" @click="openMappingModal('output')">
+              Auto Map
+            </a-button>
+          </div>
         </template>
 
         <a-form-item
@@ -1012,12 +1031,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
             Expected unit: {{ v.unit }}
           </div>
         </a-form-item>
-
-        <a-form-item label="Status" style="margin-top:16px;margin-bottom:0">
-          <a-tag :color="form.enabled ? 'green' : 'default'">
-            {{ form.enabled ? 'Enabled' : 'Disabled' }}
-          </a-tag>
-        </a-form-item>
+        </template>
       </a-form>
     </a-spin>
 
@@ -1037,10 +1051,19 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
         </div>
         <a-space>
           <a-button @click="emit('update:open', false)">Close</a-button>
-          <a-button :loading="savingDraft" :disabled="loading || !selectedModel || saving" @click="saveDraft">
+          <a-button
+            :loading="savingDraft"
+            :disabled="loading || saving || (form.provider_type === 'builtin' ? savedModelId == null : !selectedModel)"
+            @click="saveDraft"
+          >
             Save
           </a-button>
-          <a-button type="primary" :loading="saving" :disabled="loading || !selectedModel || savingDraft" @click="applyModel">
+          <a-button
+            type="primary"
+            :loading="saving"
+            :disabled="loading || savingDraft || (form.provider_type === 'builtin' ? savedModelId == null : !selectedModel)"
+            @click="applyModel"
+          >
             {{ primaryActionLabel }}
           </a-button>
         </a-space>
@@ -1056,6 +1079,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
     :point-options="points"
     :current-mappings="form.mappings"
     :current-model-id="savedModelId"
+    :direction="mappingModalDirection"
     @apply="onMappingsApplied"
   />
 </template>

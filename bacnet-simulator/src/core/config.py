@@ -107,6 +107,15 @@ EQUIPMENT_TYPES = {
     "Supply_Fan": "Supply Fan",
     "Return_Fan": "Return Fan",
     "Fan": "Fan",
+
+    # Brick Core (verified against bricksrc/equipment.py at v1.4.4):
+    # Rooftop_Unit is a real subclass of Air_Handling_Unit, aliased "RTU"
+    # there -- added so a device backing a packaged rooftop unit can be
+    # tagged distinctly from a plain AHU (iot-models' RTU/RTU-Heat-Pump
+    # model.json files already declare mapping_hints.preferred_equipment_types:
+    # ["Rooftop_Unit"], which had no matching equipment_type to compare
+    # against here until now).
+    "Rooftop_Unit": "RTU",
 }
 
 LOCATION_KINDS = {

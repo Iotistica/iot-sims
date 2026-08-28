@@ -18,6 +18,7 @@ const EQUIPMENT_TYPE_SUGGESTION: Record<string, EnergyModelConfig['model_type']>
   Chiller: 'chiller',
   Boiler: 'boiler',
   Lighting_Equipment: 'lighting',
+  Rooftop_Unit: 'rtu',
 }
 
 interface FieldDef {
@@ -72,6 +73,20 @@ const AHU_ADVANCED: FieldDef[] = [
   { key: 'include_coil_energy', label: 'Include Coil Energy', boolean: true },
 ]
 
+// RTU is direct-FMU-output accounting, not a capacity/COP estimation model
+// like the others (see RTUEnergyConfig's own docstring: "Direct RTU FMU
+// outputs. No fallback estimation is performed.") -- its only settable
+// parameters are the cost/emissions rates used to convert the FMU's
+// already-computed power/energy into cost and CO2e.
+const RTU_COMMON: FieldDef[] = [
+  { key: 'electricity_rate_per_kwh', label: 'Electricity Rate', suffix: '$/kWh', min: 0, step: 0.01 },
+  { key: 'gas_rate_per_therm', label: 'Gas Rate', suffix: '$/therm', min: 0, step: 0.01 },
+]
+const RTU_ADVANCED: FieldDef[] = [
+  { key: 'electricity_kg_co2e_per_kwh', label: 'Electricity Emissions Factor', suffix: 'kg CO2e/kWh', min: 0, step: 0.001 },
+  { key: 'gas_kg_co2e_per_therm', label: 'Gas Emissions Factor', suffix: 'kg CO2e/therm', min: 0, step: 0.01 },
+]
+
 const LIGHTING_COMMON: FieldDef[] = [
   { key: 'rated_power_kw', label: 'Rated Power', suffix: 'kW', min: 0, step: 0.1, required: true },
   { key: 'standby_power_kw', label: 'Standby Power', suffix: 'kW', min: 0, step: 0.01 },
@@ -87,6 +102,7 @@ const FIELD_DEFS: Record<EnergyModelConfig['model_type'], { common: FieldDef[]; 
   boiler: { common: BOILER_COMMON, advanced: BOILER_ADVANCED },
   ahu: { common: AHU_COMMON, advanced: AHU_ADVANCED },
   lighting: { common: LIGHTING_COMMON, advanced: LIGHTING_ADVANCED },
+  rtu: { common: RTU_COMMON, advanced: RTU_ADVANCED },
 }
 
 // Every model type allows multiple named instances per device (e.g.

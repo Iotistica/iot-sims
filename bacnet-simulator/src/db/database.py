@@ -916,6 +916,66 @@ class Database:
                 }
             return list(candidates.values())
 
+    def get_controller_topology_point_ids(self, device_id: int) -> Optional[set[int]]:
+        """One-hop Brick topology scope for the Simulation Model mapper's
+        point candidates: Controller (this device) -> controls -> Equipment
+        (anchor), plus Equipment directly upstream/downstream of the anchor
+        via `feeds`, plus Locations directly connected to the anchor via
+        `feeds` (points isPointOf those Locations directly, e.g. a
+        Lighting_Zone -- NOT equipment merely sited at that Location; a
+        Location is a leaf in this scope, never expanded back out through
+        `hasLocation` to pull in unrelated equipment/controllers). For every
+        scoped Equipment, includes points belonging to whichever
+        Controller(s) `controls` it (same controller->objects idiom as
+        get_assignable_points_for_equipment above).
+
+        Returns None (not an empty set) when this device has no controller
+        entity or controls no Equipment -- callers must treat None as "no
+        scope resolved, fall back to unscoped behavior", and an empty set
+        as "topology resolved but has no eligible points" (return none, do
+        not fall back further)."""
+        with self._conn() as conn:
+            controller_entity = conn.execute(
+                "SELECT id FROM semantic_entities WHERE entity_kind='controller' AND device_id=?",
+                (device_id,),
+            ).fetchone()
+            if controller_entity is None:
+                return None
+
+            anchors = self.get_related_entities(controller_entity["id"], "controls", direction="out")
+            equipment_ids = {e["id"] for e in anchors if e["entity_kind"] == "equipment"}
+            if not equipment_ids:
+                return None
+
+            location_ids: set[int] = set()
+            for anchor_id in list(equipment_ids):
+                for direction in ("out", "in"):
+                    for target in self.get_related_entities(anchor_id, "feeds", direction=direction):
+                        if target["entity_kind"] == "equipment":
+                            equipment_ids.add(target["id"])
+                        elif target["entity_kind"] == "location":
+                            location_ids.add(target["id"])
+
+            controller_device_ids: set[int] = set()
+            for equipment_id in equipment_ids:
+                for c in self.get_related_entities(equipment_id, "controls", direction="in"):
+                    if c.get("device_id") is not None:
+                        controller_device_ids.add(c["device_id"])
+
+            point_ids: set[int] = set()
+            if controller_device_ids:
+                placeholders = ",".join("?" for _ in controller_device_ids)
+                rows = conn.execute(
+                    f"SELECT id FROM objects WHERE device_id IN ({placeholders})",
+                    list(controller_device_ids),
+                ).fetchall()
+                point_ids.update(r["id"] for r in rows)
+
+            for location_id in location_ids:
+                point_ids.update(pt["object_id"] for pt in self.get_entity_points(location_id))
+
+            return point_ids
+
     # ── Semantic entities/relationships (Brick Core) ────────────────────────
     # Thin CRUD/traversal methods matching the shape of the locations
     # methods above — see src/semantics/ for the multi-hop graph-walking
@@ -1346,11 +1406,11 @@ class Database:
                 "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
                 "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, "
                 "location_id, equipment_type, can_receive_event_notifications, "
-                "simulation_mode, source_device_id) "
+                "simulation_mode, source_device_id, replay_recording_id) "
                 "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
                 ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, "
                 ":location_id, :equipment_type, :can_receive_event_notifications, "
-                ":simulation_mode, :source_device_id)",
+                ":simulation_mode, :source_device_id, :replay_recording_id)",
                 {
                     **data,
                     "location_id": data.get("location_id"),
@@ -1358,6 +1418,7 @@ class Database:
                     "can_receive_event_notifications": data.get("can_receive_event_notifications"),
                     "simulation_mode": data.get("simulation_mode", "simulation"),
                     "source_device_id": data.get("source_device_id"),
+                    "replay_recording_id": data.get("replay_recording_id"),
                 },
             )
             sync_entity_from_flat_field(
@@ -2107,6 +2168,299 @@ class Database:
             cur = conn.execute("UPDATE trend_logs SET record_count=0 WHERE id=?", (trend_log_id,))
             conn.commit()
             return cur.rowcount > 0
+
+    # ── Replay Recordings ────────────────────────────────────────────────────────
+    # Application-managed, SQLite-backed device-wide recording of an external
+    # BACnet device's values, later replayed through a cloned simulated
+    # device ("Replay" mode in CreateSimulatedCopyModal.vue). Distinct from
+    # BACnet TrendLog (a BACnet-standard, single-point history) -- a
+    # recording samples every selected point on a device together, once per
+    # cycle, so buffering/eviction operates on whole snapshots
+    # (sample_index), not individual point rows. point_count/sample_count
+    # are computed here rather than stored, unlike trend_logs.record_count/
+    # total_record_count -- both are cheap indexed lookups
+    # (idx_replay_recording_points_recording / idx_replay_samples_recording_index).
+
+    def _replay_recording_counts(self, conn: sqlite3.Connection, recording_id: int) -> dict[str, Any]:
+        point_count = conn.execute(
+            "SELECT COUNT(*) FROM replay_recording_points WHERE recording_id=?", (recording_id,)
+        ).fetchone()[0]
+        sample_count = conn.execute(
+            "SELECT COUNT(DISTINCT sample_index) FROM replay_samples WHERE recording_id=?", (recording_id,)
+        ).fetchone()[0]
+        # min/max, not just the count -- buffer_mode='overwrite' eviction can
+        # leave the stored range starting above 0 (see
+        # get_replay_recording_sample_index_bounds's own comment), and the
+        # UI (seek slider) needs the real bounds, not an assumed 0-based one.
+        min_idx, max_idx = conn.execute(
+            "SELECT MIN(sample_index), MAX(sample_index) FROM replay_samples WHERE recording_id=?", (recording_id,)
+        ).fetchone()
+        return {
+            "point_count": point_count,
+            "sample_count": sample_count,
+            "sample_index_min": min_idx,
+            "sample_index_max": max_idx,
+        }
+
+    def get_replay_recordings(self, device_id: Optional[int] = None) -> list[dict]:
+        with self._conn() as conn:
+            if device_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM replay_recordings WHERE source_device_id=? ORDER BY created_at DESC", (device_id,)
+                )
+            else:
+                rows = conn.execute("SELECT * FROM replay_recordings ORDER BY source_device_id, created_at DESC")
+            result = []
+            for r in rows:
+                item = dict(r)
+                item.update(self._replay_recording_counts(conn, item["id"]))
+                result.append(item)
+            return result
+
+    def get_replay_recording(self, recording_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM replay_recordings WHERE id=?", (recording_id,)).fetchone()
+            if not r:
+                return None
+            item = dict(r)
+            item.update(self._replay_recording_counts(conn, recording_id))
+            item["points"] = [
+                dict(p) for p in conn.execute(
+                    "SELECT * FROM replay_recording_points WHERE recording_id=? ORDER BY id", (recording_id,)
+                )
+            ]
+            return item
+
+    def create_replay_recording(self, device_id: int, data: dict) -> dict:
+        """Creates the recording row (status='recording', started immediately
+        -- there is no separate idle/draft state) and snapshots the selected
+        points' identity into replay_recording_points. point_ids=None means
+        "all of this device's current points"."""
+        with self._conn() as conn:
+            point_ids = data.get("point_ids")
+            if point_ids is None:
+                point_rows = conn.execute(
+                    "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance", (device_id,)
+                ).fetchall()
+            else:
+                placeholders = ",".join("?" for _ in point_ids)
+                point_rows = conn.execute(
+                    f"SELECT * FROM objects WHERE device_id=? AND id IN ({placeholders})",
+                    (device_id, *point_ids),
+                ).fetchall()
+
+            cur = conn.execute(
+                "INSERT INTO replay_recordings "
+                "(source_device_id, name, description, status, sample_interval_seconds, "
+                "maximum_samples, buffer_mode) "
+                "VALUES (:source_device_id, :name, :description, 'recording', "
+                ":sample_interval_seconds, :maximum_samples, :buffer_mode)",
+                {
+                    "source_device_id": device_id,
+                    "name": data["name"],
+                    "description": data.get("description", ""),
+                    "sample_interval_seconds": data["sample_interval_seconds"],
+                    "maximum_samples": data["maximum_samples"],
+                    "buffer_mode": data["buffer_mode"],
+                },
+            )
+            recording_id = cur.lastrowid
+            for p in point_rows:
+                conn.execute(
+                    "INSERT INTO replay_recording_points "
+                    "(recording_id, source_object_id, object_type, object_instance, object_name, point_type, units) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (recording_id, p["id"], p["object_type"], p["object_instance"], p["name"],
+                     p["point_type"], p["units"]),
+                )
+            conn.commit()
+        return self.get_replay_recording(recording_id)
+
+    def stop_replay_recording(self, recording_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE replay_recordings SET status='completed', ended_at=datetime('now') "
+                "WHERE id=? AND status='recording'",
+                (recording_id,),
+            )
+            conn.commit()
+        return self.get_replay_recording(recording_id)
+
+    def delete_replay_recording(self, recording_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM replay_recordings WHERE id=?", (recording_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_replay_recording_names(self, recording_ids: list[int]) -> dict[int, str]:
+        """Bulk id->name lookup -- backs devices.py's list_devices()
+        attaching active_replay_recording to each Replay device, the same
+        way get_active_simulation_models_by_device() backs
+        active_simulation_model. One query for every device on the page
+        rather than one per device."""
+        if not recording_ids:
+            return {}
+        with self._conn() as conn:
+            placeholders = ",".join("?" for _ in recording_ids)
+            rows = conn.execute(
+                f"SELECT id, name FROM replay_recordings WHERE id IN ({placeholders})",
+                recording_ids,
+            ).fetchall()
+            return {int(r["id"]): r["name"] for r in rows}
+
+    def update_replay_recording(self, recording_id: int, data: dict) -> Optional[dict]:
+        """Editable regardless of status -- unlike the points list (fixed at
+        create time, see create_replay_recording's own docstring), name/
+        description/interval/cap/buffer_mode are just operational config and
+        don't affect any sample already stored. A raised maximum_samples
+        just gives more headroom, taking effect on the next sample same as
+        sample_interval_seconds. A LOWERED maximum_samples is applied
+        immediately, though: trimming down to the new cap right here
+        (oldest sample_index first, same eviction add_replay_sample already
+        uses) rather than waiting for it to lazily converge one sample at a
+        time as new snapshots arrive -- a user editing the cap down expects
+        the count they see to reflect it right away, not on the next tick.
+        A 'stop'-mode recording already at/over the new lower cap is
+        completed immediately for the same reason, instead of waiting for
+        the next sample attempt to discover it's full."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE replay_recordings SET name=:name, description=:description, "
+                "sample_interval_seconds=:sample_interval_seconds, maximum_samples=:maximum_samples, "
+                "buffer_mode=:buffer_mode WHERE id=:id",
+                {**data, "id": recording_id},
+            )
+            row = conn.execute(
+                "SELECT status, buffer_mode, maximum_samples FROM replay_recordings WHERE id=?",
+                (recording_id,),
+            ).fetchone()
+            if row:
+                sample_count = conn.execute(
+                    "SELECT COUNT(DISTINCT sample_index) FROM replay_samples WHERE recording_id=?",
+                    (recording_id,),
+                ).fetchone()[0]
+                excess = sample_count - row["maximum_samples"]
+                if excess > 0:
+                    if row["buffer_mode"] == "overwrite":
+                        for _ in range(excess):
+                            conn.execute(
+                                "DELETE FROM replay_samples WHERE recording_id=? AND sample_index = ("
+                                "SELECT MIN(sample_index) FROM replay_samples WHERE recording_id=?)",
+                                (recording_id, recording_id),
+                            )
+                    elif row["status"] == "recording":
+                        conn.execute(
+                            "UPDATE replay_recordings SET status='completed', ended_at=datetime('now') WHERE id=?",
+                            (recording_id,),
+                        )
+            conn.commit()
+        return self.get_replay_recording(recording_id)
+
+    def add_replay_sample(self, recording_id: int, values: dict[int, dict]) -> Optional[int]:
+        """Appends one snapshot -- every entry in `values` (keyed by
+        recording_point_id) shares the same sample_index and timestamp,
+        enforcing "all point values captured during the same polling cycle
+        use the same sample_index and timestamp." Enforces the
+        maximum_samples/buffer_mode semantics on whole snapshots (distinct
+        sample_index values), not individual rows. Returns the new
+        sample_index, or None if the recording isn't active or is full with
+        buffer_mode='stop' (in which case it's also auto-completed here)."""
+        with self._conn() as conn:
+            cfg = conn.execute("SELECT * FROM replay_recordings WHERE id=?", (recording_id,)).fetchone()
+            if not cfg or cfg["status"] != "recording":
+                return None
+            sample_count = conn.execute(
+                "SELECT COUNT(DISTINCT sample_index) FROM replay_samples WHERE recording_id=?", (recording_id,)
+            ).fetchone()[0]
+            if sample_count >= cfg["maximum_samples"]:
+                if cfg["buffer_mode"] == "stop":
+                    conn.execute(
+                        "UPDATE replay_recordings SET status='completed', ended_at=datetime('now') WHERE id=?",
+                        (recording_id,),
+                    )
+                    conn.commit()
+                    return None
+                conn.execute(
+                    "DELETE FROM replay_samples WHERE recording_id=? AND sample_index = ("
+                    "SELECT MIN(sample_index) FROM replay_samples WHERE recording_id=?)",
+                    (recording_id, recording_id),
+                )
+            next_index_row = conn.execute(
+                "SELECT MAX(sample_index) FROM replay_samples WHERE recording_id=?", (recording_id,)
+            ).fetchone()
+            next_index = (next_index_row[0] + 1) if next_index_row[0] is not None else 0
+            timestamp = datetime.now(timezone.utc).isoformat()
+            for recording_point_id, entry in values.items():
+                conn.execute(
+                    "INSERT INTO replay_samples "
+                    "(recording_id, recording_point_id, sample_index, timestamp, value, reliability, out_of_service) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        recording_id, recording_point_id, next_index, timestamp,
+                        json.dumps(entry.get("value")), entry.get("reliability"),
+                        1 if entry.get("out_of_service") else 0,
+                    ),
+                )
+            conn.commit()
+            return next_index
+
+    def get_replay_recording_sample_index_bounds(self, recording_id: int) -> Optional[tuple[int, int]]:
+        """(min, max) sample_index currently stored -- eviction (buffer_mode=
+        'overwrite') only ever removes the single lowest sample_index, so
+        the remaining range is always contiguous (no internal gaps),
+        letting playback step through it with a plain +1 rather than
+        re-querying the full distinct-index list every frame. None if the
+        recording has no samples yet."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MIN(sample_index), MAX(sample_index) FROM replay_samples WHERE recording_id=?",
+                (recording_id,),
+            ).fetchone()
+            if row[0] is None:
+                return None
+            return (row[0], row[1])
+
+    def get_replay_recording_samples(self, recording_id: int, sample_index: int) -> list[dict]:
+        """All point rows for one snapshot -- used by playback, one call per
+        advanced frame."""
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM replay_samples WHERE recording_id=? AND sample_index=?",
+                (recording_id, sample_index),
+            )]
+
+    def get_replay_recording_all_samples(self, recording_id: int) -> list[dict]:
+        """Every sample this recording has, long-format (one row per
+        sample_index x point), ordered by sample_index then
+        recording_point_id, `value` JSON-decoded back to its original type.
+        Internal -- used only by the calibration dataset builder
+        (src/simulation/calibration_export.py) to pivot into a wide CSV; not
+        exposed as its own HTTP route (no raw-sample-browsing UI yet)."""
+        with self._conn() as conn:
+            rows = [
+                dict(r) for r in conn.execute(
+                    "SELECT s.sample_index, s.timestamp, s.recording_point_id, "
+                    "p.object_type, p.object_instance, p.object_name, p.point_type, p.units, "
+                    "s.value, s.reliability, s.out_of_service "
+                    "FROM replay_samples s "
+                    "JOIN replay_recording_points p ON p.id = s.recording_point_id "
+                    "WHERE s.recording_id=? "
+                    "ORDER BY s.sample_index, s.recording_point_id",
+                    (recording_id,),
+                )
+            ]
+            for row in rows:
+                row["value"] = json.loads(row["value"])
+            return rows
+
+    def has_replayable_recording(self, device_id: int) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM replay_recordings r WHERE r.source_device_id=? "
+                "AND r.status='completed' AND (SELECT COUNT(*) FROM replay_samples WHERE recording_id=r.id) > 0)",
+                (device_id,),
+            ).fetchone()
+            return bool(row[0])
 
     # ── BACnet Schedules ─────────────────────────────────────────────────────────
     # Note: unlike alarms/trend logs, schedules don't need per-tick evaluation —

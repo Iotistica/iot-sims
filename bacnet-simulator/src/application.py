@@ -39,6 +39,8 @@ from .api.routers.semantic import router as semantic_router
 from .api.routers.calendars import router as calendars_router
 from .api.routers.alarms import router as alarms_router
 from .api.routers.trend_logs import router as trend_logs_router
+from .api.routers.replay_recordings import router as replay_recordings_router
+from .api.routers.calibration import router as calibration_router
 from .api.routers.schedules import router as schedules_router
 from .api.routers.devices import router as devices_router
 from .api.routers.analytics import router as analytics_router
@@ -70,6 +72,8 @@ api.include_router(semantic_router)
 api.include_router(calendars_router)
 api.include_router(alarms_router)
 api.include_router(trend_logs_router)
+api.include_router(replay_recordings_router)
+api.include_router(calibration_router)
 api.include_router(schedules_router)
 api.include_router(devices_router)
 api.include_router(analytics_router)

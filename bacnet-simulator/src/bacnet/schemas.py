@@ -45,6 +45,7 @@ class DeviceCreate(BaseModel):
     can_receive_event_notifications: Optional[bool] = None
     simulation_mode: str = Field("simulation")
     source_device_id: Optional[int] = None
+    replay_recording_id: Optional[int] = None
 
     def validate_device_info(self) -> None:
         if self.segmentation_supported not in VALID_SEGMENTATION:
@@ -253,6 +254,28 @@ class TrendLogUpdate(TrendLogCreate):
     # settings-default fallback for an existing, already-configured log.
     log_interval: int = Field(..., ge=1)
     buffer_size: int = Field(..., ge=1, le=100000)
+
+
+class ReplayRecordingCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+    # None/omitted -> "all of this device's current points" (resolved
+    # server-side in Database.create_replay_recording).
+    point_ids: Optional[list[int]] = None
+    sample_interval_seconds: float = Field(..., gt=0)
+    maximum_samples: int = Field(..., ge=1, le=100000)
+    buffer_mode: str = "stop"
+
+
+class ReplayRecordingUpdate(BaseModel):
+    # No point_ids -- the points list is fixed at create time (every stored
+    # sample references one of those rows); only operational config is
+    # editable after the fact.
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=500)
+    sample_interval_seconds: float = Field(..., gt=0)
+    maximum_samples: int = Field(..., ge=1, le=100000)
+    buffer_mode: str = "stop"
 
 
 class ScheduleTargetSpec(BaseModel):

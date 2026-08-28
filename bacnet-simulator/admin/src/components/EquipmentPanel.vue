@@ -34,6 +34,8 @@ const equipmentEntity = ref<SemanticEntity | null>(null)
 const controllers = ref<SemanticEntity[]>([])
 const points = ref<PointRow[]>([])
 const subEquipment = ref<SemanticEntity[]>([])
+const feeds = ref<SemanticEntity[]>([])
+const fedBy = ref<SemanticEntity[]>([])
 
 function filterOption(input: string, opt: { value?: string | number; label?: string }) {
   return (opt.label ?? '').toLowerCase().includes(input.toLowerCase())
@@ -64,18 +66,24 @@ async function loadSummary() {
       controllers.value = []
       points.value = []
       subEquipment.value = []
+      feeds.value = []
+      fedBy.value = []
       return
     }
 
     const entityId = equipmentEntity.value.id
-    const [controllersRes, pointsRes, subEquipmentRes] = await Promise.all([
+    const [controllersRes, pointsRes, subEquipmentRes, feedsRes, fedByRes] = await Promise.all([
       api.semanticEntities.related(entityId, 'controls', 'in'),
       api.semanticEntities.points(entityId),
       api.semanticEntities.related(entityId, 'isPartOf', 'in'),
+      api.semanticEntities.related(entityId, 'feeds', 'out'),
+      api.semanticEntities.related(entityId, 'feeds', 'in'),
     ])
     controllers.value = controllersRes
     points.value = pointsRes as unknown as PointRow[]
     subEquipment.value = subEquipmentRes
+    feeds.value = feedsRes
+    fedBy.value = fedByRes
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Failed to load equipment')
   } finally {
@@ -274,13 +282,35 @@ async function doAssignPoints() {
       </div>
 
       <!-- Sub-equipment -->
-      <div>
+      <div style="margin-bottom:20px">
         <div style="font-size:13px;font-weight:600;margin-bottom:8px">Sub-equipment</div>
         <div v-if="!subEquipment.length" style="color:var(--text-placeholder);font-size:13px">
           No sub-equipment.
         </div>
         <a-space v-else wrap>
           <a-tag v-for="s in subEquipment" :key="s.id">{{ s.name }}</a-tag>
+        </a-space>
+      </div>
+
+      <!-- Feeds / Serves -->
+      <div style="margin-bottom:20px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">Feeds / Serves</div>
+        <div v-if="!feeds.length" style="color:var(--text-placeholder);font-size:13px">
+          Feeds nothing.
+        </div>
+        <a-space v-else wrap>
+          <a-tag v-for="f in feeds" :key="f.id" :color="f.entity_kind === 'location' ? 'purple' : undefined">{{ f.name }}</a-tag>
+        </a-space>
+      </div>
+
+      <!-- Fed By -->
+      <div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">Fed By</div>
+        <div v-if="!fedBy.length" style="color:var(--text-placeholder);font-size:13px">
+          Not fed by anything.
+        </div>
+        <a-space v-else wrap>
+          <a-tag v-for="f in fedBy" :key="f.id" :color="f.entity_kind === 'location' ? 'purple' : undefined">{{ f.name }}</a-tag>
         </a-space>
       </div>
     </template>

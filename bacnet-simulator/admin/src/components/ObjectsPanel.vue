@@ -2,11 +2,16 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import type { TableColumnsType } from 'ant-design-vue'
-import { EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined, BulbOutlined, ExperimentOutlined } from '@ant-design/icons-vue'
+import {
+  EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined, BulbOutlined, ExperimentOutlined,
+  VideoCameraOutlined, DownOutlined, DownloadOutlined, UploadOutlined, AlertOutlined,
+  CalendarOutlined, ScheduleOutlined, ThunderboltOutlined, ClusterOutlined, DeleteOutlined,
+} from '@ant-design/icons-vue'
 import { api } from '../api'
 import { formatPresentValue } from '../format'
 import { coerceValueForObjectType } from '../objectValue'
-import type { Device, SimObject, Meta, PointRef } from '../types'
+import type { Device, SimObject, Meta, PointRef, Location } from '../types'
+import { buildLocationTreeOptions, flattenLocationTree } from '../locationTree'
 import GridFilterToolbar from './GridFilterToolbar.vue'
 import ObjectDrawer from './ObjectDrawer.vue'
 import SaveTemplateModal from './SaveTemplateModal.vue'
@@ -18,6 +23,7 @@ const props = defineProps<{
   device: Device
   devices: Device[]
   meta: Meta
+  locations: Location[]
   /** WS-driven live values for simulated devices, owned by App.vue — read
    * here, never written. External devices never touch this map; they use
    * their own locally-polled externalLiveValues instead (see below). */
@@ -28,6 +34,11 @@ const props = defineProps<{
   modelStates: Record<number, string>
 }>()
 
+// "Move to" submenu options for the external-device "More actions" menu --
+// same computation LeftSideView.vue's own moveToOptions used before this
+// menu moved here.
+const moveToOptions = computed(() => flattenLocationTree(buildLocationTreeOptions(props.locations)))
+
 // Fired after Suggest Semantics applies a device-level (equipment_type)
 // change, so App.vue can refresh its devices list — the tree row's
 // equipment-type label lives there, outside this component.
@@ -36,16 +47,59 @@ const emit = defineEmits<{
   'external-device-seen': [deviceId: number, seenAt: string]
   'edit-device': [device: Device]
   'simulation-model': [device: Device]
+  'replay-recordings': [device: Device]
+  // "More actions" menu (moved here from LeftSideView.vue's sidebar "..."
+  // dropdown -- same items/icons/groups, same App.vue handlers, just
+  // triggered from the header instead of the tree row).
+  'duplicate-device': [device: Device]
+  'export-ede': [device: Device]
+  'import-ede': [device: Device]
+  'export-brick': [device: Device]
+  'notification-classes': [device: Device]
+  'event-enrollments': [device: Device]
+  'trend-logs': [device: Device]
+  'replay-playback': [device: Device]
+  'calibration': [device: Device]
+  'schedules': [device: Device]
+  'calendars': [device: Device]
+  'energy-model': [device: Device]
+  'view-traffic': [device: Device]
+  // External-device "More actions" menu (moved here from LeftSideView.vue's
+  // sidebar "..." dropdown, same as above).
+  'create-simulated-copy': [device: Device]
+  'assign-device-location': [device: Device, locationId: number]
+  'remove-external-device': [device: Device]
 }>()
 
 const isExternal = computed(() => props.device.source_type === 'external-bacnet')
 const isMirror = computed(() => props.device.simulation_mode === 'mirror')
-const isSimulationMode = computed(() => !isExternal.value && !isMirror.value)
+const isReplay = computed(() => props.device.simulation_mode === 'replay')
+const replayLabel = computed(() =>
+  props.device.active_replay_recording ? `Replay: ${props.device.active_replay_recording.name}` : 'Replay')
+const isSimulationMode = computed(() => !isExternal.value && !isMirror.value && !isReplay.value)
 const canConfigureSimulation = computed(() => !isExternal.value)
+// Calibration needs a known FMU model to calibrate against -- gated on the
+// device's own active_simulation_model (already server-computed and present
+// on every device row) rather than a separate fetch just to check this.
+const calibrationModel = computed(() => {
+  const model = props.device.active_simulation_model
+  return model && model.provider_type === 'fmu' ? model : null
+})
+// Strips the "{device name} " prefix that SimulationModelDrawer.vue's
+// buildPayload() always names a model with (`${device.name} ${model.label}`),
+// recovering just the model's own label for display on the badge -- falls
+// back to the full stored name for a model renamed away from that
+// convention rather than guessing at one.
+const simulationModelDisplayName = computed(() => {
+  const model = props.device.active_simulation_model
+  if (!model) return null
+  const prefix = `${props.device.name} `
+  return model.name.startsWith(prefix) ? model.name.slice(prefix.length) : model.name
+})
 const simulationProviderLabel = computed(() => {
   const provider = props.device.active_simulation_model?.provider_type
   if (!provider) return null
-  if (provider === 'fmu') return 'FMU'
+  if (provider === 'fmu') return simulationModelDisplayName.value ? `FMU: ${simulationModelDisplayName.value}` : 'FMU'
   return provider
 })
 const simulationProviderColor = computed(() => {
@@ -444,6 +498,7 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
       {{ device.name }}
       <a-tag v-if="isExternal" color="default" style="margin-left:8px;font-weight:normal">Read Only</a-tag>
       <a-tag v-if="isMirror" color="blue" style="margin-left:8px;font-weight:normal">Twin</a-tag>
+      <a-tag v-if="isReplay" color="purple" style="margin-left:8px;font-weight:normal">{{ replayLabel }}</a-tag>
       <a-tooltip v-if="isSimulationMode && device.simulation_model_stopped" title="Simulation stopped — model disabled">
         <a-tag color="default" style="margin-left:8px;font-weight:normal">Sim</a-tag>
       </a-tooltip>
@@ -468,10 +523,16 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
 
   <div v-if="isExternal && !hasDiscovered && !loading" style="padding:40px 0;text-align:center;color:var(--text-placeholder)">
     <div style="margin-bottom:12px">No objects discovered yet.</div>
-    <a-button type="primary" ghost :loading="loading" @click="discoverObjects">
-      <template #icon><ApiOutlined /></template>
-      Discover Objects
-    </a-button>
+    <a-space>
+      <a-button type="primary" ghost :loading="loading" @click="discoverObjects">
+        <template #icon><ApiOutlined /></template>
+        Discover Objects
+      </a-button>
+      <a-button @click="emit('create-simulated-copy', device)">
+        <template #icon><CopyOutlined /></template>
+        Create Simulation
+      </a-button>
+    </a-space>
   </div>
 
   <template v-else>
@@ -509,6 +570,67 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
             <template #icon><BulbOutlined /></template>
             Suggest Semantics
           </a-button>
+          <a-dropdown :trigger="['click']">
+            <a-button>
+              More actions
+              <template #icon><DownOutlined /></template>
+            </a-button>
+            <template #overlay>
+              <a-menu>
+                <a-menu-item key="duplicate" @click="emit('duplicate-device', device)">
+                  <CopyOutlined /> Duplicate
+                </a-menu-item>
+                <a-menu-divider />
+                <a-menu-item key="export-ede" @click="emit('export-ede', device)">
+                  <DownloadOutlined /> Export EDE
+                </a-menu-item>
+                <a-menu-item key="import-ede" @click="emit('import-ede', device)">
+                  <UploadOutlined /> Import EDE
+                </a-menu-item>
+                <a-menu-item key="export-brick" @click="emit('export-brick', device)">
+                  <DownloadOutlined /> Export Brick Schema (.ttl)
+                </a-menu-item>
+                <a-menu-divider />
+                <a-menu-item key="notification-classes" @click="emit('notification-classes', device)">
+                  <AlertOutlined /> Notification Classes
+                </a-menu-item>
+                <a-menu-item key="event-enrollments" @click="emit('event-enrollments', device)">
+                  <AlertOutlined /> Event Enrollments
+                </a-menu-item>
+                <a-menu-item key="trend-logs" @click="emit('trend-logs', device)">
+                  <LineChartOutlined /> Trend Logs
+                </a-menu-item>
+                <a-menu-item key="recordings" @click="emit('replay-recordings', device)">
+                  <VideoCameraOutlined /> Record
+                </a-menu-item>
+                <a-menu-item
+                  key="calibration"
+                  :disabled="!calibrationModel"
+                  @click="calibrationModel && emit('calibration', device)"
+                >
+                  <a-tooltip :title="calibrationModel ? undefined : 'Attach a Simulation Model first'" placement="left">
+                    <ExperimentOutlined /> Calibration
+                  </a-tooltip>
+                </a-menu-item>
+                <a-menu-item v-if="isReplay" key="replay-playback" @click="emit('replay-playback', device)">
+                  <VideoCameraOutlined /> Replay Playback
+                </a-menu-item>
+                <a-menu-item key="schedules" @click="emit('schedules', device)">
+                  <CalendarOutlined /> Schedules
+                </a-menu-item>
+                <a-menu-item key="calendars" @click="emit('calendars', device)">
+                  <ScheduleOutlined /> Calendars
+                </a-menu-item>
+                <a-menu-divider />
+                <a-menu-item key="energy-model" @click="emit('energy-model', device)">
+                  <ThunderboltOutlined /> Energy Model
+                </a-menu-item>
+                <a-menu-item key="view-traffic" @click="emit('view-traffic', device)">
+                  <ClusterOutlined /> View Traffic
+                </a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
           <a-button type="primary" @click="openAddObject">+ Add Object</a-button>
         </template>
         <template v-else>
@@ -520,6 +642,10 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
             Edit
           </a-button>
           <a-button :loading="refreshing" @click="manualRefresh">Refresh</a-button>
+          <a-button @click="emit('create-simulated-copy', device)">
+            <template #icon><CopyOutlined /></template>
+            Create Simulation
+          </a-button>
           <a-button :disabled="!objects.length" @click="suggestModalOpen = true">
             <template #icon><BulbOutlined /></template>
             Suggest Semantics
@@ -528,6 +654,31 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
             <template #icon><ApiOutlined /></template>
             Rediscover Objects
           </a-button>
+          <a-dropdown :trigger="['click']">
+            <a-button>
+              More actions
+              <template #icon><DownOutlined /></template>
+            </a-button>
+            <template #overlay>
+              <a-menu>
+                <a-menu-item key="recordings" @click="emit('replay-recordings', device)">
+                  <VideoCameraOutlined /> Record
+                </a-menu-item>
+                <a-menu-divider />
+                <a-menu-item-group key="move-to" title="Move to">
+                  <template v-for="locationOpt in moveToOptions" :key="'move-' + locationOpt.id">
+                    <a-menu-item @click.stop.prevent="emit('assign-device-location', device, locationOpt.id)">
+                      <span :style="{ paddingLeft: (8 * locationOpt.depth) + 'px' }">{{ locationOpt.label }}</span>
+                    </a-menu-item>
+                  </template>
+                </a-menu-item-group>
+                <a-menu-divider />
+                <a-menu-item key="remove" danger @click="emit('remove-external-device', device)">
+                  <DeleteOutlined /> Remove
+                </a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
         </template>
       </template>
     </GridFilterToolbar>

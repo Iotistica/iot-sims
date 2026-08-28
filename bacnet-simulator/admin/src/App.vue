@@ -26,12 +26,15 @@ import SavedGraphsView from './components/SavedGraphsView.vue'
 import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
 import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
+import ReplayRecordingDrawer from './components/ReplayRecordingDrawer.vue'
+import ReplayPlaybackDrawer from './components/ReplayPlaybackDrawer.vue'
+import CalibrationDrawer from './components/calibration/CalibrationDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
 import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
 import SimulationModelModal from './components/SimulationModelDrawer.vue'
 
-import type { Device, Meta, Health, Location, Equipment, Project, BACnetConnectionConfig, BACnetDiscoveryConnection } from './types'
+import type { Device, Meta, Health, Location, Equipment, Project, BACnetConnectionConfig, BACnetDiscoveryConnection, ReplayRecording } from './types'
 import { api, projectDirty } from './api'
 import { buildLocationTreeOptions, flattenLocationTree } from './locationTree'
 import { authToken, currentUser, logout } from './auth'
@@ -302,6 +305,7 @@ const addContextLocationId = ref<number | null>(null)
 const projectsDrawerOpen   = ref(false)
 const createCopyModalOpen  = ref(false)
 const createCopySource     = ref<Device | null>(null)
+const createCopyPreselectedRecordingId = ref<number | null>(null)
 const exportEdeModalOpen   = ref(false)
 const exportEdeDevice      = ref<Device | null>(null)
 const duplicateModalOpen   = ref(false)
@@ -546,6 +550,21 @@ async function confirmDuplicateDevice() {
 // from Project" (also available from DeviceDrawer's Edit form).
 function openCreateSimulatedCopy(d: Device) {
   createCopySource.value = d
+  createCopyPreselectedRecordingId.value = null
+  createCopyModalOpen.value = true
+}
+
+// "Create Replay" action on a recording row (ReplayRecordingDrawer.vue) --
+// reuses the exact same Create Simulation modal/flow as the ordinary
+// device-context-menu entry point above, just preselecting Replay mode
+// and this recording (see CreateSimulatedCopyModal.vue's
+// preselectedRecordingId prop). Closes the Recordings drawer first so the
+// two don't stack.
+function openCreateReplayFromRecording(recording: ReplayRecording) {
+  if (!replayRecordingDevice.value) return
+  createCopySource.value = replayRecordingDevice.value
+  createCopyPreselectedRecordingId.value = recording.id
+  replayRecordingDrawerOpen.value = false
   createCopyModalOpen.value = true
 }
 async function onSimulatedCopyCreated(created: Device) {
@@ -617,6 +636,27 @@ const trendLogDevice = ref<Device | null>(null)
 function openTrendLogs(d: Device) {
   trendLogDevice.value = d
   trendLogDrawerOpen.value = true
+}
+
+const replayRecordingDrawerOpen = ref(false)
+const replayRecordingDevice = ref<Device | null>(null)
+function openReplayRecordings(d: Device) {
+  replayRecordingDevice.value = d
+  replayRecordingDrawerOpen.value = true
+}
+
+const calibrationDrawerOpen = ref(false)
+const calibrationDevice = ref<Device | null>(null)
+function openCalibration(d: Device) {
+  calibrationDevice.value = d
+  calibrationDrawerOpen.value = true
+}
+
+const replayPlaybackDrawerOpen = ref(false)
+const replayPlaybackDevice = ref<Device | null>(null)
+function openReplayPlayback(d: Device) {
+  replayPlaybackDevice.value = d
+  replayPlaybackDrawerOpen.value = true
 }
 
 const scheduleDrawerOpen = ref(false)
@@ -1031,21 +1071,7 @@ onUnmounted(() => {
           @discover-all="discoverAllConnections"
           @discover-connection="discoverConnection"
           @manage-discovery="discoverModalOpen = true"
-          @assign-device-location="assignDeviceToLocation"
-          @create-simulated-copy="openCreateSimulatedCopy"
-          @remove-external-device="removeExternalDevice"
-          @duplicate-device="duplicateDevice"
-          @export-ede="exportDeviceEde"
-          @import-ede="importDeviceEde"
-          @export-brick="exportDeviceBrick"
-          @notification-classes="openNotificationClasses"
-          @event-enrollments="openEventEnrollments"
-          @trend-logs="openTrendLogs"
-          @schedules="openSchedules"
-          @calendars="openCalendars"
-          @energy-model="openEnergyModel"
           @simulation-model="openSimulationModel"
-          @view-traffic="viewTraffic"
         />
         <input ref="edeImportInput" type="file" accept=".ede,.csv,text/csv" style="display:none" @change="onEdeImportFileChange" />
 
@@ -1069,6 +1095,7 @@ onUnmounted(() => {
             :device="selectedDevice"
             :devices="devices"
             :meta="meta"
+            :locations="locations"
             :live-values="liveValues"
             :model-values="modelValues"
             :model-states="modelStates"
@@ -1076,6 +1103,23 @@ onUnmounted(() => {
             @external-device-seen="markExternalDeviceSeen"
             @edit-device="openEditDevice"
             @simulation-model="openSimulationModel"
+            @replay-recordings="openReplayRecordings"
+            @calibration="openCalibration"
+            @create-simulated-copy="openCreateSimulatedCopy"
+            @assign-device-location="assignDeviceToLocation"
+            @remove-external-device="removeExternalDevice"
+            @duplicate-device="duplicateDevice"
+            @export-ede="exportDeviceEde"
+            @import-ede="importDeviceEde"
+            @export-brick="exportDeviceBrick"
+            @notification-classes="openNotificationClasses"
+            @event-enrollments="openEventEnrollments"
+            @trend-logs="openTrendLogs"
+            @replay-playback="openReplayPlayback"
+            @schedules="openSchedules"
+            @calendars="openCalendars"
+            @energy-model="openEnergyModel"
+            @view-traffic="viewTraffic"
           />
 
           <div v-else style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px">
@@ -1116,6 +1160,7 @@ onUnmounted(() => {
     <EquipmentDrawer
       v-model:open="equipmentDrawerOpen"
       :equipment="editingEquipment"
+      :equipment-list="equipment"
       :locations="locations"
       :meta="meta"
       :default-location-id="addContextLocationId"
@@ -1127,6 +1172,7 @@ onUnmounted(() => {
       v-model:open="createCopyModalOpen"
       :source-device="createCopySource"
       :existing-instances="devices.map(d => d.device_instance)"
+      :preselected-recording-id="createCopyPreselectedRecordingId"
       @created="onSimulatedCopyCreated"
     />
 
@@ -1198,6 +1244,19 @@ onUnmounted(() => {
 
     <!-- Trend logs drawer -->
     <TrendLogDrawer v-model:open="trendLogDrawerOpen" :device="trendLogDevice" />
+
+    <!-- Replay recordings drawer -->
+    <ReplayRecordingDrawer
+      v-model:open="replayRecordingDrawerOpen"
+      :device="replayRecordingDevice"
+      @create-replay="openCreateReplayFromRecording"
+    />
+
+    <!-- Replay playback drawer -->
+    <ReplayPlaybackDrawer v-model:open="replayPlaybackDrawerOpen" :device="replayPlaybackDevice" />
+
+    <!-- Calibration drawer -->
+    <CalibrationDrawer v-model:open="calibrationDrawerOpen" :device="calibrationDevice" />
 
     <!-- Schedules drawer -->
     <ScheduleDrawer v-model:open="scheduleDrawerOpen" :device="scheduleDevice" />

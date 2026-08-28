@@ -93,6 +93,18 @@ def _routers():
     except ImportError:
         pass
 
+    try:
+        from src.api.routers.replay_recordings import router as replay_recordings_router
+        routers.append(replay_recordings_router)
+    except ImportError:
+        pass
+
+    try:
+        from src.api.routers.calibration import router as calibration_router
+        routers.append(calibration_router)
+    except ImportError:
+        pass
+
     return routers
 
 
