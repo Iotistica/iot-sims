@@ -1,0 +1,68 @@
+{
+  "model": "b76aae8c-ecfe-44f2-b053-8b005c8ae2ed",
+  "fmu": "models/vav/SimpleVAVZone.fmu",
+  "metadata": "models/vav/model.json",
+  "data": "models/vav/calibration/vav1_history.csv",
+  "goal": {
+    "metadata_output": "supply_airflow_m3_s",
+    "fmu_variable": "VSup_flow",
+    "metric": "cv_rmse"
+  },
+  "historical_period": {
+    "samples": 1441,
+    "duration_seconds": 86400.0,
+    "warmup_seconds_excluded_from_metric": 300.0,
+    "output_interval_seconds": 60.0
+  },
+  "sensitivity": {
+    "method": "morris",
+    "trajectories": 100,
+    "grid_levels": 4,
+    "measure": "mu_star",
+    "seed": 42,
+    "fmu_evaluations": 400,
+    "trajectories_attempted": 100,
+    "trajectories_completed": 100,
+    "trajectories_dropped": 0,
+    "dropped_trajectory_rate": 0.0,
+    "reliable": true,
+    "dropped_trajectories": [],
+    "score_summary": {
+      "min": 53.34695495177836,
+      "max": 378.08174082279163,
+      "mean": 211.97949369542118
+    },
+    "results": [
+      {
+        "parameter": "mCooAir_flow_nominal",
+        "label": "Nominal Cooling Air Mass Flow",
+        "unit": "kg/s",
+        "mu": 327.26669299662507,
+        "mu_star": 327.26669299662507,
+        "sigma": 11.431991008311039,
+        "mu_star_conf": 2.2337241822216374,
+        "rank": 1
+      },
+      {
+        "parameter": "mHeaAir_flow_nominal",
+        "label": "Nominal Heating Air Mass Flow",
+        "unit": "kg/s",
+        "mu": 0.0,
+        "mu_star": 0.0,
+        "sigma": 0.0,
+        "mu_star_conf": 0.0,
+        "rank": 2
+      },
+      {
+        "parameter": "dpAir",
+        "label": "Terminal Air Pressure Difference",
+        "unit": "Pa",
+        "mu": 0.0,
+        "mu_star": 0.0,
+        "sigma": 0.0,
+        "mu_star_conf": 0.0,
+        "rank": 3
+      }
+    ]
+  }
+}

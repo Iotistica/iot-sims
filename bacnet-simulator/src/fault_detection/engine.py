@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from ..semantics.resolver import SemanticResolver
 from .context import FaultContext, PointSnapshot
 from .models import FaultEvaluation, FaultResult, FaultState
 from .registry import FaultRuleRegistry
@@ -313,6 +314,14 @@ class FaultDetectionEngine:
                 [],
             ).append(snapshot)
 
+        objects_by_id = {obj["id"]: obj for obj in objects}
+        fan_role_points = await asyncio.to_thread(
+            self._resolve_fan_role_points, device_id, objects_by_id,
+        )
+        for role_key, snapshot in fan_role_points.items():
+            points[role_key] = snapshot
+            points_by_type.setdefault(role_key, []).append(snapshot)
+
         return FaultContext(
             device_id=device["id"],
             device_name=device["name"],
@@ -323,6 +332,68 @@ class FaultDetectionEngine:
             points=points,
             points_by_type=points_by_type,
             parameters={},
+        )
+
+    def _resolve_fan_role_points(
+        self, device_id: int, objects_by_id: dict[int, dict],
+    ) -> dict[str, PointSnapshot]:
+        """Supply_Fan_Command/Supply_Fan_Status (and the Return_Fan_* pair,
+        for any future AHU rule that wants them) are FDD-internal role
+        keys, not Brick classes -- see rtu.py's CANONICAL_SEMANTICS
+        docstring. Resolving them correctly needs the same equipment-
+        relationship disambiguation resolve_ahu_fans() already does for the
+        Energy Engine (isPointOf a Supply_Fan/Return_Fan sub-equipment,
+        isPartOf this device's own top-level equipment entity) -- NOT the
+        flat point_type lookup the loop above builds `points`/
+        `points_by_type` from. Two fans on one device commonly carry the
+        SAME generic Fan_Status/Fan_Speed_Command/Fan_Command point_type,
+        so that flat dict would nondeterministically let one fan's point
+        silently overwrite the other's; this resolves each side
+        explicitly instead. A no-op (returns {}) for any device with no
+        Supply_Fan/Return_Fan sub-equipment -- most equipment types."""
+        resolver = SemanticResolver(database=self.database, simulation_engine=self.simulation_engine)
+        equipment_entity = resolver.get_equipment_entity(device_id)
+        if equipment_entity is None:
+            return {}
+
+        resolved: dict[str, PointSnapshot] = {}
+        for prefix, brick_class in (("Supply_Fan", "Supply_Fan"), ("Return_Fan", "Return_Fan")):
+            fans = resolver.get_sub_equipment(equipment_entity["id"], brick_class=brick_class)
+            if not fans:
+                continue
+
+            by_class = {p.brick_class: p for p in resolver.get_entity_points(fans[0]["id"])}
+
+            # Prefer the more specific Fan_Speed_Command when both are
+            # tagged (shouldn't normally happen on one point, but a
+            # command/status pair is common); fall back to the generic
+            # Fan_Command.
+            command_point = by_class.get("Fan_Speed_Command") or by_class.get("Fan_Command")
+            if command_point is not None:
+                resolved[f"{prefix}_Command"] = self._fan_role_snapshot(
+                    command_point, objects_by_id, f"{prefix}_Command",
+                )
+            status_point = by_class.get("Fan_Status")
+            if status_point is not None:
+                resolved[f"{prefix}_Status"] = self._fan_role_snapshot(
+                    status_point, objects_by_id, f"{prefix}_Status",
+                )
+
+        return resolved
+
+    def _fan_role_snapshot(
+        self, resolved_point: Any, objects_by_id: dict[int, dict], role_key: str,
+    ) -> PointSnapshot:
+        obj = objects_by_id.get(resolved_point.object_id, {})
+        return PointSnapshot(
+            object_id=resolved_point.object_id,
+            object_identifier=f"{obj.get('object_type', '?')}:{obj.get('object_instance', '?')}",
+            name=resolved_point.object_name or obj.get("name", ""),
+            point_type=role_key,
+            value=resolved_point.value,
+            units=obj.get("units"),
+            reliability=obj.get("reliability"),
+            out_of_service=bool(obj.get("out_of_service", False)),
         )
 
     def _advance_state(

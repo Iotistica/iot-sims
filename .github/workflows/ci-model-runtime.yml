@@ -1,0 +1,81 @@
+name: CI Build Model Runtime
+
+on:
+  push:
+    branches:
+      - main
+      - feature/**
+    paths:
+      - bacnet-simulator/Dockerfile
+      - bacnet-simulator/entrypoint.sh
+      - bacnet-simulator/src/model_runtime/app.py
+      - bacnet-simulator/src/model_runtime/models/**/model.json
+      - bacnet-simulator/src/model_runtime/shared/runtime/**
+      - bacnet-simulator/src/model_runtime/tests/**
+      - .github/workflows/ci-model-runtime.yml
+  pull_request:
+    paths:
+      - bacnet-simulator/Dockerfile
+      - bacnet-simulator/entrypoint.sh
+      - bacnet-simulator/src/model_runtime/app.py
+      - bacnet-simulator/src/model_runtime/models/**/model.json
+      - bacnet-simulator/src/model_runtime/shared/runtime/**
+      - bacnet-simulator/src/model_runtime/tests/**
+      - .github/workflows/ci-model-runtime.yml
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+concurrency:
+  group: model-runtime-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Runtime Tests
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: bacnet-simulator/src/model_runtime
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install runtime test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fastapi httpx numpy pydantic pytest requests
+
+      - name: Run runtime tests
+        run: python -m pytest tests/test_runtime_api.py
+
+  docker:
+    name: Runtime Docker Build
+    runs-on: ubuntu-24.04
+    needs: test
+    defaults:
+      run:
+        working-directory: bacnet-simulator
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Wait for Docker daemon
+        run: |
+          for i in $(seq 1 15); do
+            docker info > /dev/null 2>&1 && echo "Docker daemon ready" && break
+            echo "Waiting for Docker daemon... ($i/15)"
+            sleep 2
+          done
+          docker info
+
+      - name: Build runtime image
+        run: docker build --target model-runtime --pull --progress=plain -t model-runtime:ci -f Dockerfile .

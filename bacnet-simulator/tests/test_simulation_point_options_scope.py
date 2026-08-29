@@ -71,6 +71,19 @@ def _feeds(client, source_entity_id: int, target_entity_id: int) -> None:
     assert resp.status_code == 201, resp.text
 
 
+def _assign_point(client, object_id: int, brick_class: str, target_entity_id: int) -> None:
+    """Mirrors EquipmentPanel.vue's doAssignPoints: create the point's own
+    semantic entity (if missing) then an isPointOf edge to target_entity_id
+    (an Equipment or Location entity)."""
+    entity = client.post("/semantic-entities", json={
+        "name": f"point-{object_id}", "brick_class": brick_class, "entity_kind": "point", "object_id": object_id,
+    }).json()
+    resp = client.post("/semantic-relationships", json={
+        "source_entity_id": entity["id"], "predicate": "isPointOf", "target_entity_id": target_entity_id,
+    })
+    assert resp.status_code == 201, resp.text
+
+
 def _build_rtu_vav_topology(client, database):
     """RTU Controller -controls-> RTU -feeds-> VAV-1 <-controls- VAV-1
     Controller; plus an unrelated VAV-2 device/controller and a Boiler
@@ -216,3 +229,54 @@ def test_discover_candidates_allowed_point_ids_none_is_passthrough(client, datab
     without_arg, scope_b, _ = discover_candidates(variable, ahu["id"], database)
     assert {c.id for c in with_none} == {c.id for c in without_arg}
     assert scope_a == scope_b
+
+
+def test_equipments_own_points_preferred_over_shared_device_object_scan(client, database):
+    """Reproduces the real leak: a VAV controller's BACnet device can
+    physically host a point that's semantically isPointOf a DIFFERENT
+    entity two hops away (e.g. a zone temperature sensor wired directly
+    into the VAV controller, but isPointOf the Zone Location, not the VAV
+    Equipment). Once VAV-1 has its OWN direct point assignment, that
+    assignment -- not "every object on VAV-1's controller device" -- must
+    be what RTU's topology scope uses, so the co-hosted Zone point stays
+    excluded."""
+    rtu_controller = _controller_device(client, 3013, "RTU Controller 3")
+    rtu_equipment = _equipment(client, "RTU-3", "Air_Handling_Unit")
+    _controls(client, _controller_entity_id(client, rtu_controller["id"]), _equipment_entity_id(client, rtu_equipment["id"]))
+
+    vav1_controller = _controller_device(client, 3014, "VAV-1 Controller 3")
+    vav1_equipment = _equipment(client, "VAV-1-3", "Variable_Air_Volume_Box")
+    vav1_entity_id = _equipment_entity_id(client, vav1_equipment["id"])
+    _controls(client, _controller_entity_id(client, vav1_controller["id"]), vav1_entity_id)
+    _feeds(client, _equipment_entity_id(client, rtu_equipment["id"]), vav1_entity_id)
+
+    zone1 = client.post("/locations", json={"name": "Zone 1-3", "kind": "Zone"}).json()
+    zone1_entity = client.get(
+        "/semantic-entities", params={"entity_kind": "location", "location_id": zone1["id"]},
+    ).json()[0]
+    _feeds(client, vav1_entity_id, zone1_entity["id"])
+
+    # VAV-1's own damper point AND a zone sensor are both physically wired
+    # into the same VAV-1 Controller device.
+    damper_point = _point(database, vav1_controller["id"], 1, "VAV1-Damper")
+    zone_temp_point = _point(database, vav1_controller["id"], 2, "Zone1-Temp-on-VAV1-device")
+
+    # Only the damper point is semantically assigned to VAV-1 Equipment;
+    # the zone sensor is assigned to Zone-1 instead (its real owner).
+    _assign_point(client, damper_point["id"], "Damper_Position_Status", vav1_entity_id)
+    _assign_point(client, zone_temp_point["id"], "Zone_Air_Temperature_Sensor", zone1_entity["id"])
+
+    point_ids = database.get_controller_topology_point_ids(rtu_controller["id"])
+    assert damper_point["id"] in point_ids
+    assert zone_temp_point["id"] not in point_ids
+
+
+def test_equipment_with_no_direct_points_still_falls_back_to_controller_device(client, database):
+    """Baseline regression: an Equipment with zero direct point
+    assignments keeps today's fallback (every object on its controlling
+    device) -- this plan explicitly keeps that fallback for the
+    not-yet-classified case, it only stops trusting it once a real
+    assignment exists."""
+    ctx = _build_rtu_vav_topology(client, database)
+    point_ids = database.get_controller_topology_point_ids(ctx["rtu_controller"]["id"])
+    assert ctx["vav1_zone_temp"]["id"] in point_ids

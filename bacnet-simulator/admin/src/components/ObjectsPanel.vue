@@ -517,6 +517,7 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
         Device {{ device.device_instance }}
         <template v-if="device.description"> — {{ device.description }}</template>
         <template v-else> — {{ device.model_name }}</template>
+        <template v-if="isMirror"> · Source: {{ mirrorSourceName }}</template>
       </template>
     </div>
   </div>
@@ -553,9 +554,6 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
 
       <template #actions>
         <template v-if="canConfigureSimulation">
-          <template v-if="isMirror">
-            <span style="font-size:11px;color:var(--text-placeholder);margin-right:4px">Twin mode · values driven by {{ mirrorSourceName }}</span>
-          </template>
           <a-button @click="openEditDevice">
             <template #icon><EditOutlined /></template>
             Edit

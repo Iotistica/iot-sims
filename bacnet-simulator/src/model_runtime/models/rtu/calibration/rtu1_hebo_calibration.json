@@ -1,0 +1,2375 @@
+{
+  "methodology": {
+    "name": "HEBO Modelica calibration",
+    "inspired_by": "Martinez-Viol et al., Building and Environment 226 (2022) 109693"
+  },
+  "model": "ac5e7188-4b72-43e0-9124-912007232705",
+  "fmu": "models/rtu/RTU.fmu",
+  "metadata": "models/rtu/model.json",
+  "data": "models/rtu/calibration/rtu1_history.csv",
+  "goal": {
+    "metadata_output": "supply_air_temp_c",
+    "fmu_variable": "TSup",
+    "metric": "cv_rmse"
+  },
+  "historical_period": {
+    "samples": 1441,
+    "duration_seconds": 86400.0,
+    "warmup_seconds_excluded_from_metric": 300.0,
+    "output_interval_seconds": 60.0
+  },
+  "optimizer": {
+    "method": "hebo",
+    "iterations_requested": 100,
+    "evaluations_completed": 100,
+    "batch_size": 1,
+    "seed": 42,
+    "failure_penalty": 1000000.0,
+    "fmi_type": "ModelExchange",
+    "solver": "CVode"
+  },
+  "tuner_bounds": [
+    {
+      "parameter": "QCoo_flow_nominal",
+      "label": "Nominal DX Cooling Capacity",
+      "unit": "W",
+      "initial": -36846.82,
+      "min": -55000.0,
+      "max": -20000.0
+    },
+    {
+      "parameter": "COP_nominal",
+      "label": "Nominal Compressor COP",
+      "unit": "1",
+      "initial": 3.71,
+      "min": 2.5,
+      "max": 5.0
+    },
+    {
+      "parameter": "kCOPPerKelvin",
+      "label": "COP Outdoor-Temperature Slope",
+      "unit": "1/K",
+      "initial": 0.04,
+      "min": 0.0,
+      "max": 0.1
+    },
+    {
+      "parameter": "kCapOutPerKelvin",
+      "label": "DX Capacity Outdoor-Temperature Slope",
+      "unit": "1/K",
+      "initial": 0.006,
+      "min": 0.0,
+      "max": 0.02
+    },
+    {
+      "parameter": "kCapMixPerKelvin",
+      "label": "DX Capacity Entering-Air Slope",
+      "unit": "1/K",
+      "initial": 0.01,
+      "min": 0.0,
+      "max": 0.03
+    },
+    {
+      "parameter": "partLoadDegradation",
+      "label": "DX Part-Load Degradation Coefficient",
+      "unit": "1",
+      "initial": 0.15,
+      "min": 0.0,
+      "max": 0.35
+    },
+    {
+      "parameter": "kSAT",
+      "label": "SAT Loop Proportional Gain",
+      "unit": "1",
+      "initial": 0.2,
+      "min": 0.05,
+      "max": 0.5
+    },
+    {
+      "parameter": "TiSAT",
+      "label": "SAT Loop Integral Time",
+      "unit": "s",
+      "initial": 120.0,
+      "min": 30.0,
+      "max": 300.0
+    }
+  ],
+  "baseline": {
+    "parameters": {
+      "QCoo_flow_nominal": -36846.82,
+      "COP_nominal": 3.71,
+      "kCOPPerKelvin": 0.04,
+      "kCapOutPerKelvin": 0.006,
+      "kCapMixPerKelvin": 0.01,
+      "partLoadDegradation": 0.15,
+      "kSAT": 0.2,
+      "TiSAT": 120.0
+    },
+    "objective": 1.8462448452087312,
+    "metrics": {
+      "cv_rmse": 1.8462448452087312,
+      "mae": 0.2177526898863174,
+      "nmbe": -0.003939691882090908,
+      "r2": 0.9721856846827192,
+      "rmse": 0.27224520777715894
+    },
+    "status": "ok"
+  },
+  "best": {
+    "objective": 1.7297376904579078,
+    "parameters": {
+      "QCoo_flow_nominal": -54957.56600051471,
+      "COP_nominal": 3.1936092064882278,
+      "kCOPPerKelvin": 0.057662807747761904,
+      "kCapOutPerKelvin": 0.017068568617105484,
+      "kCapMixPerKelvin": 0.009201389135077549,
+      "partLoadDegradation": 0.3052370696446494,
+      "kSAT": 0.3612489979428841,
+      "TiSAT": 40.41561141816058
+    },
+    "metrics": {
+      "cv_rmse": 1.7297376904579078,
+      "mae": 0.21295711416041732,
+      "nmbe": -0.0043619034241110105,
+      "r2": 0.9755853625486661,
+      "rmse": 0.25506519255058835
+    },
+    "improvement": 0.1165071547508234,
+    "improvement_pct": 6.310493164174626
+  },
+  "failures": {
+    "count": 3,
+    "rate_pct": 3.0,
+    "records": [
+      {
+        "evaluation": 46,
+        "parameters": {
+          "QCoo_flow_nominal": -54945.44938213553,
+          "COP_nominal": 4.8891695921044995,
+          "kCOPPerKelvin": 0.07959784316524543,
+          "kCapOutPerKelvin": 0.01475994807220233,
+          "kCapMixPerKelvin": 0.020522607921968222,
+          "partLoadDegradation": 0.3332309677439971,
+          "kSAT": 0.3457302645584199,
+          "TiSAT": 32.23365281361789
+        },
+        "reason": "CVode error (code -1) in module CVode, function /home/runner/work/FMPy/FMPy/native/sundials-7.5.0/src/cvode/cvode.c: At t = 65059.981270796, mxstep steps taken before reaching tout.",
+        "exception_type": "RuntimeError"
+      },
+      {
+        "evaluation": 52,
+        "parameters": {
+          "QCoo_flow_nominal": -29845.11218206631,
+          "COP_nominal": 4.996541917076303,
+          "kCOPPerKelvin": 0.0534258498014962,
+          "kCapOutPerKelvin": 0.017068568617105484,
+          "kCapMixPerKelvin": 0.020337695167478135,
+          "partLoadDegradation": 0.07674548804597434,
+          "kSAT": 0.2695688519935871,
+          "TiSAT": 32.373015687324084
+        },
+        "reason": "CVode error (code -1) in module CVode, function /home/runner/work/FMPy/FMPy/native/sundials-7.5.0/src/cvode/cvode.c: At t = 28988.78724561, mxstep steps taken before reaching tout.",
+        "exception_type": "RuntimeError"
+      },
+      {
+        "evaluation": 56,
+        "parameters": {
+          "QCoo_flow_nominal": -21282.919560395603,
+          "COP_nominal": 4.8594571651155,
+          "kCOPPerKelvin": 0.08812547743839046,
+          "kCapOutPerKelvin": 0.003719371663853253,
+          "kCapMixPerKelvin": 0.008270189410386583,
+          "partLoadDegradation": 0.23764532809569833,
+          "kSAT": 0.4820155988604179,
+          "TiSAT": 34.68134731128201
+        },
+        "reason": "Simulation stopped at t=49.429 instead of reaching stop_time=86400 -- likely a timeout (timeout_seconds=180.0) on a stuck/pathologically slow evaluation",
+        "exception_type": "CalibrationError"
+      }
+    ]
+  },
+  "history": [
+    {
+      "evaluation": 1,
+      "status": "ok",
+      "objective": 1.9851652616423479,
+      "parameters": {
+        "QCoo_flow_nominal": -55000.0,
+        "COP_nominal": 2.5,
+        "kCOPPerKelvin": 0.0,
+        "kCapOutPerKelvin": 0.0,
+        "kCapMixPerKelvin": 0.0,
+        "partLoadDegradation": 0.0,
+        "kSAT": 0.05000000074505806,
+        "TiSAT": 30.0
+      },
+      "metrics": {
+        "cv_rmse": 1.9851652616423479,
+        "mae": 0.2207265512932284,
+        "nmbe": 0.01940150905526685,
+        "r2": 0.9678424379737194,
+        "rmse": 0.29273025759848076
+      }
+    },
+    {
+      "evaluation": 2,
+      "status": "ok",
+      "objective": 1.7903967236023746,
+      "parameters": {
+        "QCoo_flow_nominal": -37500.0,
+        "COP_nominal": 3.75,
+        "kCOPPerKelvin": 0.05000000074505806,
+        "kCapOutPerKelvin": 0.009999999776482582,
+        "kCapMixPerKelvin": 0.014999999664723873,
+        "partLoadDegradation": 0.17499999701976776,
+        "kSAT": 0.2750000059604645,
+        "TiSAT": 165.0
+      },
+      "metrics": {
+        "cv_rmse": 1.7903967236023746,
+        "mae": 0.216910177694625,
+        "nmbe": -0.013366648475890273,
+        "r2": 0.9738429759865325,
+        "rmse": 0.26400990599140495
+      }
+    },
+    {
+      "evaluation": 3,
+      "status": "ok",
+      "objective": 1.9942587233594153,
+      "parameters": {
+        "QCoo_flow_nominal": -28750.0,
+        "COP_nominal": 3.125,
+        "kCOPPerKelvin": 0.02500000037252903,
+        "kCapOutPerKelvin": 0.004999999888241291,
+        "kCapMixPerKelvin": 0.022499999031424522,
+        "partLoadDegradation": 0.26249998807907104,
+        "kSAT": 0.16249999403953552,
+        "TiSAT": 232.5
+      },
+      "metrics": {
+        "cv_rmse": 1.9942587233594153,
+        "mae": 0.2266983830644105,
+        "nmbe": -0.039265172768747775,
+        "r2": 0.9675471544340747,
+        "rmse": 0.29407116933128874
+      }
+    },
+    {
+      "evaluation": 4,
+      "status": "ok",
+      "objective": 1.7417452539211014,
+      "parameters": {
+        "QCoo_flow_nominal": -46250.0,
+        "COP_nominal": 4.375,
+        "kCOPPerKelvin": 0.07500000298023224,
+        "kCapOutPerKelvin": 0.014999999664723873,
+        "kCapMixPerKelvin": 0.007499999832361937,
+        "partLoadDegradation": 0.08749999850988388,
+        "kSAT": 0.38749998807907104,
+        "TiSAT": 97.5
+      },
+      "metrics": {
+        "cv_rmse": 1.7417452539211014,
+        "mae": 0.2140354761676222,
+        "nmbe": -0.0048931639208176815,
+        "r2": 0.9752452209811573,
+        "rmse": 0.25683581447997006
+      }
+    },
+    {
+      "evaluation": 5,
+      "status": "ok",
+      "objective": 1.865803066994575,
+      "parameters": {
+        "QCoo_flow_nominal": -41875.0,
+        "COP_nominal": 3.4375,
+        "kCOPPerKelvin": 0.0625,
+        "kCapOutPerKelvin": 0.017500000074505806,
+        "kCapMixPerKelvin": 0.011249999515712261,
+        "partLoadDegradation": 0.04374999925494194,
+        "kSAT": 0.2187499850988388,
+        "TiSAT": 266.25
+      },
+      "metrics": {
+        "cv_rmse": 1.865803066994575,
+        "mae": 0.22137121320367306,
+        "nmbe": -0.036909846645164446,
+        "r2": 0.9715932605765617,
+        "rmse": 0.27512924136980893
+      }
+    },
+    {
+      "evaluation": 6,
+      "status": "ok",
+      "objective": 1.7684341468473483,
+      "parameters": {
+        "QCoo_flow_nominal": -24375.0,
+        "COP_nominal": 4.6875,
+        "kCOPPerKelvin": 0.012500000186264515,
+        "kCapOutPerKelvin": 0.007499999832361937,
+        "kCapMixPerKelvin": 0.026249999180436134,
+        "partLoadDegradation": 0.21875,
+        "kSAT": 0.4437499940395355,
+        "TiSAT": 131.25
+      },
+      "metrics": {
+        "cv_rmse": 1.7684341468473483,
+        "mae": 0.21554158341072763,
+        "nmbe": -0.009514512102481422,
+        "r2": 0.9744807699781538,
+        "rmse": 0.2607713288939464
+      }
+    },
+    {
+      "evaluation": 7,
+      "status": "ok",
+      "objective": 2.128925980014834,
+      "parameters": {
+        "QCoo_flow_nominal": -33125.0,
+        "COP_nominal": 2.8125,
+        "kCOPPerKelvin": 0.08749999850988388,
+        "kCapOutPerKelvin": 0.01249999925494194,
+        "kCapMixPerKelvin": 0.01874999888241291,
+        "partLoadDegradation": 0.3062500059604645,
+        "kSAT": 0.10625000298023224,
+        "TiSAT": 63.75
+      },
+      "metrics": {
+        "cv_rmse": 2.128925980014834,
+        "mae": 0.2252820905604306,
+        "nmbe": 0.04341582074768196,
+        "r2": 0.9630162533052302,
+        "rmse": 0.3139290529506142
+      }
+    },
+    {
+      "evaluation": 8,
+      "status": "ok",
+      "objective": 1.7585682732166852,
+      "parameters": {
+        "QCoo_flow_nominal": -50625.0,
+        "COP_nominal": 4.0625,
+        "kCOPPerKelvin": 0.03750000149011612,
+        "kCapOutPerKelvin": 0.0024999999441206455,
+        "kCapMixPerKelvin": 0.0037499999161809683,
+        "partLoadDegradation": 0.13124999403953552,
+        "kSAT": 0.33125001192092896,
+        "TiSAT": 198.75
+      },
+      "metrics": {
+        "cv_rmse": 1.7585682732166852,
+        "mae": 0.21543742226255894,
+        "nmbe": -0.019972831692196918,
+        "r2": 0.9747647129269745,
+        "rmse": 0.25931651816098567
+      }
+    },
+    {
+      "evaluation": 9,
+      "status": "ok",
+      "objective": 1.8195106313865372,
+      "parameters": {
+        "QCoo_flow_nominal": -48437.5,
+        "COP_nominal": 3.28125,
+        "kCOPPerKelvin": 0.09375,
+        "kCapOutPerKelvin": 0.008750000037252903,
+        "kCapMixPerKelvin": 0.016874998807907104,
+        "partLoadDegradation": 0.109375,
+        "kSAT": 0.24687498807907104,
+        "TiSAT": 283.125
+      },
+      "metrics": {
+        "cv_rmse": 1.8195106313865372,
+        "mae": 0.21949138132787918,
+        "nmbe": -0.04234334431870958,
+        "r2": 0.9729853728897576,
+        "rmse": 0.2683030103943631
+      }
+    },
+    {
+      "evaluation": 10,
+      "status": "ok",
+      "objective": 1.7538411846210247,
+      "parameters": {
+        "QCoo_flow_nominal": -47093.71969783807,
+        "COP_nominal": 2.7278005402330745,
+        "kCOPPerKelvin": 0.07539927781737354,
+        "kCapOutPerKelvin": 0.014959201854670721,
+        "kCapMixPerKelvin": 0.02901084501213553,
+        "partLoadDegradation": 0.33599549933134915,
+        "kSAT": 0.39076657347027444,
+        "TiSAT": 183.8782851938209
+      },
+      "metrics": {
+        "cv_rmse": 1.7538411846210247,
+        "mae": 0.21503807350275825,
+        "nmbe": -0.01776476407129869,
+        "r2": 0.9749001971303521,
+        "rmse": 0.25861946694362065
+      }
+    },
+    {
+      "evaluation": 11,
+      "status": "ok",
+      "objective": 1.7457848558323241,
+      "parameters": {
+        "QCoo_flow_nominal": -41690.76308250552,
+        "COP_nominal": 4.450026116282546,
+        "kCOPPerKelvin": 0.065434602572124,
+        "kCapOutPerKelvin": 0.010131880563783778,
+        "kCapMixPerKelvin": 0.00013570947213744033,
+        "partLoadDegradation": 0.1901461737119071,
+        "kSAT": 0.40247687802111687,
+        "TiSAT": 124.17129729883405
+      },
+      "metrics": {
+        "cv_rmse": 1.7457848558323241,
+        "mae": 0.2143174326286653,
+        "nmbe": -0.008366980840191513,
+        "r2": 0.9751302610971253,
+        "rmse": 0.25743148967684976
+      }
+    },
+    {
+      "evaluation": 12,
+      "status": "ok",
+      "objective": 1.758169985561375,
+      "parameters": {
+        "QCoo_flow_nominal": -24416.876038313814,
+        "COP_nominal": 3.4172949110161435,
+        "kCOPPerKelvin": 0.03279791233563161,
+        "kCapOutPerKelvin": 0.011603568607239071,
+        "kCapMixPerKelvin": 0.0015468308817518609,
+        "partLoadDegradation": 0.3347552827359358,
+        "kSAT": 0.4955703713723506,
+        "TiSAT": 93.93897860923555
+      },
+      "metrics": {
+        "cv_rmse": 1.758169985561375,
+        "mae": 0.2149448444539561,
+        "nmbe": -0.005936222841880242,
+        "r2": 0.9747761424122983,
+        "rmse": 0.2592577871071082
+      }
+    },
+    {
+      "evaluation": 13,
+      "status": "ok",
+      "objective": 1.747283097302555,
+      "parameters": {
+        "QCoo_flow_nominal": -54930.32303375283,
+        "COP_nominal": 3.8950934410095215,
+        "kCOPPerKelvin": 0.003692826141993002,
+        "kCapOutPerKelvin": 0.0008849000884739274,
+        "kCapMixPerKelvin": 0.012309872726683973,
+        "partLoadDegradation": 0.03995433489143049,
+        "kSAT": 0.4696652771519887,
+        "TiSAT": 146.02389641483416
+      },
+      "metrics": {
+        "cv_rmse": 1.747283097302555,
+        "mae": 0.21410502692728484,
+        "nmbe": -0.012787422340770164,
+        "r2": 0.9750875561065422,
+        "rmse": 0.2576524186947002
+      }
+    },
+    {
+      "evaluation": 14,
+      "status": "ok",
+      "objective": 1.7445712560992568,
+      "parameters": {
+        "QCoo_flow_nominal": -54648.277766635954,
+        "COP_nominal": 4.912928993757027,
+        "kCOPPerKelvin": 0.06079093951735995,
+        "kCapOutPerKelvin": 0.0026811214122200618,
+        "kCapMixPerKelvin": 0.02466279190909906,
+        "partLoadDegradation": 0.01602437735513841,
+        "kSAT": 0.3897603084279452,
+        "TiSAT": 135.00908158074276
+      },
+      "metrics": {
+        "cv_rmse": 1.7445712560992568,
+        "mae": 0.2141189575060693,
+        "nmbe": -0.0089258311549187,
+        "r2": 0.975164825972363,
+        "rmse": 0.2572525336124119
+      }
+    },
+    {
+      "evaluation": 15,
+      "status": "ok",
+      "objective": 1.7449807952037877,
+      "parameters": {
+        "QCoo_flow_nominal": -51101.74030620949,
+        "COP_nominal": 3.876351132185386,
+        "kCOPPerKelvin": 0.03118641223868877,
+        "kCapOutPerKelvin": 0.002278438145744378,
+        "kCapMixPerKelvin": 0.0017841698555411695,
+        "partLoadDegradation": 0.2603729093703997,
+        "kSAT": 0.4812595005737176,
+        "TiSAT": 88.37377444122899
+      },
+      "metrics": {
+        "cv_rmse": 1.7449807952037877,
+        "mae": 0.21394149471183913,
+        "nmbe": -0.006446959041582557,
+        "r2": 0.9751531644610115,
+        "rmse": 0.2573129237924551
+      }
+    },
+    {
+      "evaluation": 16,
+      "status": "ok",
+      "objective": 1.7716530693893708,
+      "parameters": {
+        "QCoo_flow_nominal": -54605.51927373341,
+        "COP_nominal": 4.76449303147302,
+        "kCOPPerKelvin": 0.0579705490745851,
+        "kCapOutPerKelvin": 0.00560549284230424,
+        "kCapMixPerKelvin": 0.0226495392507353,
+        "partLoadDegradation": 0.3132800588967547,
+        "kSAT": 0.4542363060730138,
+        "TiSAT": 266.3957706724292
+      },
+      "metrics": {
+        "cv_rmse": 1.7716530693893708,
+        "mae": 0.2159237795129802,
+        "nmbe": -0.03757261796258398,
+        "r2": 0.9743877846837967,
+        "rmse": 0.2612459876254498
+      }
+    },
+    {
+      "evaluation": 17,
+      "status": "ok",
+      "objective": 1.735503900539928,
+      "parameters": {
+        "QCoo_flow_nominal": -50533.74575792292,
+        "COP_nominal": 3.6443692430360666,
+        "kCOPPerKelvin": 0.008570432744778138,
+        "kCapOutPerKelvin": 0.009876632154383776,
+        "kCapMixPerKelvin": 0.013622380740919302,
+        "partLoadDegradation": 0.21530428690090297,
+        "kSAT": 0.41906862759276775,
+        "TiSAT": 34.85657853949238
+      },
+      "metrics": {
+        "cv_rmse": 1.735503900539928,
+        "mae": 0.21347742049545598,
+        "nmbe": -0.003517476331160893,
+        "r2": 0.9754223151922788,
+        "rmse": 0.2559154714645364
+      }
+    },
+    {
+      "evaluation": 18,
+      "status": "ok",
+      "objective": 1.7317025586840136,
+      "parameters": {
+        "QCoo_flow_nominal": -54992.74406566612,
+        "COP_nominal": 2.7951145841040486,
+        "kCOPPerKelvin": 0.08145549551504774,
+        "kCapOutPerKelvin": 0.012035221264723584,
+        "kCapMixPerKelvin": 0.007386433839876545,
+        "partLoadDegradation": 0.08947141883700535,
+        "kSAT": 0.3544491809622655,
+        "TiSAT": 32.83856815904035
+      },
+      "metrics": {
+        "cv_rmse": 1.7317025586840136,
+        "mae": 0.21322076385704447,
+        "nmbe": -0.0010708219445111002,
+        "r2": 0.9755298642012523,
+        "rmse": 0.2553549298299417
+      }
+    },
+    {
+      "evaluation": 19,
+      "status": "ok",
+      "objective": 1.7337617432306451,
+      "parameters": {
+        "QCoo_flow_nominal": -54932.986297193405,
+        "COP_nominal": 4.226825620644433,
+        "kCOPPerKelvin": 0.045497641747294974,
+        "kCapOutPerKelvin": 0.0016146617880629906,
+        "kCapMixPerKelvin": 0.014332165120007997,
+        "partLoadDegradation": 0.18995706298343767,
+        "kSAT": 0.35778183879099024,
+        "TiSAT": 33.48192268480481
+      },
+      "metrics": {
+        "cv_rmse": 1.7337617432306451,
+        "mae": 0.21336742499745315,
+        "nmbe": -0.0015493952133704327,
+        "r2": 0.9754716342425523,
+        "rmse": 0.2556585748888319
+      }
+    },
+    {
+      "evaluation": 20,
+      "status": "ok",
+      "objective": 1.7357158241384751,
+      "parameters": {
+        "QCoo_flow_nominal": -54425.16751556588,
+        "COP_nominal": 3.090520705133459,
+        "kCOPPerKelvin": 0.04164144640094252,
+        "kCapOutPerKelvin": 0.01451141715384964,
+        "kCapMixPerKelvin": 0.02069132908947616,
+        "partLoadDegradation": 0.03638297037807873,
+        "kSAT": 0.4183328675098815,
+        "TiSAT": 30.28647738313277
+      },
+      "metrics": {
+        "cv_rmse": 1.7357158241384751,
+        "mae": 0.21353471760383125,
+        "nmbe": -0.0031254433649547495,
+        "r2": 0.97541631242914,
+        "rmse": 0.2559467214822516
+      }
+    },
+    {
+      "evaluation": 21,
+      "status": "ok",
+      "objective": 1.7336014065206513,
+      "parameters": {
+        "QCoo_flow_nominal": -53073.13423700646,
+        "COP_nominal": 2.9466990922393754,
+        "kCOPPerKelvin": 0.06178018138635245,
+        "kCapOutPerKelvin": 0.0037485173001897245,
+        "kCapMixPerKelvin": 0.0027945964616496325,
+        "partLoadDegradation": 0.26863563340843005,
+        "kSAT": 0.3684748600031186,
+        "TiSAT": 30.25767820276491
+      },
+      "metrics": {
+        "cv_rmse": 1.7336014065206513,
+        "mae": 0.21339775156530716,
+        "nmbe": -0.001036614921018537,
+        "r2": 0.9754761707547134,
+        "rmse": 0.2556349318162244
+      }
+    },
+    {
+      "evaluation": 22,
+      "status": "ok",
+      "objective": 1.732795707730383,
+      "parameters": {
+        "QCoo_flow_nominal": -54992.39904161706,
+        "COP_nominal": 2.686910028627908,
+        "kCOPPerKelvin": 0.005329888320101728,
+        "kCapOutPerKelvin": 0.012768656823465107,
+        "kCapMixPerKelvin": 0.00045115269222703125,
+        "partLoadDegradation": 0.14769359027175466,
+        "kSAT": 0.3638219771734263,
+        "TiSAT": 34.19933384443043
+      },
+      "metrics": {
+        "cv_rmse": 1.732795707730383,
+        "mae": 0.21328046928757244,
+        "nmbe": -0.0011207718175762235,
+        "r2": 0.9754989605701608,
+        "rmse": 0.25551612437032595
+      }
+    },
+    {
+      "evaluation": 23,
+      "status": "ok",
+      "objective": 1.7324208828489227,
+      "parameters": {
+        "QCoo_flow_nominal": -54804.97654940613,
+        "COP_nominal": 4.868789653238783,
+        "kCOPPerKelvin": 0.05135884269635656,
+        "kCapOutPerKelvin": 0.004385054429115379,
+        "kCapMixPerKelvin": 0.022467234879492447,
+        "partLoadDegradation": 0.09356001338156195,
+        "kSAT": 0.35708315414143144,
+        "TiSAT": 30.268848217330603
+      },
+      "metrics": {
+        "cv_rmse": 1.7324208828489227,
+        "mae": 0.21334830734139354,
+        "nmbe": 0.0005074677441158313,
+        "r2": 0.975509559172058,
+        "rmse": 0.25546085311093797
+      }
+    },
+    {
+      "evaluation": 24,
+      "status": "ok",
+      "objective": 1.7398997010237898,
+      "parameters": {
+        "QCoo_flow_nominal": -54629.302561161036,
+        "COP_nominal": 4.953856726646967,
+        "kCOPPerKelvin": 0.025984894655409766,
+        "kCapOutPerKelvin": 0.00999412417158009,
+        "kCapMixPerKelvin": 0.02092061001968089,
+        "partLoadDegradation": 0.34757453137772326,
+        "kSAT": 0.44320879045491635,
+        "TiSAT": 31.795293315071184
+      },
+      "metrics": {
+        "cv_rmse": 1.7398997010237898,
+        "mae": 0.21384496032445935,
+        "nmbe": -0.0036054098293951506,
+        "r2": 0.9752976535047599,
+        "rmse": 0.25656367130605884
+      }
+    },
+    {
+      "evaluation": 25,
+      "status": "ok",
+      "objective": 1.7317546882162838,
+      "parameters": {
+        "QCoo_flow_nominal": -53266.33133878807,
+        "COP_nominal": 2.704698143236546,
+        "kCOPPerKelvin": 0.034203634597184014,
+        "kCapOutPerKelvin": 0.0019674454769107734,
+        "kCapMixPerKelvin": 0.00669991906552144,
+        "partLoadDegradation": 0.32617516223427956,
+        "kSAT": 0.36884225038591095,
+        "TiSAT": 35.43830004862667
+      },
+      "metrics": {
+        "cv_rmse": 1.7317546882162838,
+        "mae": 0.2130815990850492,
+        "nmbe": -0.0030500309508345465,
+        "r2": 0.9755283909275341,
+        "rmse": 0.2553626167926872
+      }
+    },
+    {
+      "evaluation": 26,
+      "status": "ok",
+      "objective": 1.7366673049968355,
+      "parameters": {
+        "QCoo_flow_nominal": -54188.85969738518,
+        "COP_nominal": 2.745276130136478,
+        "kCOPPerKelvin": 0.09254669694007071,
+        "kCapOutPerKelvin": 0.010250186025857708,
+        "kCapMixPerKelvin": 0.00645924506440943,
+        "partLoadDegradation": 0.0894787083018053,
+        "kSAT": 0.35003985960966794,
+        "TiSAT": 35.3446335899224
+      },
+      "metrics": {
+        "cv_rmse": 1.7366673049968355,
+        "mae": 0.21352156264343888,
+        "nmbe": -0.0049184988141181595,
+        "r2": 0.9753893525788991,
+        "rmse": 0.2560870257894796
+      }
+    },
+    {
+      "evaluation": 27,
+      "status": "ok",
+      "objective": 1.7364685493843874,
+      "parameters": {
+        "QCoo_flow_nominal": -54842.00600833262,
+        "COP_nominal": 4.632618756620677,
+        "kCOPPerKelvin": 0.0994526463486754,
+        "kCapOutPerKelvin": 0.011564643928805105,
+        "kCapMixPerKelvin": 0.007382876104865912,
+        "partLoadDegradation": 0.1054325303337261,
+        "kSAT": 0.4078652750499152,
+        "TiSAT": 43.16909163604536
+      },
+      "metrics": {
+        "cv_rmse": 1.7364685493843874,
+        "mae": 0.21349225582015327,
+        "nmbe": -0.003860409768950014,
+        "r2": 0.9753949854648053,
+        "rmse": 0.25605771750832274
+      }
+    },
+    {
+      "evaluation": 28,
+      "status": "ok",
+      "objective": 1.735323589058587,
+      "parameters": {
+        "QCoo_flow_nominal": -50782.77785484103,
+        "COP_nominal": 4.413873905503053,
+        "kCOPPerKelvin": 0.07748014593508862,
+        "kCapOutPerKelvin": 0.012146586513284095,
+        "kCapMixPerKelvin": 0.022102404346640236,
+        "partLoadDegradation": 0.10960098573218648,
+        "kSAT": 0.3538951073968616,
+        "TiSAT": 61.696702561029646
+      },
+      "metrics": {
+        "cv_rmse": 1.735323589058587,
+        "mae": 0.21361780597576044,
+        "nmbe": -0.002140964153261954,
+        "r2": 0.9754274219610277,
+        "rmse": 0.25588888293440204
+      }
+    },
+    {
+      "evaluation": 29,
+      "status": "ok",
+      "objective": 1.7334954793643105,
+      "parameters": {
+        "QCoo_flow_nominal": -54786.4504789177,
+        "COP_nominal": 4.721400443805392,
+        "kCOPPerKelvin": 0.016118861051002756,
+        "kCapOutPerKelvin": 0.0032021830582018764,
+        "kCapMixPerKelvin": 0.0005998343877725758,
+        "partLoadDegradation": 0.3274157019848738,
+        "kSAT": 0.3774140563999879,
+        "TiSAT": 33.80426672100485
+      },
+      "metrics": {
+        "cv_rmse": 1.7334954793643105,
+        "mae": 0.21339196950186684,
+        "nmbe": -0.002263321764081403,
+        "r2": 0.9754791675913804,
+        "rmse": 0.255619311915775
+      }
+    },
+    {
+      "evaluation": 30,
+      "status": "ok",
+      "objective": 1.73098112211525,
+      "parameters": {
+        "QCoo_flow_nominal": -54994.86619105282,
+        "COP_nominal": 3.883058140870756,
+        "kCOPPerKelvin": 0.09052160049830105,
+        "kCapOutPerKelvin": 0.001961024627683352,
+        "kCapMixPerKelvin": 0.001606495282596222,
+        "partLoadDegradation": 0.21645227130801664,
+        "kSAT": 0.35422532005364676,
+        "TiSAT": 33.682369828275064
+      },
+      "metrics": {
+        "cv_rmse": 1.73098112211525,
+        "mae": 0.21315266547042336,
+        "nmbe": -0.0011567073593206456,
+        "r2": 0.9755502487337074,
+        "rmse": 0.25524854759734084
+      }
+    },
+    {
+      "evaluation": 31,
+      "status": "ok",
+      "objective": 1.7381439190410843,
+      "parameters": {
+        "QCoo_flow_nominal": -51959.12458090524,
+        "COP_nominal": 3.703422190036177,
+        "kCOPPerKelvin": 0.03189207097911309,
+        "kCapOutPerKelvin": 0.0016064687839910594,
+        "kCapMixPerKelvin": 0.011578791580172429,
+        "partLoadDegradation": 0.20104521496961403,
+        "kSAT": 0.37213242570320654,
+        "TiSAT": 31.455138133873042
+      },
+      "metrics": {
+        "cv_rmse": 1.7381439190410843,
+        "mae": 0.2136975273342284,
+        "nmbe": -0.003954457493502538,
+        "r2": 0.9753474840219541,
+        "rmse": 0.25630476565119215
+      }
+    },
+    {
+      "evaluation": 32,
+      "status": "ok",
+      "objective": 1.7355327962791853,
+      "parameters": {
+        "QCoo_flow_nominal": -54995.373588231305,
+        "COP_nominal": 3.0922400557394387,
+        "kCOPPerKelvin": 0.0928420582631146,
+        "kCapOutPerKelvin": 0.012285347832095688,
+        "kCapMixPerKelvin": 0.010882489334419909,
+        "partLoadDegradation": 0.11612230545366417,
+        "kSAT": 0.36161982939776494,
+        "TiSAT": 49.91970597111092
+      },
+      "metrics": {
+        "cv_rmse": 1.7355327962791853,
+        "mae": 0.21358743724112259,
+        "nmbe": -0.0013202156320736567,
+        "r2": 0.9754214967599102,
+        "rmse": 0.2559197323980515
+      }
+    },
+    {
+      "evaluation": 33,
+      "status": "ok",
+      "objective": 1.7340478053974735,
+      "parameters": {
+        "QCoo_flow_nominal": -52919.79930644785,
+        "COP_nominal": 3.3478332951518697,
+        "kCOPPerKelvin": 0.06911482799408517,
+        "kCapOutPerKelvin": 0.0054706919089591985,
+        "kCapMixPerKelvin": 0.002863437711541815,
+        "partLoadDegradation": 0.10771275908368967,
+        "kSAT": 0.3614383229306799,
+        "TiSAT": 32.766648567913705
+      },
+      "metrics": {
+        "cv_rmse": 1.7340478053974735,
+        "mae": 0.21351866112158133,
+        "nmbe": -0.0022980152640429447,
+        "r2": 0.9754635394552033,
+        "rmse": 0.2557007572972202
+      }
+    },
+    {
+      "evaluation": 34,
+      "status": "ok",
+      "objective": 1.7312038109973893,
+      "parameters": {
+        "QCoo_flow_nominal": -54834.90566049038,
+        "COP_nominal": 4.505899612612599,
+        "kCOPPerKelvin": 0.04482786752347821,
+        "kCapOutPerKelvin": 0.010538011753610611,
+        "kCapMixPerKelvin": 0.011036790477884544,
+        "partLoadDegradation": 0.324777469146144,
+        "kSAT": 0.3449495365006165,
+        "TiSAT": 35.49659821676956
+      },
+      "metrics": {
+        "cv_rmse": 1.7312038109973893,
+        "mae": 0.21316771716617539,
+        "nmbe": -0.0014002182524206273,
+        "r2": 0.975543957460007,
+        "rmse": 0.2552813850517798
+      }
+    },
+    {
+      "evaluation": 35,
+      "status": "ok",
+      "objective": 1.7368467494529871,
+      "parameters": {
+        "QCoo_flow_nominal": -54353.68158363817,
+        "COP_nominal": 3.8178952448073287,
+        "kCOPPerKelvin": 0.06366350583572516,
+        "kCapOutPerKelvin": 0.00404296837510727,
+        "kCapMixPerKelvin": 0.0016568176976323352,
+        "partLoadDegradation": 0.31799958034107945,
+        "kSAT": 0.35422398073285377,
+        "TiSAT": 33.682369232177734
+      },
+      "metrics": {
+        "cv_rmse": 1.7368467494529871,
+        "mae": 0.21323984852488773,
+        "nmbe": -0.006619433177079534,
+        "r2": 0.9753842664321308,
+        "rmse": 0.25611348646904564
+      }
+    },
+    {
+      "evaluation": 36,
+      "status": "ok",
+      "objective": 1.7411729314650846,
+      "parameters": {
+        "QCoo_flow_nominal": -52519.614347651375,
+        "COP_nominal": 2.939621833752945,
+        "kCOPPerKelvin": 0.08627143755685518,
+        "kCapOutPerKelvin": 0.0014882734350446596,
+        "kCapMixPerKelvin": 0.02177954270777971,
+        "partLoadDegradation": 0.2248696363638433,
+        "kSAT": 0.3546834854261809,
+        "TiSAT": 40.0176102493066
+      },
+      "metrics": {
+        "cv_rmse": 1.7411729314650846,
+        "mae": 0.21461387022863146,
+        "nmbe": 0.0034228867154651316,
+        "r2": 0.9752614867217411,
+        "rmse": 0.256751420448291
+      }
+    },
+    {
+      "evaluation": 37,
+      "status": "ok",
+      "objective": 1.7318055208767829,
+      "parameters": {
+        "QCoo_flow_nominal": -54454.28096578965,
+        "COP_nominal": 2.946587684080274,
+        "kCOPPerKelvin": 0.09616804719621343,
+        "kCapOutPerKelvin": 0.013333402154269166,
+        "kCapMixPerKelvin": 0.0009659928826843151,
+        "partLoadDegradation": 0.03135781244928271,
+        "kSAT": 0.3558182710636049,
+        "TiSAT": 42.220561270672704
+      },
+      "metrics": {
+        "cv_rmse": 1.7318055208767829,
+        "mae": 0.21319661227195996,
+        "nmbe": -0.0013192640096958092,
+        "r2": 0.9755269542630209,
+        "rmse": 0.25537011252016634
+      }
+    },
+    {
+      "evaluation": 38,
+      "status": "ok",
+      "objective": 1.7314220845249275,
+      "parameters": {
+        "QCoo_flow_nominal": -54988.03238112263,
+        "COP_nominal": 3.9783642354933755,
+        "kCOPPerKelvin": 0.09052844964839715,
+        "kCapOutPerKelvin": 0.0018709052300096975,
+        "kCapMixPerKelvin": 0.0016121586109293917,
+        "partLoadDegradation": 0.21679827199848195,
+        "kSAT": 0.36282299797840134,
+        "TiSAT": 32.41746371895656
+      },
+      "metrics": {
+        "cv_rmse": 1.7314220845249275,
+        "mae": 0.21312951681537262,
+        "nmbe": -0.0017624337208509398,
+        "r2": 0.9755377901408729,
+        "rmse": 0.25531357142294886
+      }
+    },
+    {
+      "evaluation": 39,
+      "status": "ok",
+      "objective": 1.7312209877437883,
+      "parameters": {
+        "QCoo_flow_nominal": -54774.5164433642,
+        "COP_nominal": 2.6231584320508152,
+        "kCOPPerKelvin": 0.0014605379151666504,
+        "kCapOutPerKelvin": 0.008572733293288906,
+        "kCapMixPerKelvin": 0.01178880635660155,
+        "partLoadDegradation": 0.1655795774102043,
+        "kSAT": 0.3636104933128047,
+        "TiSAT": 33.393552225003084
+      },
+      "metrics": {
+        "cv_rmse": 1.7312209877437883,
+        "mae": 0.21316072363865923,
+        "nmbe": -0.0017930765474047138,
+        "r2": 0.9755434721591754,
+        "rmse": 0.25528391791566535
+      }
+    },
+    {
+      "evaluation": 40,
+      "status": "ok",
+      "objective": 1.7316302491553601,
+      "parameters": {
+        "QCoo_flow_nominal": -54995.09936164056,
+        "COP_nominal": 2.663500084916631,
+        "kCOPPerKelvin": 0.09397833782118764,
+        "kCapOutPerKelvin": 0.008876215558384899,
+        "kCapMixPerKelvin": 0.029453055814760945,
+        "partLoadDegradation": 0.012447146638213474,
+        "kSAT": 0.39066444233892983,
+        "TiSAT": 31.371593284406238
+      },
+      "metrics": {
+        "cv_rmse": 1.7316302491553601,
+        "mae": 0.213161645956652,
+        "nmbe": -0.003605295746537366,
+        "r2": 0.9755319077242979,
+        "rmse": 0.25534426714741415
+      }
+    },
+    {
+      "evaluation": 41,
+      "status": "ok",
+      "objective": 1.73086941548525,
+      "parameters": {
+        "QCoo_flow_nominal": -54735.70612625229,
+        "COP_nominal": 3.6777891569871404,
+        "kCOPPerKelvin": 0.061023233895185054,
+        "kCapOutPerKelvin": 0.0013800531255425512,
+        "kCapMixPerKelvin": 0.021757175549297982,
+        "partLoadDegradation": 0.22057199705858477,
+        "kSAT": 0.3554842064453301,
+        "TiSAT": 33.553686867779
+      },
+      "metrics": {
+        "cv_rmse": 1.73086941548525,
+        "mae": 0.21312077738160187,
+        "nmbe": -0.0012813015834817795,
+        "r2": 0.9755534042980936,
+        "rmse": 0.25523207546214527
+      }
+    },
+    {
+      "evaluation": 42,
+      "status": "ok",
+      "objective": 1.7318612483636284,
+      "parameters": {
+        "QCoo_flow_nominal": -54969.22143643695,
+        "COP_nominal": 4.404017156491698,
+        "kCOPPerKelvin": 0.0911246937616417,
+        "kCapOutPerKelvin": 0.012329955197746094,
+        "kCapMixPerKelvin": 0.021691845564636117,
+        "partLoadDegradation": 0.21851025916498604,
+        "kSAT": 0.34974028175224864,
+        "TiSAT": 33.50179407727495
+      },
+      "metrics": {
+        "cv_rmse": 1.7318612483636284,
+        "mae": 0.21322929482624933,
+        "nmbe": -0.000884624522918975,
+        "r2": 0.9755253792094009,
+        "rmse": 0.25537833003328464
+      }
+    },
+    {
+      "evaluation": 43,
+      "status": "ok",
+      "objective": 1.7418604821640555,
+      "parameters": {
+        "QCoo_flow_nominal": -54947.924578033555,
+        "COP_nominal": 3.8639165767847468,
+        "kCOPPerKelvin": 0.06098958094287365,
+        "kCapOutPerKelvin": 0.0014822745148364003,
+        "kCapMixPerKelvin": 0.021756877446470247,
+        "partLoadDegradation": 0.2098075275074541,
+        "kSAT": 0.3832566818396246,
+        "TiSAT": 39.13007052125581
+      },
+      "metrics": {
+        "cv_rmse": 1.7418604821640555,
+        "mae": 0.21390716920530684,
+        "nmbe": -0.004934878711551312,
+        "r2": 0.9752419454802894,
+        "rmse": 0.2568528059082881
+      }
+    },
+    {
+      "evaluation": 44,
+      "status": "ok",
+      "objective": 1.7307220318195082,
+      "parameters": {
+        "QCoo_flow_nominal": -54920.757613781156,
+        "COP_nominal": 4.854518356985844,
+        "kCOPPerKelvin": 0.05867306851141304,
+        "kCapOutPerKelvin": 0.017068568694199295,
+        "kCapMixPerKelvin": 0.020530702191524915,
+        "partLoadDegradation": 0.31058407602807747,
+        "kSAT": 0.3546118068198749,
+        "TiSAT": 31.900797214254165
+      },
+      "metrics": {
+        "cv_rmse": 1.7307220318195082,
+        "mae": 0.21317139924737635,
+        "nmbe": -0.0013912084309421029,
+        "r2": 0.9755575673799045,
+        "rmse": 0.25521034243101076
+      }
+    },
+    {
+      "evaluation": 45,
+      "status": "ok",
+      "objective": 1.7384053402732647,
+      "parameters": {
+        "QCoo_flow_nominal": -54912.94876098847,
+        "COP_nominal": 4.683028083776954,
+        "kCOPPerKelvin": 0.056815956523714475,
+        "kCapOutPerKelvin": 0.0028126017872055617,
+        "kCapMixPerKelvin": 0.019151012054718888,
+        "partLoadDegradation": 0.2928962364568584,
+        "kSAT": 0.3113638673671665,
+        "TiSAT": 33.258909627201476
+      },
+      "metrics": {
+        "cv_rmse": 1.7384053402732647,
+        "mae": 0.21353723893785181,
+        "nmbe": -0.004868740880714077,
+        "r2": 0.9753400678630485,
+        "rmse": 0.2563433145348123
+      }
+    },
+    {
+      "evaluation": 46,
+      "status": "failed_simulation",
+      "objective": 1000000.0,
+      "parameters": {
+        "QCoo_flow_nominal": -54945.44938213553,
+        "COP_nominal": 4.8891695921044995,
+        "kCOPPerKelvin": 0.07959784316524543,
+        "kCapOutPerKelvin": 0.01475994807220233,
+        "kCapMixPerKelvin": 0.020522607921968222,
+        "partLoadDegradation": 0.3332309677439971,
+        "kSAT": 0.3457302645584199,
+        "TiSAT": 32.23365281361789
+      },
+      "metrics": null
+    },
+    {
+      "evaluation": 47,
+      "status": "ok",
+      "objective": 1.7463172666875029,
+      "parameters": {
+        "QCoo_flow_nominal": -49707.007707497876,
+        "COP_nominal": 4.170117554896057,
+        "kCOPPerKelvin": 0.06129465823591872,
+        "kCapOutPerKelvin": 0.014295174695800605,
+        "kCapMixPerKelvin": 0.028602643304030857,
+        "partLoadDegradation": 0.33994811216002585,
+        "kSAT": 0.40123155349426,
+        "TiSAT": 137.43855102215022
+      },
+      "metrics": {
+        "cv_rmse": 1.7463172666875029,
+        "mae": 0.21430829667261933,
+        "nmbe": -0.008970428207378442,
+        "r2": 0.9751150897683671,
+        "rmse": 0.257509998388339
+      }
+    },
+    {
+      "evaluation": 48,
+      "status": "ok",
+      "objective": 1.8850403945811083,
+      "parameters": {
+        "QCoo_flow_nominal": -53115.92014575374,
+        "COP_nominal": 4.862312268447103,
+        "kCOPPerKelvin": 0.02040229233129884,
+        "kCapOutPerKelvin": 0.01643534276201684,
+        "kCapMixPerKelvin": 0.02927173950666811,
+        "partLoadDegradation": 0.25228123921858997,
+        "kSAT": 0.15182100749709843,
+        "TiSAT": 241.67572025176918
+      },
+      "metrics": {
+        "cv_rmse": 1.8850403945811083,
+        "mae": 0.22167614573200753,
+        "nmbe": -0.03024236347548494,
+        "r2": 0.9710044664591725,
+        "rmse": 0.27796595626137083
+      }
+    },
+    {
+      "evaluation": 49,
+      "status": "ok",
+      "objective": 1.7366076737103626,
+      "parameters": {
+        "QCoo_flow_nominal": -50480.19583494014,
+        "COP_nominal": 4.867090173117106,
+        "kCOPPerKelvin": 0.029356096080860317,
+        "kCapOutPerKelvin": 0.017710332430191593,
+        "kCapMixPerKelvin": 0.002610081876339295,
+        "partLoadDegradation": 0.14152761925530383,
+        "kSAT": 0.4174062092391666,
+        "TiSAT": 56.58024545116007
+      },
+      "metrics": {
+        "cv_rmse": 1.7366076737103626,
+        "mae": 0.21364026562973892,
+        "nmbe": -0.0037058130219933152,
+        "r2": 0.9753910426428127,
+        "rmse": 0.2560782326264179
+      }
+    },
+    {
+      "evaluation": 50,
+      "status": "ok",
+      "objective": 1.7440376065035912,
+      "parameters": {
+        "QCoo_flow_nominal": -53207.4427689274,
+        "COP_nominal": 4.852664515724186,
+        "kCOPPerKelvin": 0.023695686641595586,
+        "kCapOutPerKelvin": 0.006818040420591475,
+        "kCapMixPerKelvin": 0.001452666462093263,
+        "partLoadDegradation": 0.22212201586671568,
+        "kSAT": 0.4937854865379186,
+        "TiSAT": 63.28177709340224
+      },
+      "metrics": {
+        "cv_rmse": 1.7440376065035912,
+        "mae": 0.21389123103404595,
+        "nmbe": -0.005393820798913719,
+        "r2": 0.9751800173880172,
+        "rmse": 0.25717384223763073
+      }
+    },
+    {
+      "evaluation": 51,
+      "status": "ok",
+      "objective": 1.7387154135685026,
+      "parameters": {
+        "QCoo_flow_nominal": -54909.36334412794,
+        "COP_nominal": 4.942684169568332,
+        "kCOPPerKelvin": 0.06781144116833152,
+        "kCapOutPerKelvin": 0.007924950213074225,
+        "kCapMixPerKelvin": 0.0241706115243042,
+        "partLoadDegradation": 0.22262033875107373,
+        "kSAT": 0.4478412938823202,
+        "TiSAT": 35.17038109015687
+      },
+      "metrics": {
+        "cv_rmse": 1.7387154135685026,
+        "mae": 0.21368560130211137,
+        "nmbe": -0.003973864309060367,
+        "r2": 0.9753312700663891,
+        "rmse": 0.2563890375974425
+      }
+    },
+    {
+      "evaluation": 52,
+      "status": "failed_simulation",
+      "objective": 1000000.0,
+      "parameters": {
+        "QCoo_flow_nominal": -29845.11218206631,
+        "COP_nominal": 4.996541917076303,
+        "kCOPPerKelvin": 0.0534258498014962,
+        "kCapOutPerKelvin": 0.017068568617105484,
+        "kCapMixPerKelvin": 0.020337695167478135,
+        "partLoadDegradation": 0.07674548804597434,
+        "kSAT": 0.2695688519935871,
+        "TiSAT": 32.373015687324084
+      },
+      "metrics": null
+    },
+    {
+      "evaluation": 53,
+      "status": "ok",
+      "objective": 1.7377073802300405,
+      "parameters": {
+        "QCoo_flow_nominal": -45715.9047519419,
+        "COP_nominal": 4.926135917472444,
+        "kCOPPerKelvin": 0.006740792330502019,
+        "kCapOutPerKelvin": 0.010024072975540749,
+        "kCapMixPerKelvin": 0.01976290355725198,
+        "partLoadDegradation": 0.24146631582923817,
+        "kSAT": 0.4589717217694509,
+        "TiSAT": 35.85364031869412
+      },
+      "metrics": {
+        "cv_rmse": 1.7377073802300405,
+        "mae": 0.21355445261243808,
+        "nmbe": -0.0045650919127430845,
+        "r2": 0.9753598655382067,
+        "rmse": 0.25624039412450983
+      }
+    },
+    {
+      "evaluation": 54,
+      "status": "ok",
+      "objective": 1.9222327991707986,
+      "parameters": {
+        "QCoo_flow_nominal": -53782.45913570678,
+        "COP_nominal": 4.919404114597603,
+        "kCOPPerKelvin": 0.008401038772841068,
+        "kCapOutPerKelvin": 0.0160701959219893,
+        "kCapMixPerKelvin": 0.025398730053806974,
+        "partLoadDegradation": 0.1313456006008539,
+        "kSAT": 0.05373989993361883,
+        "TiSAT": 70.22093319068973
+      },
+      "metrics": {
+        "cv_rmse": 1.9222327991707986,
+        "mae": 0.2195138076233806,
+        "nmbe": -0.006345658506257904,
+        "r2": 0.9698489980377162,
+        "rmse": 0.28345030680216143
+      }
+    },
+    {
+      "evaluation": 55,
+      "status": "ok",
+      "objective": 2.020651787180286,
+      "parameters": {
+        "QCoo_flow_nominal": -37047.83145268216,
+        "COP_nominal": 4.950726187267499,
+        "kCOPPerKelvin": 0.03461953789984332,
+        "kCapOutPerKelvin": 0.0031401617563343864,
+        "kCapMixPerKelvin": 0.018635717704862206,
+        "partLoadDegradation": 0.17986106508349683,
+        "kSAT": 0.16815719241175128,
+        "TiSAT": 282.2597783549126
+      },
+      "metrics": {
+        "cv_rmse": 2.020651787180286,
+        "mae": 0.22769771931701813,
+        "nmbe": -0.03645164033616967,
+        "r2": 0.966682474342738,
+        "rmse": 0.29796306111500087
+      }
+    },
+    {
+      "evaluation": 56,
+      "status": "failed_simulation",
+      "objective": 1000000.0,
+      "parameters": {
+        "QCoo_flow_nominal": -21282.919560395603,
+        "COP_nominal": 4.8594571651155,
+        "kCOPPerKelvin": 0.08812547743839046,
+        "kCapOutPerKelvin": 0.003719371663853253,
+        "kCapMixPerKelvin": 0.008270189410386583,
+        "partLoadDegradation": 0.23764532809569833,
+        "kSAT": 0.4820155988604179,
+        "TiSAT": 34.68134731128201
+      },
+      "metrics": null
+    },
+    {
+      "evaluation": 57,
+      "status": "ok",
+      "objective": 1.7342982624299144,
+      "parameters": {
+        "QCoo_flow_nominal": -39226.773652898664,
+        "COP_nominal": 4.302591348581467,
+        "kCOPPerKelvin": 0.0065137663216897086,
+        "kCapOutPerKelvin": 0.019309318030623593,
+        "kCapMixPerKelvin": 0.0005878801899792986,
+        "partLoadDegradation": 0.3267108679970799,
+        "kSAT": 0.4520500242756682,
+        "TiSAT": 36.162196394034204
+      },
+      "metrics": {
+        "cv_rmse": 1.7342982624299144,
+        "mae": 0.2133837676207514,
+        "nmbe": -0.0046547006641722965,
+        "r2": 0.9754564511005737,
+        "rmse": 0.2557376894121632
+      }
+    },
+    {
+      "evaluation": 58,
+      "status": "ok",
+      "objective": 1.744919374006974,
+      "parameters": {
+        "QCoo_flow_nominal": -43214.77482265776,
+        "COP_nominal": 3.668127442938885,
+        "kCOPPerKelvin": 0.028310684507872958,
+        "kCapOutPerKelvin": 0.0009795377877564095,
+        "kCapMixPerKelvin": 0.019982828411702715,
+        "partLoadDegradation": 0.33752343432501586,
+        "kSAT": 0.48816208370619496,
+        "TiSAT": 93.24345877394538
+      },
+      "metrics": {
+        "cv_rmse": 1.744919374006974,
+        "mae": 0.21404110673171736,
+        "nmbe": -0.005730782911216136,
+        "r2": 0.9751549135868715,
+        "rmse": 0.2573038666912088
+      }
+    },
+    {
+      "evaluation": 59,
+      "status": "ok",
+      "objective": 1.7324529016686407,
+      "parameters": {
+        "QCoo_flow_nominal": -47321.50161162986,
+        "COP_nominal": 2.7128005386257663,
+        "kCOPPerKelvin": 0.06262737191203098,
+        "kCapOutPerKelvin": 0.014425934394494537,
+        "kCapMixPerKelvin": 0.022094203798673488,
+        "partLoadDegradation": 0.15263012809283927,
+        "kSAT": 0.27937772911399705,
+        "TiSAT": 36.68842403241868
+      },
+      "metrics": {
+        "cv_rmse": 1.7324529016686407,
+        "mae": 0.21338842347071793,
+        "nmbe": -0.0011069768254120041,
+        "r2": 0.9755086538929033,
+        "rmse": 0.255465574570418
+      }
+    },
+    {
+      "evaluation": 60,
+      "status": "ok",
+      "objective": 1.73166047229665,
+      "parameters": {
+        "QCoo_flow_nominal": -46459.35137665666,
+        "COP_nominal": 4.053447336974022,
+        "kCOPPerKelvin": 0.004792481305797801,
+        "kCapOutPerKelvin": 0.009333030400713394,
+        "kCapMixPerKelvin": 0.017614534809643808,
+        "partLoadDegradation": 0.18350278097889774,
+        "kSAT": 0.39283784155573553,
+        "TiSAT": 30.00218322199417
+      },
+      "metrics": {
+        "cv_rmse": 1.73166047229665,
+        "mae": 0.2131809333594413,
+        "nmbe": -0.002915075899237263,
+        "r2": 0.9755310536053959,
+        "rmse": 0.25534872381815393
+      }
+    },
+    {
+      "evaluation": 61,
+      "status": "ok",
+      "objective": 1.743297805695829,
+      "parameters": {
+        "QCoo_flow_nominal": -48635.41563296021,
+        "COP_nominal": 3.342321923543586,
+        "kCOPPerKelvin": 0.0571466824924553,
+        "kCapOutPerKelvin": 0.014472820892538504,
+        "kCapMixPerKelvin": 1.4246017936799492e-05,
+        "partLoadDegradation": 0.20386005293769294,
+        "kSAT": 0.4668810582136653,
+        "TiSAT": 75.80155833998583
+      },
+      "metrics": {
+        "cv_rmse": 1.743297805695829,
+        "mae": 0.21393065887718687,
+        "nmbe": -0.0048648948681441475,
+        "r2": 0.9752010696275728,
+        "rmse": 0.2570647520348087
+      }
+    },
+    {
+      "evaluation": 62,
+      "status": "ok",
+      "objective": 1.7384218220585856,
+      "parameters": {
+        "QCoo_flow_nominal": -44043.532626294735,
+        "COP_nominal": 3.3666827384387843,
+        "kCOPPerKelvin": 0.09679601175591598,
+        "kCapOutPerKelvin": 0.007178209601466389,
+        "kCapMixPerKelvin": 0.00697828234492919,
+        "partLoadDegradation": 0.32759959087939583,
+        "kSAT": 0.2742838297811264,
+        "TiSAT": 30.010510653838633
+      },
+      "metrics": {
+        "cv_rmse": 1.7384218220585856,
+        "mae": 0.21389288086606542,
+        "nmbe": 0.002662573773435092,
+        "r2": 0.9753396002602117,
+        "rmse": 0.25634574492051165
+      }
+    },
+    {
+      "evaluation": 63,
+      "status": "ok",
+      "objective": 1.73708179256805,
+      "parameters": {
+        "QCoo_flow_nominal": -54798.75406186218,
+        "COP_nominal": 4.725275495814907,
+        "kCOPPerKelvin": 0.008539289496757321,
+        "kCapOutPerKelvin": 0.013948647538462968,
+        "kCapMixPerKelvin": 0.016786258945883082,
+        "partLoadDegradation": 0.3268145487125708,
+        "kSAT": 0.3362606706119354,
+        "TiSAT": 32.94085767285154
+      },
+      "metrics": {
+        "cv_rmse": 1.73708179256805,
+        "mae": 0.21367237203412293,
+        "nmbe": -0.003522784002371645,
+        "r2": 0.9753776036103415,
+        "rmse": 0.25614814566490635
+      }
+    },
+    {
+      "evaluation": 64,
+      "status": "ok",
+      "objective": 1.7393755463765441,
+      "parameters": {
+        "QCoo_flow_nominal": -47974.09016202188,
+        "COP_nominal": 4.855304166753736,
+        "kCOPPerKelvin": 0.05407566563531475,
+        "kCapOutPerKelvin": 0.017204055564464315,
+        "kCapMixPerKelvin": 0.010915997439131691,
+        "partLoadDegradation": 0.30905457945027554,
+        "kSAT": 0.46213048924944433,
+        "TiSAT": 42.65524355857297
+      },
+      "metrics": {
+        "cv_rmse": 1.7393755463765441,
+        "mae": 0.21364694021659258,
+        "nmbe": -0.004489871766136485,
+        "r2": 0.9753125347067042,
+        "rmse": 0.25648638004579233
+      }
+    },
+    {
+      "evaluation": 65,
+      "status": "ok",
+      "objective": 1.7347200902450988,
+      "parameters": {
+        "QCoo_flow_nominal": -38817.361147422685,
+        "COP_nominal": 3.1823882543844513,
+        "kCOPPerKelvin": 0.016646577637882756,
+        "kCapOutPerKelvin": 0.013622252203074258,
+        "kCapMixPerKelvin": 0.011795608215774057,
+        "partLoadDegradation": 0.20233148377340038,
+        "kSAT": 0.4419509002634765,
+        "TiSAT": 30.647468884620892
+      },
+      "metrics": {
+        "cv_rmse": 1.7347200902450988,
+        "mae": 0.21341557098543587,
+        "nmbe": -0.005367315496896975,
+        "r2": 0.9754445103509167,
+        "rmse": 0.2557998916717871
+      }
+    },
+    {
+      "evaluation": 66,
+      "status": "ok",
+      "objective": 1.7833051784349259,
+      "parameters": {
+        "QCoo_flow_nominal": -47626.78117927105,
+        "COP_nominal": 3.960456966653064,
+        "kCOPPerKelvin": 0.07437318857590751,
+        "kCapOutPerKelvin": 0.009808788703436166,
+        "kCapMixPerKelvin": 0.005649173560846389,
+        "partLoadDegradation": 0.3361990596043032,
+        "kSAT": 0.3065932288903405,
+        "TiSAT": 252.5727961901078
+      },
+      "metrics": {
+        "cv_rmse": 1.7833051784349259,
+        "mae": 0.2172824181146527,
+        "nmbe": -0.03425738094998303,
+        "r2": 0.9740497752458169,
+        "rmse": 0.2629641946424561
+      }
+    },
+    {
+      "evaluation": 67,
+      "status": "ok",
+      "objective": 1.7402560778634524,
+      "parameters": {
+        "QCoo_flow_nominal": -47348.957720362574,
+        "COP_nominal": 4.969853850382086,
+        "kCOPPerKelvin": 0.0970510938944993,
+        "kCapOutPerKelvin": 0.01912076231055661,
+        "kCapMixPerKelvin": 0.0008653716826849989,
+        "partLoadDegradation": 0.04143336952762809,
+        "kSAT": 0.456029193930208,
+        "TiSAT": 56.504638972448376
+      },
+      "metrics": {
+        "cv_rmse": 1.7402560778634524,
+        "mae": 0.21375408403392565,
+        "nmbe": -0.003734514883988253,
+        "r2": 0.9752875330986833,
+        "rmse": 0.2566162222377582
+      }
+    },
+    {
+      "evaluation": 68,
+      "status": "ok",
+      "objective": 1.7334241645231707,
+      "parameters": {
+        "QCoo_flow_nominal": -52977.24789585317,
+        "COP_nominal": 2.907236489106187,
+        "kCOPPerKelvin": 0.08700444744521438,
+        "kCapOutPerKelvin": 0.014356530763498583,
+        "kCapMixPerKelvin": 0.021374905586231275,
+        "partLoadDegradation": 0.3399631977081299,
+        "kSAT": 0.3223134721397372,
+        "TiSAT": 35.11789062481706
+      },
+      "metrics": {
+        "cv_rmse": 1.7334241645231707,
+        "mae": 0.21328557173357116,
+        "nmbe": -0.0006370431744456653,
+        "r2": 0.9754811850910722,
+        "rmse": 0.25560879590876
+      }
+    },
+    {
+      "evaluation": 69,
+      "status": "ok",
+      "objective": 1.7411733103798739,
+      "parameters": {
+        "QCoo_flow_nominal": -49986.97775108444,
+        "COP_nominal": 4.042499890150298,
+        "kCOPPerKelvin": 0.07052955586747328,
+        "kCapOutPerKelvin": 0.0045541047603275785,
+        "kCapMixPerKelvin": 0.009482852765089301,
+        "partLoadDegradation": 0.34036176892835673,
+        "kSAT": 0.44814084061417886,
+        "TiSAT": 59.3296723320857
+      },
+      "metrics": {
+        "cv_rmse": 1.7411733103798739,
+        "mae": 0.21380671419459565,
+        "nmbe": -0.00421745618907932,
+        "r2": 0.9752614759545285,
+        "rmse": 0.25675147632264367
+      }
+    },
+    {
+      "evaluation": 70,
+      "status": "ok",
+      "objective": 1.757335891070281,
+      "parameters": {
+        "QCoo_flow_nominal": -34212.90213551031,
+        "COP_nominal": 4.9551843502002715,
+        "kCOPPerKelvin": 0.004969806016133945,
+        "kCapOutPerKelvin": 0.003843900736857493,
+        "kCapMixPerKelvin": 0.004599439325358529,
+        "partLoadDegradation": 0.0320967555479367,
+        "kSAT": 0.3893043206779614,
+        "TiSAT": 138.52402196241806
+      },
+      "metrics": {
+        "cv_rmse": 1.757335891070281,
+        "mae": 0.2151292005621818,
+        "nmbe": -0.011368052592137922,
+        "r2": 0.9748000696664878,
+        "rmse": 0.25913479246280463
+      }
+    },
+    {
+      "evaluation": 71,
+      "status": "ok",
+      "objective": 1.9717241924181566,
+      "parameters": {
+        "QCoo_flow_nominal": -27523.49424804995,
+        "COP_nominal": 3.852647949602964,
+        "kCOPPerKelvin": 0.037851337429309004,
+        "kCapOutPerKelvin": 0.0014510149680855883,
+        "kCapMixPerKelvin": 0.02102438153403448,
+        "partLoadDegradation": 0.08677233259364525,
+        "kSAT": 0.06021428598602102,
+        "TiSAT": 32.20971733237165
+      },
+      "metrics": {
+        "cv_rmse": 1.9717241924181566,
+        "mae": 0.21994241815387924,
+        "nmbe": -0.005051166224112025,
+        "r2": 0.9682764257699792,
+        "rmse": 0.2907482525068032
+      }
+    },
+    {
+      "evaluation": 72,
+      "status": "ok",
+      "objective": 1.7362335428197753,
+      "parameters": {
+        "QCoo_flow_nominal": -54165.188192172405,
+        "COP_nominal": 4.955098623594268,
+        "kCOPPerKelvin": 0.09739457918617808,
+        "kCapOutPerKelvin": 0.0016531869184936215,
+        "kCapMixPerKelvin": 0.01995497471341141,
+        "partLoadDegradation": 0.19360399053040087,
+        "kSAT": 0.442636210301576,
+        "TiSAT": 30.115088885233924
+      },
+      "metrics": {
+        "cv_rmse": 1.7362335428197753,
+        "mae": 0.2135633520147674,
+        "nmbe": -0.004467584524344393,
+        "r2": 0.9754016448985866,
+        "rmse": 0.2560230637021508
+      }
+    },
+    {
+      "evaluation": 73,
+      "status": "ok",
+      "objective": 1.733311236933299,
+      "parameters": {
+        "QCoo_flow_nominal": -54178.87222895439,
+        "COP_nominal": 4.629533222588137,
+        "kCOPPerKelvin": 0.03770296628357024,
+        "kCapOutPerKelvin": 0.017068568617105484,
+        "kCapMixPerKelvin": 0.0205307025462389,
+        "partLoadDegradation": 0.30969078880169315,
+        "kSAT": 0.3517216034542842,
+        "TiSAT": 30.952369539054246
+      },
+      "metrics": {
+        "cv_rmse": 1.733311236933299,
+        "mae": 0.21351279872563983,
+        "nmbe": -0.0015411468144547955,
+        "r2": 0.9754843796473032,
+        "rmse": 0.25559214373218214
+      }
+    },
+    {
+      "evaluation": 74,
+      "status": "ok",
+      "objective": 1.7376304649256313,
+      "parameters": {
+        "QCoo_flow_nominal": -45718.56294518415,
+        "COP_nominal": 4.870605272757861,
+        "kCOPPerKelvin": 0.06468442115513096,
+        "kCapOutPerKelvin": 0.017068568617105484,
+        "kCapMixPerKelvin": 0.012992821179968344,
+        "partLoadDegradation": 0.30702089912310604,
+        "kSAT": 0.274397066447756,
+        "TiSAT": 52.21935276867755
+      },
+      "metrics": {
+        "cv_rmse": 1.7376304649256313,
+        "mae": 0.21378765541091227,
+        "nmbe": -0.0012446238035072757,
+        "r2": 0.9753620467587288,
+        "rmse": 0.25622905227942117
+      }
+    },
+    {
+      "evaluation": 75,
+      "status": "ok",
+      "objective": 1.7565735866275398,
+      "parameters": {
+        "QCoo_flow_nominal": -33353.79508885417,
+        "COP_nominal": 3.33115815700578,
+        "kCOPPerKelvin": 0.03895746975233148,
+        "kCapOutPerKelvin": 0.014990421489737147,
+        "kCapMixPerKelvin": 0.01205133811090692,
+        "partLoadDegradation": 0.01890307219162364,
+        "kSAT": 0.49928932192163106,
+        "TiSAT": 168.02555223386364
+      },
+      "metrics": {
+        "cv_rmse": 1.7565735866275398,
+        "mae": 0.2150827609339003,
+        "nmbe": -0.016412972847802534,
+        "r2": 0.974821927584996,
+        "rmse": 0.2590223838990423
+      }
+    },
+    {
+      "evaluation": 76,
+      "status": "ok",
+      "objective": 1.753825251926206,
+      "parameters": {
+        "QCoo_flow_nominal": -50011.47317867672,
+        "COP_nominal": 2.695831975247609,
+        "kCOPPerKelvin": 0.06143985874399095,
+        "kCapOutPerKelvin": 0.017068568617105484,
+        "kCapMixPerKelvin": 0.021943142970267622,
+        "partLoadDegradation": 0.13430751525932097,
+        "kSAT": 0.20762522103972927,
+        "TiSAT": 30.626998845562273
+      },
+      "metrics": {
+        "cv_rmse": 1.753825251926206,
+        "mae": 0.2146929725180623,
+        "nmbe": -0.0001948577354325392,
+        "r2": 0.9749006531644402,
+        "rmse": 0.258617117526195
+      }
+    },
+    {
+      "evaluation": 77,
+      "status": "ok",
+      "objective": 1.7618132256366734,
+      "parameters": {
+        "QCoo_flow_nominal": -29728.51529225354,
+        "COP_nominal": 4.926465498112566,
+        "kCOPPerKelvin": 0.021309313991972702,
+        "kCapOutPerKelvin": 0.019690188147690448,
+        "kCapMixPerKelvin": 0.012619197730732262,
+        "partLoadDegradation": 0.21188496502981669,
+        "kSAT": 0.3833606467486136,
+        "TiSAT": 117.21802572753269
+      },
+      "metrics": {
+        "cv_rmse": 1.7618132256366734,
+        "mae": 0.21515594369286484,
+        "nmbe": -0.006995435311245944,
+        "r2": 0.974671497488806,
+        "rmse": 0.25979501522929127
+      }
+    },
+    {
+      "evaluation": 78,
+      "status": "ok",
+      "objective": 1.8914226817560766,
+      "parameters": {
+        "QCoo_flow_nominal": -51537.700270475994,
+        "COP_nominal": 4.9814935986584645,
+        "kCOPPerKelvin": 0.09644522359331702,
+        "kCapOutPerKelvin": 0.018589900133297338,
+        "kCapMixPerKelvin": 0.006080193417399427,
+        "partLoadDegradation": 0.2219598172524131,
+        "kSAT": 0.05005689641224356,
+        "TiSAT": 36.18558085742208
+      },
+      "metrics": {
+        "cv_rmse": 1.8914226817560766,
+        "mae": 0.2177998814557103,
+        "nmbe": -0.004044607148990609,
+        "r2": 0.9708077904593219,
+        "rmse": 0.2789070812170082
+      }
+    },
+    {
+      "evaluation": 79,
+      "status": "ok",
+      "objective": 1.7355833486537953,
+      "parameters": {
+        "QCoo_flow_nominal": -29608.891903540472,
+        "COP_nominal": 4.961814416683865,
+        "kCOPPerKelvin": 0.07676563592855888,
+        "kCapOutPerKelvin": 0.00443792688855287,
+        "kCapMixPerKelvin": 0.01610265452887192,
+        "partLoadDegradation": 0.0853439501584814,
+        "kSAT": 0.4667390366777969,
+        "TiSAT": 30.76964524703038
+      },
+      "metrics": {
+        "cv_rmse": 1.7355833486537953,
+        "mae": 0.21364876313169923,
+        "nmbe": -0.0024700351332096904,
+        "r2": 0.9754200649001361,
+        "rmse": 0.2559271867948857
+      }
+    },
+    {
+      "evaluation": 80,
+      "status": "ok",
+      "objective": 1.7310590647067279,
+      "parameters": {
+        "QCoo_flow_nominal": -37195.020672614206,
+        "COP_nominal": 2.8351264309692255,
+        "kCOPPerKelvin": 0.09788130418376781,
+        "kCapOutPerKelvin": 0.014420034423272016,
+        "kCapMixPerKelvin": 0.021702627084192072,
+        "partLoadDegradation": 0.013612168539200258,
+        "kSAT": 0.3616209996348121,
+        "TiSAT": 31.61683477692179
+      },
+      "metrics": {
+        "cv_rmse": 1.7310590647067279,
+        "mae": 0.21329646369200864,
+        "nmbe": -0.0006903247452084417,
+        "r2": 0.9755480468380833,
+        "rmse": 0.25526004092503607
+      }
+    },
+    {
+      "evaluation": 81,
+      "status": "ok",
+      "objective": 1.7426648313930735,
+      "parameters": {
+        "QCoo_flow_nominal": -42893.930518717185,
+        "COP_nominal": 2.5915297812531835,
+        "kCOPPerKelvin": 0.04347635985117449,
+        "kCapOutPerKelvin": 0.01502061830981108,
+        "kCapMixPerKelvin": 0.022898345837176363,
+        "partLoadDegradation": 0.13319627663172265,
+        "kSAT": 0.45670338911926883,
+        "TiSAT": 57.17033836893418
+      },
+      "metrics": {
+        "cv_rmse": 1.7426648313930735,
+        "mae": 0.21426735817392267,
+        "nmbe": -0.000492346049577458,
+        "r2": 0.9752190748540827,
+        "rmse": 0.2569714143493882
+      }
+    },
+    {
+      "evaluation": 82,
+      "status": "ok",
+      "objective": 2.2494407117622734,
+      "parameters": {
+        "QCoo_flow_nominal": -21241.76572252222,
+        "COP_nominal": 4.959719891760047,
+        "kCOPPerKelvin": 0.09678038458108795,
+        "kCapOutPerKelvin": 0.015479056123102996,
+        "kCapMixPerKelvin": 0.021535077311975834,
+        "partLoadDegradation": 0.310210044934097,
+        "kSAT": 0.05101916775442064,
+        "TiSAT": 42.16799540768264
+      },
+      "metrics": {
+        "cv_rmse": 2.2494407117622734,
+        "mae": 0.22701286096453052,
+        "nmbe": 0.007221571081165423,
+        "r2": 0.9587105703094603,
+        "rmse": 0.33170002101583895
+      }
+    },
+    {
+      "evaluation": 83,
+      "status": "ok",
+      "objective": 1.7388576292460582,
+      "parameters": {
+        "QCoo_flow_nominal": -54633.07320421866,
+        "COP_nominal": 4.912206832366098,
+        "kCOPPerKelvin": 0.051471209036528534,
+        "kCapOutPerKelvin": 0.00953912999053936,
+        "kCapMixPerKelvin": 0.01577881059259729,
+        "partLoadDegradation": 0.06061914770170022,
+        "kSAT": 0.3562879958202664,
+        "TiSAT": 34.494199202955414
+      },
+      "metrics": {
+        "cv_rmse": 1.7388576292460582,
+        "mae": 0.21373401979543732,
+        "nmbe": -0.0036414520397270783,
+        "r2": 0.9753272344161706,
+        "rmse": 0.25641000856279733
+      }
+    },
+    {
+      "evaluation": 84,
+      "status": "ok",
+      "objective": 1.7345041203253406,
+      "parameters": {
+        "QCoo_flow_nominal": -54011.24324221291,
+        "COP_nominal": 3.5367329218323786,
+        "kCOPPerKelvin": 0.07913624341007917,
+        "kCapOutPerKelvin": 0.013357096162770915,
+        "kCapMixPerKelvin": 0.028807400224753765,
+        "partLoadDegradation": 0.18537404618033124,
+        "kSAT": 0.40108583679651044,
+        "TiSAT": 31.22054726185533
+      },
+      "metrics": {
+        "cv_rmse": 1.7345041203253406,
+        "mae": 0.21345556089857556,
+        "nmbe": -0.0031516836494716125,
+        "r2": 0.9754506242099029,
+        "rmse": 0.2557680449880546
+      }
+    },
+    {
+      "evaluation": 85,
+      "status": "ok",
+      "objective": 1.7376072409383836,
+      "parameters": {
+        "QCoo_flow_nominal": -30244.004316832965,
+        "COP_nominal": 3.4997724975936797,
+        "kCOPPerKelvin": 0.051710204159806566,
+        "kCapOutPerKelvin": 0.0062071636933855616,
+        "kCapMixPerKelvin": 0.027314524474360502,
+        "partLoadDegradation": 0.22432438082414263,
+        "kSAT": 0.4848653874908482,
+        "TiSAT": 51.310656070922306
+      },
+      "metrics": {
+        "cv_rmse": 1.7376072409383836,
+        "mae": 0.2137102399519517,
+        "nmbe": -0.004658853213823333,
+        "r2": 0.9753627053425873,
+        "rmse": 0.25622562769613794
+      }
+    },
+    {
+      "evaluation": 86,
+      "status": "ok",
+      "objective": 1.801137379461424,
+      "parameters": {
+        "QCoo_flow_nominal": -38274.267374173505,
+        "COP_nominal": 4.962405897651903,
+        "kCOPPerKelvin": 0.09425712677294243,
+        "kCapOutPerKelvin": 0.019024813480129132,
+        "kCapMixPerKelvin": 0.00864693776887776,
+        "partLoadDegradation": 0.29140190329050186,
+        "kSAT": 0.4148106515377597,
+        "TiSAT": 297.3154701497295
+      },
+      "metrics": {
+        "cv_rmse": 1.801137379461424,
+        "mae": 0.21818142892058087,
+        "nmbe": -0.04631893712850801,
+        "r2": 0.9735282007358964,
+        "rmse": 0.2655937111370758
+      }
+    },
+    {
+      "evaluation": 87,
+      "status": "ok",
+      "objective": 1.7297376904579078,
+      "parameters": {
+        "QCoo_flow_nominal": -54957.56600051471,
+        "COP_nominal": 3.1936092064882278,
+        "kCOPPerKelvin": 0.057662807747761904,
+        "kCapOutPerKelvin": 0.017068568617105484,
+        "kCapMixPerKelvin": 0.009201389135077549,
+        "partLoadDegradation": 0.3052370696446494,
+        "kSAT": 0.3612489979428841,
+        "TiSAT": 40.41561141816058
+      },
+      "metrics": {
+        "cv_rmse": 1.7297376904579078,
+        "mae": 0.21295711416041732,
+        "nmbe": -0.0043619034241110105,
+        "r2": 0.9755853625486661,
+        "rmse": 0.25506519255058835
+      }
+    },
+    {
+      "evaluation": 88,
+      "status": "ok",
+      "objective": 1.7557217007281736,
+      "parameters": {
+        "QCoo_flow_nominal": -27712.512205908362,
+        "COP_nominal": 3.5435204806935925,
+        "kCOPPerKelvin": 0.04216155222314903,
+        "kCapOutPerKelvin": 0.015033853792562007,
+        "kCapMixPerKelvin": 0.013555963958873082,
+        "partLoadDegradation": 0.30246880121867004,
+        "kSAT": 0.3972428153203207,
+        "TiSAT": 88.5790840979596
+      },
+      "metrics": {
+        "cv_rmse": 1.7557217007281736,
+        "mae": 0.21479541309998837,
+        "nmbe": -0.004107505773812643,
+        "r2": 0.9748463428944384,
+        "rmse": 0.25889676575349824
+      }
+    },
+    {
+      "evaluation": 89,
+      "status": "ok",
+      "objective": 1.7343063755738464,
+      "parameters": {
+        "QCoo_flow_nominal": -38907.305050106945,
+        "COP_nominal": 3.8257656729935188,
+        "kCOPPerKelvin": 0.022573709645361897,
+        "kCapOutPerKelvin": 0.014260134100727066,
+        "kCapMixPerKelvin": 0.018182532775581076,
+        "partLoadDegradation": 0.04504890236324252,
+        "kSAT": 0.450507355448692,
+        "TiSAT": 31.666377188729363
+      },
+      "metrics": {
+        "cv_rmse": 1.7343063755738464,
+        "mae": 0.2136139339525909,
+        "nmbe": -0.002418893028400252,
+        "r2": 0.9754562214678572,
+        "rmse": 0.2557388857673277
+      }
+    },
+    {
+      "evaluation": 90,
+      "status": "ok",
+      "objective": 1.739330571350031,
+      "parameters": {
+        "QCoo_flow_nominal": -48962.368143761094,
+        "COP_nominal": 4.982671537256426,
+        "kCOPPerKelvin": 0.09342069623121745,
+        "kCapOutPerKelvin": 0.0030058230105996153,
+        "kCapMixPerKelvin": 0.0010510487886337995,
+        "partLoadDegradation": 0.28497715485441194,
+        "kSAT": 0.48203956525280445,
+        "TiSAT": 36.42321083712254
+      },
+      "metrics": {
+        "cv_rmse": 1.739330571350031,
+        "mae": 0.21373482011146988,
+        "nmbe": -0.00397854325896482,
+        "r2": 0.9753138113775802,
+        "rmse": 0.25647974807849416
+      }
+    },
+    {
+      "evaluation": 91,
+      "status": "ok",
+      "objective": 1.7867980104530887,
+      "parameters": {
+        "QCoo_flow_nominal": -52422.67155569291,
+        "COP_nominal": 3.1807567537455563,
+        "kCOPPerKelvin": 0.08086499594524653,
+        "kCapOutPerKelvin": 0.017068568617105484,
+        "kCapMixPerKelvin": 0.018293456253772895,
+        "partLoadDegradation": 0.1853688591904625,
+        "kSAT": 0.4295669689302201,
+        "TiSAT": 298.6338057103008
+      },
+      "metrics": {
+        "cv_rmse": 1.7867980104530887,
+        "mae": 0.21693171539007305,
+        "nmbe": -0.045008738488688346,
+        "r2": 0.9739480220049102,
+        "rmse": 0.2634792437601195
+      }
+    },
+    {
+      "evaluation": 92,
+      "status": "ok",
+      "objective": 1.7340025951795905,
+      "parameters": {
+        "QCoo_flow_nominal": -51288.46420535065,
+        "COP_nominal": 4.726679167937767,
+        "kCOPPerKelvin": 0.031277203393243004,
+        "kCapOutPerKelvin": 0.013941526291484428,
+        "kCapMixPerKelvin": 0.02019593761253992,
+        "partLoadDegradation": 0.30090829921207723,
+        "kSAT": 0.28144400679677706,
+        "TiSAT": 37.21187478580344
+      },
+      "metrics": {
+        "cv_rmse": 1.7340025951795905,
+        "mae": 0.21339409998858236,
+        "nmbe": 0.0006957217344966858,
+        "r2": 0.9754648188712182,
+        "rmse": 0.25569409064886467
+      }
+    },
+    {
+      "evaluation": 93,
+      "status": "ok",
+      "objective": 1.7417644618406685,
+      "parameters": {
+        "QCoo_flow_nominal": -53382.70374908269,
+        "COP_nominal": 4.776242838864614,
+        "kCOPPerKelvin": 0.08031668654032842,
+        "kCapOutPerKelvin": 0.00821340172185524,
+        "kCapMixPerKelvin": 0.024208960413360136,
+        "partLoadDegradation": 0.21533203254113292,
+        "kSAT": 0.48664438492808554,
+        "TiSAT": 30.901089758484503
+      },
+      "metrics": {
+        "cv_rmse": 1.7417644618406685,
+        "mae": 0.21394242727833862,
+        "nmbe": -0.0058461672578267385,
+        "r2": 0.9752446749880793,
+        "rmse": 0.25683864685838786
+      }
+    },
+    {
+      "evaluation": 94,
+      "status": "ok",
+      "objective": 2.2729598954599295,
+      "parameters": {
+        "QCoo_flow_nominal": -29664.906281583862,
+        "COP_nominal": 3.078509479890204,
+        "kCOPPerKelvin": 0.05234518811559787,
+        "kCapOutPerKelvin": 0.007280900681703103,
+        "kCapMixPerKelvin": 0.00628331370382665,
+        "partLoadDegradation": 0.05212163530208401,
+        "kSAT": 0.0603185497613179,
+        "TiSAT": 128.06562399381386
+      },
+      "metrics": {
+        "cv_rmse": 2.2729598954599295,
+        "mae": 0.2319632873090805,
+        "nmbe": -0.019667369725457465,
+        "r2": 0.9578426475895605,
+        "rmse": 0.3351681336386767
+      }
+    },
+    {
+      "evaluation": 95,
+      "status": "ok",
+      "objective": 1.7370733648263907,
+      "parameters": {
+        "QCoo_flow_nominal": -52013.27644121233,
+        "COP_nominal": 4.9548037948134835,
+        "kCOPPerKelvin": 0.019850788070905012,
+        "kCapOutPerKelvin": 0.01587176932457269,
+        "kCapMixPerKelvin": 0.013094305705407386,
+        "partLoadDegradation": 0.10581067057117063,
+        "kSAT": 0.2498397914708486,
+        "TiSAT": 56.354689121790145
+      },
+      "metrics": {
+        "cv_rmse": 1.7370733648263907,
+        "mae": 0.21375586421938922,
+        "nmbe": -0.0025073551875046066,
+        "r2": 0.9753778425290768,
+        "rmse": 0.2561469029195115
+      }
+    },
+    {
+      "evaluation": 96,
+      "status": "ok",
+      "objective": 1.746907795478988,
+      "parameters": {
+        "QCoo_flow_nominal": -33681.01878249987,
+        "COP_nominal": 2.6133044991959364,
+        "kCOPPerKelvin": 0.0765855746631242,
+        "kCapOutPerKelvin": 0.016168528666932462,
+        "kCapMixPerKelvin": 0.008781066420712615,
+        "partLoadDegradation": 0.2247417366972409,
+        "kSAT": 0.24633858075176202,
+        "TiSAT": 33.182171597300304
+      },
+      "metrics": {
+        "cv_rmse": 1.746907795478988,
+        "mae": 0.2142402306812616,
+        "nmbe": -0.004104788070944743,
+        "r2": 0.9750982569271704,
+        "rmse": 0.2575970771059606
+      }
+    },
+    {
+      "evaluation": 97,
+      "status": "ok",
+      "objective": 1.7497966843018167,
+      "parameters": {
+        "QCoo_flow_nominal": -30421.723815379937,
+        "COP_nominal": 4.862955936182289,
+        "kCOPPerKelvin": 0.037787971891797945,
+        "kCapOutPerKelvin": 0.010247673968236169,
+        "kCapMixPerKelvin": 0.011448029268632514,
+        "partLoadDegradation": 0.08941396717588826,
+        "kSAT": 0.2563636483782395,
+        "TiSAT": 33.9905600936326
+      },
+      "metrics": {
+        "cv_rmse": 1.7497966843018167,
+        "mae": 0.21432760605074336,
+        "nmbe": -0.004609690259986685,
+        "r2": 0.975015828020251,
+        "rmse": 0.2580230694329573
+      }
+    },
+    {
+      "evaluation": 98,
+      "status": "ok",
+      "objective": 1.7302037806078714,
+      "parameters": {
+        "QCoo_flow_nominal": -48222.458394694775,
+        "COP_nominal": 3.1144754343045484,
+        "kCOPPerKelvin": 0.060846412878634584,
+        "kCapOutPerKelvin": 0.015061294581892287,
+        "kCapMixPerKelvin": 0.0006815975823842614,
+        "partLoadDegradation": 0.1920179099839369,
+        "kSAT": 0.29459429636100626,
+        "TiSAT": 39.0903970779936
+      },
+      "metrics": {
+        "cv_rmse": 1.7302037806078714,
+        "mae": 0.2131497804048076,
+        "nmbe": -0.003630478190690185,
+        "r2": 0.9755722033798199,
+        "rmse": 0.25513392168478144
+      }
+    },
+    {
+      "evaluation": 99,
+      "status": "ok",
+      "objective": 1.7389215281639236,
+      "parameters": {
+        "QCoo_flow_nominal": -44623.302847251674,
+        "COP_nominal": 2.583906730397813,
+        "kCOPPerKelvin": 0.05875775891046019,
+        "kCapOutPerKelvin": 0.014024339237392847,
+        "kCapMixPerKelvin": 0.004223232447745608,
+        "partLoadDegradation": 0.13964685087698958,
+        "kSAT": 0.44148974968452254,
+        "TiSAT": 30.956854254916774
+      },
+      "metrics": {
+        "cv_rmse": 1.7389215281639236,
+        "mae": 0.21378014657371913,
+        "nmbe": -0.004450471213998956,
+        "r2": 0.975325421050933,
+        "rmse": 0.2564194310260292
+      }
+    },
+    {
+      "evaluation": 100,
+      "status": "ok",
+      "objective": 1.741682199932621,
+      "parameters": {
+        "QCoo_flow_nominal": -35028.55952830048,
+        "COP_nominal": 4.937601996842325,
+        "kCOPPerKelvin": 0.09549729397285375,
+        "kCapOutPerKelvin": 0.0059672718296091415,
+        "kCapMixPerKelvin": 0.00939033199134692,
+        "partLoadDegradation": 0.23318842260762293,
+        "kSAT": 0.38099929434814817,
+        "TiSAT": 101.35879073929644
+      },
+      "metrics": {
+        "cv_rmse": 1.741682199932621,
+        "mae": 0.21409859435286557,
+        "nmbe": -0.003617478475999164,
+        "r2": 0.975247013274599,
+        "rmse": 0.2568265166090839
+      }
+    }
+  ]
+}

@@ -134,6 +134,38 @@ def test_migration_updates_preexisting_stale_point_entity_in_place(database):
     assert rows[0]["brick_class"] == "Fan_Status"
 
 
+def test_setup_rewrites_supply_fan_command_alias_to_canonical_fan_command(database):
+    """Supply_Fan_Command was never a real Brick class (unlike the other
+    four aliases above, which were real Brick concepts misapplied
+    per-fan) -- added to POINT_TYPES unverified, then removed once caught.
+    Migrates the same way: to the real, generic Fan_Command, isPointOf the
+    Supply_Fan sub-equipment."""
+    with database._conn() as conn:
+        conn.execute(
+            "INSERT INTO devices (device_instance, name, equipment_type) VALUES (?,?,?)",
+            (952, "Legacy-AHU-2", "Air_Handling_Unit"),
+        )
+        device_id = conn.execute("SELECT id FROM devices WHERE device_instance=952").fetchone()[0]
+        conn.execute(
+            "INSERT INTO objects (device_id, object_type, object_instance, name, point_type) VALUES (?,?,?,?,?)",
+            (device_id, "analog-output", 1, "SF-Cmd", "Supply_Fan_Command"),
+        )
+        conn.commit()
+
+    database.setup()
+
+    objects = {o["name"]: o for o in database.get_objects(device_id)}
+    assert objects["SF-Cmd"]["point_type"] == "Fan_Command"
+
+    ahu_entity = database.get_semantic_entities(
+        device_id=device_id, entity_kind="equipment", brick_class="Air_Handling_Unit",
+    )[0]
+    fans = database.get_related_entities(ahu_entity["id"], "isPartOf", direction="in")
+    supply_fan = next(f for f in fans if f["brick_class"] == "Supply_Fan")
+    points = database.get_entity_points(supply_fan["id"])
+    assert {p["brick_class"] for p in points} == {"Fan_Command"}
+
+
 def test_resolver_resolves_migrated_ahu_via_brick_graph_not_fallback(database):
     device_id = _make_legacy_tagged_ahu(database)
     database.setup()

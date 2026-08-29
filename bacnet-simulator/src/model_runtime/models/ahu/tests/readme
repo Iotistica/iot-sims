@@ -1,0 +1,423 @@
+## Extended verification matrix
+
+In addition to the basic build/export checks, run the following tests against AHU.mo / AHU.fmu.
+
+Use deterministic inputs and record:
+- inputs
+- key outputs
+- expected qualitative behavior
+- actual result
+- PASS/FAIL
+
+Do not only inspect translation logs. Exercise the exported FMU where practical.
+
+### A. Initialization / numerical stability
+
+1. Cold-start initialization
+   Inputs:
+   - uFan = 0
+   - TSupSet = 13 degC
+   - TOut = 30 degC
+   - TRet = 24 degC
+   - TChiWatSup = 7 degC
+   - uVAVDamMax = 0.5
+
+   Expect:
+   - FMU initializes without exception or NaN
+   - yFan = 0
+   - yHeaVal = 0
+   - yCooVal = 0
+   - VSup_flow approximately 0
+   - QCoolLoad approximately 0
+   - QHeaLoad approximately 0
+
+2. Fan-enable startup transient
+   Start uFan=0, then step to uFan=1.
+
+   Expect:
+   - no temperature excursion outside valid air/water medium ranges
+   - no FMU crash
+   - no NaN/Inf
+   - CHW valve does not start effectively fully open because of initialization
+   - TSup approaches the requested setpoint smoothly
+
+3. Six-hour stability run
+   Run the normal experiment duration.
+
+   Expect all outputs finite throughout:
+   TSup
+   TMix
+   VSup_flow
+   yFan
+   yOutDam
+   yHeaVal
+   yCooVal
+   QCoolLoad
+   QHeaLoad
+   TChiWatRet
+   VChiWat_flow
+   PSupFan
+   dpSup
+   dpSupSet
+
+### B. Cooling coil physical behavior
+
+4. Normal cooling
+   Inputs approximately:
+   - TOut = 30 degC
+   - TRet = 25 degC
+   - TSupSet = 13 degC
+   - TChiWatSup = 7 degC
+   - uFan = 1
+   - uVAVDamMax = 0.8
+
+   Expect:
+   - yCooVal > 0
+   - VChiWat_flow > 0
+   - TChiWatRet > TChiWatSup
+   - QCoolLoad > 0 using application convention
+   - TSup < TMix
+   - yHeaVal approximately 0
+
+5. Cooling demand removed
+   Change TSupSet so mechanical cooling is unnecessary.
+
+   Expect:
+   - yCooVal -> 0
+   - VChiWat_flow -> near zero
+   - QCoolLoad -> near zero
+   - TChiWatRet approaches TChiWatSup when water flow is near zero
+   - no numerical instability at near-zero water flow
+
+6. Warm chilled water
+   Repeat cooling-demand test at:
+   - TChiWatSup = 7 degC
+   - 10 degC
+   - 13 degC
+   - 16 degC
+   - 18 degC
+
+   Expect:
+   - available cooling falls as CHWS gets warmer
+   - TSup control becomes progressively less capable
+   - QCoolLoad generally decreases for comparable operating conditions
+   - cooCapacityFactor monotonically decreases
+   - no double-derating behavior is introduced
+
+7. CHWS above entering-air temperature
+   Test a deliberately poor CHWS condition.
+
+   Expect:
+   - no crash
+   - no obviously impossible large cooling load
+   - diagnostic cooCapacityFactor clamps to 0 where configured
+   - document actual coil behavior because cooCapacityFactor is diagnostic only
+
+8. Cooling energy balance
+   During steady cooling verify approximately:
+
+   QCoolLoad ≈ rho * VChiWat_flow * cp * (TChiWatRet - TChiWatSup)
+
+   Do not require machine-zero equality because QCoolLoad comes from the coil model and sensor dynamics may differ slightly.
+
+   Report relative error after the system has settled.
+
+### C. Heating behavior
+
+9. Heating demand
+   Example:
+   - TOut = 5 degC
+   - TRet = 18 degC
+   - TSupSet = 30 degC
+   - uFan = 1
+
+   Expect:
+   - yHeaVal > 0
+   - QHeaLoad > 0
+   - yCooVal approximately 0
+   - TSup > TMix
+
+10. Heating/cooling mutual exclusion
+    Across representative heating and cooling conditions verify the controller does not materially command both coils at once.
+
+    Check:
+    yHeaVal * yCooVal approximately 0
+
+### D. Economizer behavior
+
+11. Favorable outdoor air
+    Inputs:
+    - TOut significantly below TRet
+    - cooling-type SAT demand
+    - haveEconomizer = true
+
+    Expect:
+    - yOutDam > minOutAirFra when outdoor air can help meet SAT
+    - yOutDam <= 1
+
+12. Unfavorable outdoor air
+    Inputs:
+    - TOut > TRet
+
+    Expect:
+    - yOutDam = minOutAirFra
+
+13. Economizer disabled
+    Set:
+    haveEconomizer = false
+
+    Test several TOut/TRet combinations.
+
+    Expect:
+    - yOutDam always equals minOutAirFra
+
+14. Economizer bounds
+    Sweep outdoor and return temperatures.
+
+    Verify:
+    minOutAirFra <= yOutDam <= 1
+
+### E. Static-pressure reset / fan control
+
+15. Low VAV demand
+    uVAVDamMax <= vavDamLow
+
+    Expect:
+    dpSupSet = dpSupSetMin
+
+16. High VAV demand
+    uVAVDamMax >= vavDamHigh
+
+    Expect:
+    dpSupSet = dpSupSetMax
+
+17. Midpoint reset
+    Set uVAVDamMax halfway between vavDamLow and vavDamHigh.
+
+    Expect:
+    dpSupSet approximately halfway between dpSupSetMin and dpSupSetMax
+
+18. Monotonic reset sweep
+    Sweep uVAVDamMax from 0 to 1.
+
+    Verify:
+    - dpSupSet never decreases as uVAVDamMax increases
+    - dpSupSet remains inside configured min/max bounds
+
+19. Fan pressure relation
+    For representative yFan values verify:
+
+    dpSup ≈ dpSup_nominal * yFan^2
+
+20. Fan power relation
+    Verify:
+
+    PSupFan ≈ PSupFan_nominal * yFan^3
+
+21. Fan maximum command
+    Test:
+    uFan = 0.5
+
+    Expect:
+    yFan <= 0.5
+
+    Then:
+    uFan = 1.0
+
+    Expect the PI controller may use the full 0..1 range.
+
+22. Fan off
+    uFan = 0
+
+    Expect:
+    - yFan = 0
+    - dpSup = 0
+    - PSupFan = 0
+    - airflow approximately 0
+    - heating/cooling commands forced off
+
+### F. Air mixing checks
+
+23. Mixed-air temperature bounds
+    Under normal positive outdoor/return flows verify:
+
+    min(TOut, TRet) <= TMix <= max(TOut, TRet)
+
+    after initialization transients.
+
+24. Minimum outdoor-air fraction
+    With economizer unavailable verify that outdoor-air mass flow corresponds approximately to minOutAirFra of total commanded airflow.
+
+25. Full economizer
+    Under sufficiently favorable conditions where yOutDam reaches 1:
+
+    Expect:
+    - return-air commanded flow approaches zero
+    - TMix approaches TOut
+
+### G. Parameter-boundary / robustness tests
+
+26. Minimum configured airflow case
+    Test low but valid mAir_flow_nominal configuration.
+
+    Expect successful initialization and finite outputs.
+
+27. Different nominal CHW flow
+    Test at least one alternate VChiWat_flow_nominal.
+
+    Expect:
+    - model compiles
+    - valve/coil sizing remains valid
+    - physical CHW outputs change coherently
+
+28. Different cooling capacity
+    Change QCoo_flow_nominal within realistic bounds.
+
+    Verify the coil remains properly sized and FMU initializes.
+
+29. Static-pressure configuration validation
+    Test:
+    dpSupSetMin < dpSupSetMax
+
+    Also inspect behavior/configuration if accidentally reversed.
+
+    If the model does not protect against invalid configuration, document it rather than silently changing scope.
+
+30. VAV reset threshold validation
+    Verify normal configuration:
+    vavDamLow < vavDamHigh
+
+    Document what happens if they are equal or reversed.
+    The existing denominator guard should prevent division by zero, but an invalid configuration should be called out.
+
+### H. FMU interface regression
+
+31. Verify exact FMU inputs remain:
+
+    TSupSet
+    TOut
+    TRet
+    uFan
+    uVAVDamMax
+    TChiWatSup
+
+32. Verify exact FMU outputs remain:
+
+    TSup
+    TMix
+    VSup_flow
+    yFan
+    yOutDam
+    yHeaVal
+    yCooVal
+    cooCapacityFactor
+    QCoolLoad
+    QHeaLoad
+    TChiWatRet
+    VChiWat_flow
+    PSupFan
+    dpSup
+    dpSupSet
+
+33. Verify causality
+    Inputs must export as FMI inputs and outputs as FMI outputs.
+
+34. Verify units/display units where available.
+
+35. Run the repository's FMU metadata validator against AHU.fmu/model.json if metadata already exists.
+
+### I. Regression against SimpleAHU
+
+Run the same representative input sequence through:
+- SimpleAHU.fmu
+- AHU.fmu
+
+Do not expect exact numerical equality because the CHW coil physics changed.
+
+Compare these signals qualitatively:
+- TSup
+- TMix
+- VSup_flow
+- yFan
+- yOutDam
+- yHeaVal
+- yCooVal
+- dpSup
+- dpSupSet
+- PSupFan
+
+Expect similar control behavior.
+
+For these signals, expect intentionally different/more physical behavior:
+- QCoolLoad
+- TChiWatRet
+- VChiWat_flow
+
+Document the differences.
+
+### J. Step-response tests
+
+36. SAT setpoint step
+    Example:
+    TSupSet: 16 -> 13 degC
+
+    Expect cooling command to increase and TSup to move toward the new setpoint.
+
+37. Outdoor-temperature step
+    Example:
+    TOut: 30 -> 15 degC
+
+    Expect economizer response when enabled.
+
+38. Return-temperature step
+
+    Verify economizer/mixed-air response is stable.
+
+39. Most-open VAV step
+    uVAVDamMax: 0.5 -> 0.95
+
+    Expect:
+    dpSupSet rises
+    fan demand rises
+    dpSup follows
+
+40. CHWS temperature step
+    TChiWatSup: 7 -> 14 degC during cooling demand
+
+    Expect cooling performance to degrade naturally without numerical failure.
+
+### K. Sanity/invariant checks
+
+During every test automatically assert:
+
+- 0 <= yFan <= 1
+- minOutAirFra <= yOutDam <= 1
+- 0 <= yHeaVal <= 1
+- 0 <= yCooVal <= 1
+- 0 <= cooCapacityFactor <= 1
+- dpSup >= 0
+- dpSupSetMin <= dpSupSet <= dpSupSetMax
+- PSupFan >= 0
+- VChiWat_flow should not be materially negative for this fixed-direction topology
+- all reported temperatures finite
+- all outputs free from NaN and Inf
+
+If allowFlowReversal has been disabled as requested, explicitly check that normal simulations never require reverse flow.
+
+## Test reporting
+
+Return a concise table such as:
+
+| Test | Result | Key values / notes |
+|---|---|---|
+| Normal cooling | PASS | CHWS=7C, CHWR=12.1C, QCool=39.2kW |
+| Fan off | PASS | flow=0, fan power=0 |
+| Economizer disabled | PASS | yOutDam=0.15 |
+| High VAV demand | PASS | dpSP=500 Pa |
+...
+
+For any failure:
+- show the exact inputs
+- show the failing output
+- distinguish Modelica translation failure, FMU initialization failure, solver/runtime failure, and expectation mismatch
+- do not hide failures by relaxing assertions

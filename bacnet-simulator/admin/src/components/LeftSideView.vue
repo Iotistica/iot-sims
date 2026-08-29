@@ -3,13 +3,17 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ApiOutlined, DeploymentUnitOutlined,
   EditOutlined, FolderAddOutlined,
-  FolderOutlined, PlusOutlined, SearchOutlined,
+  PlusOutlined, SearchOutlined,
   DownOutlined,
   ApartmentOutlined,
 } from '@ant-design/icons-vue'
 import type { BACnetDiscoveryConnection, Device, Equipment, Location, Meta } from '../types'
 import { getLocationIcon } from '../locationIcons'
 import { getEquipmentIcon, getControllerIcon } from '../equipmentIcons'
+import { svgIcon } from '../svgIcon'
+import iconGroupUnassigned from '../assets/tree-icons/icon-group-unassigned.svg?raw'
+
+const UnassignedGroupIcon = svgIcon(iconGroupUnassigned)
 
 interface SidebarTreeNode {
   key: string
@@ -24,6 +28,14 @@ const props = withDefaults(defineProps<{
   devices: Device[]
   locations: Location[]
   equipment: Equipment[]
+  /** Browse-tree presentation only: device_id -> equipment_id for the
+   * Controller -> controls -> Equipment edge to nest that Controller's
+   * node under, deterministically resolved by App.vue (earliest-created
+   * edge wins when a Controller controls more than one Equipment). A
+   * device with no entry here renders under its Location exactly as
+   * before -- this never touches location_id/controls persistence, it's
+   * read only to choose which parent node a device is pushed into below. */
+  controllerEquipmentMap: Record<number, number>
   meta: Meta
   selectedDevice: Device | null
   selectedEquipment: Equipment | null
@@ -126,22 +138,44 @@ const sidebarTree = computed<SidebarTreeNode[]>(() => {
     else roots.push(node)
   }
 
+  // Equipment nodes are built before devices (opposite of this function's
+  // former order) purely so the device loop below has somewhere to nest a
+  // controlling Controller -- equipment placement itself doesn't depend on
+  // devices at all. A node only grows a `children` array once it actually
+  // gains a nested Controller (lazy below), so equipment with none stays a
+  // plain leaf, exactly as before.
+  const equipmentNodes = new Map<number, SidebarTreeNode>()
+  for (const e of props.equipment) {
+    const node: SidebarTreeNode = { key: `equipment-${e.id}`, kind: 'equipment', equipment: e }
+    equipmentNodes.set(e.id, node)
+    const parent = e.location_id != null ? locationNodes.get(e.location_id) : undefined
+    if (parent) parent.children!.push(node)
+    else roots.push(node)
+  }
+
+  // A device that controls Equipment (per controllerEquipmentMap) is never
+  // "unassigned" for discovered-group purposes, even with no location_id of
+  // its own -- it belongs under its Equipment's node instead, wherever that
+  // Equipment lives.
   const unassignedExternal = filteredDevices.value.filter(
     d => d.source_type === 'external-bacnet' && d.location_id == null
+      && props.controllerEquipmentMap[d.id] == null
   )
   const unassignedIds = new Set(unassignedExternal.map(d => d.id))
 
   for (const d of filteredDevices.value) {
     if (unassignedIds.has(d.id)) continue
     const node: SidebarTreeNode = { key: `device-${d.id}`, kind: 'device', device: d }
-    const parent = d.location_id != null ? locationNodes.get(d.location_id) : undefined
-    if (parent) parent.children!.push(node)
-    else roots.push(node)
-  }
 
-  for (const e of props.equipment) {
-    const node: SidebarTreeNode = { key: `equipment-${e.id}`, kind: 'equipment', equipment: e }
-    const parent = e.location_id != null ? locationNodes.get(e.location_id) : undefined
+    const controlledEquipmentId = props.controllerEquipmentMap[d.id]
+    const equipmentParent = controlledEquipmentId != null ? equipmentNodes.get(controlledEquipmentId) : undefined
+    if (equipmentParent) {
+      equipmentParent.children ??= []
+      equipmentParent.children.push(node)
+      continue
+    }
+
+    const parent = d.location_id != null ? locationNodes.get(d.location_id) : undefined
     if (parent) parent.children!.push(node)
     else roots.push(node)
   }
@@ -472,7 +506,7 @@ const toggleTreeExpansion = () => {
 
               <!-- Discovered group (frontend-only synthetic node) -->
               <div v-else-if="node.kind === 'discovered-group'" style="display:flex;align-items:center;gap:8px;padding:2px 0">
-                <FolderOutlined :style="[TREE_ICON_SLOT_STYLE, { color: '#faad14' }]" />
+                <component :is="UnassignedGroupIcon" :style="[TREE_ICON_SLOT_STYLE, { color: '#faad14' }]" />
                 <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:12.5px">Unassigned ({{ node.children?.length ?? 0 }})</span>
               </div>
 
@@ -487,11 +521,6 @@ const toggleTreeExpansion = () => {
                     {{ node.equipment.equipment_type ? (equipmentTypeLabel[node.equipment.equipment_type] ?? node.equipment.equipment_type) : 'Unclassified' }}
                   </div>
                 </div>
-                <a-space :size="2" @click.stop>
-                  <a-button type="text" size="small" title="Edit" @click="openEditEquipment(node.equipment)">
-                    <template #icon><EditOutlined /></template>
-                  </a-button>
-                </a-space>
               </div>
 
               <!-- Device row -->

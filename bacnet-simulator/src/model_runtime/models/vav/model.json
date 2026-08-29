@@ -1,0 +1,264 @@
+{
+  "id": "b76aae8c-ecfe-44f2-b053-8b005c8ae2ed",
+  "slug": "SimpleVAVZone",
+  "label": "VAV",
+  "description": "VAV terminal FMU with external zone-temperature input, damper control, airflow, and hot-water reheat.",
+  "fmu_path": "SimpleVAVZone.fmu",
+  "warmup_seconds": 300.0,
+  "inputs": [
+    {
+      "name": "zone_temp_c",
+      "label": "Zone Temperature",
+      "fmu_variable": "TRoo",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 22.0,
+      "suggested_point_types": [
+        "Zone_Air_Temperature_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "downstream",
+        "preferred_equipment_types": [
+          "Zone"
+        ],
+        "signal_role": "zone_air_temperature"
+      },
+      "semantic": {
+        "point_class": "Zone_Air_Temperature_Sensor"
+      }
+    },
+    {
+      "name": "heating_setpoint_c",
+      "label": "Heating Setpoint",
+      "fmu_variable": "TRooHeaSet",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 20.0,
+      "suggested_point_types": [
+        "Heating_Temperature_Setpoint"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "signal_role": "heating_setpoint"
+      },
+      "semantic": {
+        "point_class": "Heating_Temperature_Setpoint"
+      }
+    },
+    {
+      "name": "cooling_setpoint_c",
+      "label": "Cooling Setpoint",
+      "fmu_variable": "TRooCooSet",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 23.0,
+      "suggested_point_types": [
+        "Cooling_Temperature_Setpoint"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "signal_role": "cooling_setpoint"
+      },
+      "semantic": {
+        "point_class": "Cooling_Temperature_Setpoint"
+      }
+    },
+    {
+      "name": "supply_air_temp_c",
+      "label": "Supply Air Temperature",
+      "fmu_variable": "TSupAHU",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 13.0,
+      "suggested_point_types": [
+        "Supply_Air_Temperature_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "upstream",
+        "preferred_equipment_types": [
+          "Air_Handling_Unit"
+        ],
+        "relationship": "feeds",
+        "signal_role": "supply_air_temperature"
+      },
+      "semantic": {
+        "point_class": "Supply_Air_Temperature_Sensor"
+      }
+    },
+    {
+      "name": "supply_duct_static_pressure_pa",
+      "label": "Supply Duct Static Pressure",
+      "fmu_variable": "dpSup",
+      "unit": "Pa",
+      "default": 200.0,
+      "suggested_point_types": [
+        "Supply_Air_Static_Pressure_Sensor",
+        "Static_Pressure_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "upstream",
+        "preferred_equipment_types": [
+          "Air_Handling_Unit",
+          "Rooftop_Unit"
+        ],
+        "relationship": "feeds",
+        "signal_role": "supply_duct_static_pressure"
+      },
+      "semantic": {
+        "point_class": "Supply_Air_Static_Pressure_Sensor"
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "name": "supply_airflow_m3_s",
+      "label": "Supply Airflow",
+      "fmu_variable": "VSup_flow",
+      "unit": "m3/s",
+      "suggested_point_types": [
+        "Air_Flow_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "signal_role": "supply_airflow"
+      },
+      "semantic": {
+        "point_class": "Air_Flow_Sensor"
+      }
+    },
+    {
+      "name": "discharge_air_temp_c",
+      "label": "Discharge Air Temperature",
+      "fmu_variable": "TSup",
+      "unit": "degC",
+      "conversion": "k_to_c",
+      "suggested_point_types": [
+        "Supply_Air_Temperature_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "signal_role": "discharge_air_temperature"
+      },
+      "semantic": {
+        "point_class": "Supply_Air_Temperature_Sensor"
+      }
+    },
+    {
+      "name": "damper_command_pct",
+      "label": "Damper Command",
+      "fmu_variable": "yDam",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Damper_Position_Command"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "signal_role": "damper_command"
+      },
+      "semantic": {
+        "point_class": "Damper_Position_Command"
+      }
+    },
+    {
+      "name": "damper_position_pct",
+      "label": "Damper Position",
+      "fmu_variable": "yDam_actual",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Damper_Position_Sensor",
+        "Damper_Position_Status"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "signal_role": "damper_position"
+      },
+      "semantic": {
+        "point_class": "Damper_Position_Status"
+      }
+    },
+    {
+      "name": "reheat_valve_command_pct",
+      "label": "Reheat Valve Command",
+      "fmu_variable": "yVal",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Valve_Position_Command"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "signal_role": "reheat_valve_command"
+      },
+      "semantic": {
+        "point_class": "Valve_Position_Command"
+      }
+    },
+    {
+      "name": "reheat_valve_position_pct",
+      "label": "Reheat Valve Position",
+      "fmu_variable": "yVal_actual",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Valve_Position_Sensor",
+        "Valve_Position_Status"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "signal_role": "reheat_valve_position"
+      },
+      "semantic": {
+        "point_class": "Valve_Position_Status"
+      }
+    }
+  ],
+  "calibration": {
+    "enabled": true,
+    "goal": {
+      "output": "supply_airflow_m3_s",
+      "metric": "cv_rmse"
+    },
+    "tuners": [
+      {
+        "parameter": "mCooAir_flow_nominal",
+        "label": "Nominal Cooling Air Mass Flow",
+        "unit": "kg/s",
+        "min": 0.3,
+        "max": 1.0,
+        "initial": 0.6
+      },
+      {
+        "parameter": "mHeaAir_flow_nominal",
+        "label": "Nominal Heating Air Mass Flow",
+        "unit": "kg/s",
+        "min": 0.1,
+        "max": 0.6,
+        "initial": 0.3
+      },
+      {
+        "parameter": "dpAir",
+        "label": "Terminal Air Pressure Difference",
+        "unit": "Pa",
+        "min": 100.0,
+        "max": 500.0,
+        "initial": 200.0
+      }
+    ],
+    "sensitivity": {
+      "method": "morris",
+      "trajectories": 100,
+      "grid_levels": 4,
+      "measure": "mu_star"
+    },
+    "optimizer": {
+      "method": "differential_evolution",
+      "metric": "cv_rmse",
+      "max_iterations": 30,
+      "population_size": 10,
+      "tolerance": 0.01,
+      "seed": 42
+    }
+  }
+}

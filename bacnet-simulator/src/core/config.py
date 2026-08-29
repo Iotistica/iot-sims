@@ -250,7 +250,13 @@ POINT_TYPES = {
 
     # ── Commands ─────────────────────────────────────────────────────────────
 
-    "Supply_Fan_Command": "Supply Fan Command",
+    # Real Brick Core class (verified against bricksrc/command.py at
+    # v1.4.4). "Supply_Fan_Command" previously lived here instead -- not a
+    # real Brick class at any checked version, removed; use this generic
+    # Fan_Command (or Fan_Speed_Command below for a VFD/speed signal
+    # specifically), disambiguated per-fan via isPointOf to a Supply_Fan vs
+    # Return_Fan sub-equipment entity, same as Fan_Status below.
+    "Fan_Command": "Fan Command",
 
     # This is the standard Brick fan VFD/speed command.
     "Fan_Speed_Command": "Fan Speed Command",
@@ -304,18 +310,18 @@ POINT_TYPES = {
     "Low_Temperature_Alarm": "Low Temperature Alarm",
 
     # The temporary non-canonical AHU fan aliases -- Supply_Fan_Speed_Command,
-    # Return_Fan_Speed_Command, Supply_Fan_Status, and a duplicate
-    # re-definition of Return_Fan_Status -- that used to live here have all
-    # been removed by the Brick Core migration. Fan_Status/Fan_Speed_Command
-    # above are now the only fan point classes needed, disambiguated per
-    # instance via isPointOf to a Supply_Fan vs Return_Fan equipment entity
-    # rather than via separate alias class names. This is enforced going
-    # forward (validate_semantic_entity/ObjectCreate.validate_semantic()
-    # reject these values for NEW objects), and existing databases are
-    # actively migrated -- not just tolerated -- by
-    # migrate_ahu_fan_aliases() (src/semantics/backfill.py), which runs on
-    # every Database.setup() and rewrites any object still carrying one of
-    # these four alias strings to the canonical class, building the
+    # Return_Fan_Speed_Command, Supply_Fan_Status, Supply_Fan_Command, and a
+    # duplicate re-definition of Return_Fan_Status -- that used to live here
+    # have all been removed by the Brick Core migration. Fan_Command/
+    # Fan_Status/Fan_Speed_Command above are now the only fan point classes
+    # needed, disambiguated per instance via isPointOf to a Supply_Fan vs
+    # Return_Fan equipment entity rather than via separate alias class
+    # names. This is enforced going forward (validate_semantic_entity/
+    # ObjectCreate.validate_semantic() reject these values for NEW objects),
+    # and existing databases are actively migrated -- not just tolerated --
+    # by migrate_ahu_fan_aliases() (src/semantics/backfill.py), which runs
+    # on every Database.setup() and rewrites any object still carrying one
+    # of these five alias strings to the canonical class, building the
     # matching Supply_Fan/Return_Fan sub-equipment entity + isPartOf +
     # isPointOf relationships in the same pass -- exactly what
     # seed_default() creates for a fresh AHU. src/energy/context.py's

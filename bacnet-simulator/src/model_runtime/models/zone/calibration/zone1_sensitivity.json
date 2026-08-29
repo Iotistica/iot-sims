@@ -1,0 +1,58 @@
+{
+  "model": "aaeb9641-2137-4c79-b4f4-baa88cbce5a5",
+  "fmu": "models/zone/ThermalZone.fmu",
+  "metadata": "models/zone/model.json",
+  "data": "models/zone/calibration/zone1_history.csv",
+  "goal": {
+    "metadata_output": "zone_temp_c",
+    "fmu_variable": "TRoo",
+    "metric": "cv_rmse"
+  },
+  "historical_period": {
+    "samples": 1441,
+    "duration_seconds": 86400.0,
+    "warmup_seconds_excluded_from_metric": 300.0,
+    "output_interval_seconds": 60.0
+  },
+  "sensitivity": {
+    "method": "morris",
+    "trajectories": 100,
+    "grid_levels": 4,
+    "measure": "mu_star",
+    "seed": 42,
+    "fmu_evaluations": 300,
+    "trajectories_attempted": 100,
+    "trajectories_completed": 100,
+    "trajectories_dropped": 0,
+    "dropped_trajectory_rate": 0.0,
+    "reliable": true,
+    "dropped_trajectories": [],
+    "score_summary": {
+      "min": 2.169281182341928,
+      "max": 8.783715296092385,
+      "mean": 5.402669682249167
+    },
+    "results": [
+      {
+        "parameter": "UA",
+        "label": "Envelope UA",
+        "unit": "W/K",
+        "mu": 1.2792390401616034,
+        "mu_star": 3.748356905132863,
+        "sigma": 4.047266728002887,
+        "mu_star_conf": 0.3399891091735779,
+        "rank": 1
+      },
+      {
+        "parameter": "CBuilding",
+        "label": "Building Thermal Capacitance",
+        "unit": "J/K",
+        "mu": -1.815684980934953,
+        "mu_star": 2.3098326142614143,
+        "sigma": 1.8473824134076533,
+        "mu_star_conf": 0.24175312109105546,
+        "rank": 2
+      }
+    ]
+  }
+}

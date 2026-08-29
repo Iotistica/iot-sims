@@ -1,0 +1,8 @@
+numpy
+pandas
+fmpy
+HEBO
+# HEBO 0.3.2 imports pymoo.factory, removed in pymoo 0.6 -- see the
+# compatibility-shim block at the top of shared/run_hebo_calibration.py
+# for the other (runtime-only) incompatibilities this doesn't cover.
+pymoo<0.6

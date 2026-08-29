@@ -1,0 +1,881 @@
+
+{
+  "id": "00795c02-9b34-4155-b625-c90b17fc68dd",
+  "slug": "RTUHeatPump",
+  "label": "RTU Heat Pump",
+  "description": "Packaged rooftop heat-pump FMU with configurable continuous or two-stage DX cooling, air-source heat-pump heating, dry-bulb economizer, and a VAV-capable supply fan -- serves downstream VAV terminals or thermal zones directly without a central chiller/boiler plant.",
+  "fmu_path": "RTUHeatPump.fmu",
+  "warmup_seconds": 300.0,
+  "inputs": [
+    {
+      "name": "supply_air_temp_setpoint_c",
+      "label": "Supply Air Temperature Setpoint",
+      "fmu_variable": "TSupSet",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 13.0,
+      "suggested_point_types": [
+        "Supply_Air_Temperature_Setpoint"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "supply_air_temperature_setpoint"
+      },
+      "semantic": {
+        "point_class": "Supply_Air_Temperature_Setpoint"
+      }
+    },
+    {
+      "name": "outdoor_air_temp_c",
+      "label": "Outdoor Air Temperature",
+      "fmu_variable": "TOut",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 30.0,
+      "suggested_point_types": [
+        "Outside_Air_Temperature_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "any",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "outdoor_air_temperature"
+      },
+      "semantic": {
+        "point_class": "Outside_Air_Temperature_Sensor"
+      }
+    },
+    {
+      "name": "return_air_temp_c",
+      "label": "Return Air Temperature",
+      "fmu_variable": "TRet",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 24.0,
+      "suggested_point_types": [
+        "Return_Air_Temperature_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "return_air_temperature"
+      },
+      "semantic": {
+        "point_class": "Return_Air_Temperature_Sensor"
+      }
+    },
+    {
+      "name": "fan_command_pct",
+      "label": "Fan Command",
+      "fmu_variable": "uFan",
+      "unit": "percent",
+      "conversion": "pct_to_fraction",
+      "default": 80.0,
+      "suggested_point_types": [
+        "Fan_Speed_Command",
+        "Fan_Command"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "supply_fan_command"
+      },
+      "semantic": {
+        "point_class": "Fan_Speed_Command"
+      }
+    },
+    {
+      "name": "most_open_vav_damper_pct",
+      "label": "Most-Open VAV Damper Position",
+      "fmu_variable": "uVAVDamMax",
+      "unit": "percent",
+      "conversion": "pct_to_fraction",
+      "default": 90.0,
+      "suggested_point_types": [
+        "Damper_Position_Sensor",
+        "Damper_Position_Command"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "downstream",
+        "preferred_equipment_types": [
+          "VAV"
+        ],
+        "relationship": "feeds",
+        "signal_role": "most_open_vav_damper_position"
+      },
+      "semantic": {
+        "point_class": "Damper_Position_Sensor"
+      }
+    },
+    {
+      "name": "minimum_outdoor_air_damper_pct",
+      "label": "Minimum Outdoor Air Damper Position",
+      "fmu_variable": "uMinOutAir",
+      "unit": "percent",
+      "conversion": "pct_to_fraction",
+      "default": 15.0,
+      "suggested_point_types": [
+        "Min_Outside_Air_Damper_Position_Setpoint",
+        "Damper_Position_Setpoint"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "minimum_outdoor_air_damper_position"
+      },
+      "semantic": {
+        "point_class": "Min_Outside_Air_Damper_Position_Setpoint"
+      }
+    },
+    {
+      "name": "outdoor_air_damper_override_enable",
+      "label": "Outdoor Air Damper Override Enable",
+      "fmu_variable": "uOutDamOvrEna",
+      "unit": "boolean",
+      "default": false,
+      "suggested_point_types": [],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "outdoor_air_damper_override_enable"
+      },
+      "semantic": {}
+    },
+    {
+      "name": "outdoor_air_damper_override_pct",
+      "label": "Outdoor Air Damper Override Position",
+      "fmu_variable": "uOutDamOvr",
+      "unit": "percent",
+      "conversion": "pct_to_fraction",
+      "default": 0.0,
+      "suggested_point_types": [
+        "Outside_Air_Damper_Position_Setpoint",
+        "Damper_Position_Setpoint"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "outdoor_air_damper_override_position"
+      },
+      "semantic": {
+        "point_class": "Damper_Position_Setpoint"
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "name": "supply_air_temp_c",
+      "label": "Supply Air Temperature",
+      "fmu_variable": "TSup",
+      "unit": "degC",
+      "conversion": "k_to_c",
+      "suggested_point_types": [
+        "Supply_Air_Temperature_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "downstream",
+        "preferred_equipment_types": [
+          "Rooftop_Unit",
+          "VAV"
+        ],
+        "relationship": "feeds",
+        "signal_role": "supply_air_temperature"
+      },
+      "semantic": {
+        "point_class": "Supply_Air_Temperature_Sensor"
+      }
+    },
+    {
+      "name": "mixed_air_temp_c",
+      "label": "Mixed Air Temperature",
+      "fmu_variable": "TMix",
+      "unit": "degC",
+      "conversion": "k_to_c",
+      "suggested_point_types": [
+        "Mixed_Air_Temperature_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "mixed_air_temperature"
+      },
+      "semantic": {
+        "point_class": "Mixed_Air_Temperature_Sensor"
+      }
+    },
+    {
+      "name": "supply_airflow_m3_s",
+      "label": "Supply Airflow",
+      "fmu_variable": "VSup_flow",
+      "unit": "m3/s",
+      "suggested_point_types": [
+        "Supply_Air_Flow_Sensor",
+        "Air_Flow_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "supply_airflow"
+      },
+      "semantic": {
+        "point_class": "Air_Flow_Sensor"
+      }
+    },
+    {
+      "name": "outdoor_airflow_m3_s",
+      "label": "Outdoor Airflow",
+      "fmu_variable": "VOutAir_flow",
+      "unit": "m3/s",
+      "suggested_point_types": [
+        "Outside_Air_Flow_Sensor",
+        "Air_Flow_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "outdoor_airflow"
+      },
+      "semantic": {
+        "point_class": "Outside_Air_Flow_Sensor"
+      }
+    },
+    {
+      "name": "supply_fan_speed_pct",
+      "label": "Supply Fan Speed",
+      "fmu_variable": "yFan",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Fan_Speed_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "supply_fan_speed"
+      },
+      "semantic": {
+        "point_class": "Fan_Speed_Sensor"
+      }
+    },
+    {
+      "name": "outdoor_air_damper_command_pct",
+      "label": "Outdoor Air Damper Command",
+      "fmu_variable": "yOutDamCmd",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Outside_Air_Damper_Command",
+        "Damper_Position_Command"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "outdoor_air_damper_command"
+      },
+      "semantic": {
+        "point_class": "Damper_Position_Command"
+      }
+    },
+    {
+      "name": "outdoor_air_damper_pct",
+      "label": "Outdoor Air Damper Position",
+      "fmu_variable": "yOutDam",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Outside_Air_Damper_Position_Sensor",
+        "Damper_Position_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "outdoor_air_damper_position"
+      },
+      "semantic": {
+        "point_class": "Damper_Position_Sensor"
+      }
+    },
+    {
+      "name": "cooling_command_pct",
+      "label": "Cooling Command",
+      "fmu_variable": "yCoo",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Cooling_Command"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "cooling_command"
+      },
+      "semantic": {
+        "point_class": "Cooling_Command"
+      }
+    },
+    {
+      "name": "heating_command_pct",
+      "label": "Heating Command",
+      "fmu_variable": "yHea",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [
+        "Heating_Command"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "heating_command"
+      },
+      "semantic": {
+        "point_class": "Heating_Command"
+      }
+    },
+    {
+      "name": "cooling_thermal_load_kw",
+      "label": "Cooling Thermal Load",
+      "fmu_variable": "QCoolLoad",
+      "unit": "kilowatts",
+      "conversion": "w_to_kw",
+      "suggested_point_types": [
+        "Thermal_Power_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "cooling_thermal_load"
+      },
+      "semantic": {
+        "point_class": "Thermal_Power_Sensor"
+      }
+    },
+    {
+      "name": "heating_thermal_load_kw",
+      "label": "Heating Thermal Load",
+      "fmu_variable": "QHeaLoad",
+      "unit": "kilowatts",
+      "conversion": "w_to_kw",
+      "suggested_point_types": [
+        "Heating_Thermal_Power_Sensor",
+        "Thermal_Power_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "heating_thermal_load"
+      },
+      "semantic": {
+        "point_class": "Heating_Thermal_Power_Sensor"
+      }
+    },
+    {
+      "name": "heating_compressor_power_kw",
+      "label": "Heating Compressor Power",
+      "fmu_variable": "PHeatingCompressor",
+      "unit": "kilowatts",
+      "conversion": "w_to_kw",
+      "suggested_point_types": [
+        "Electric_Power_Sensor",
+        "Power_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "heating_compressor_electric_power"
+      },
+      "semantic": {
+        "point_class": "Electric_Power_Sensor"
+      }
+    },
+    {
+      "name": "heating_cop",
+      "label": "Heating COP",
+      "fmu_variable": "heatingCOP",
+      "unit": "1",
+      "suggested_point_types": [],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "heating_cop"
+      },
+      "semantic": {}
+    },
+    {
+      "name": "available_heating_capacity_kw",
+      "label": "Available Heat-Pump Heating Capacity",
+      "fmu_variable": "availableHeatingCapacity",
+      "unit": "kW",
+      "conversion": "w_to_kw",
+      "suggested_point_types": [
+        "Heating_Thermal_Power_Sensor",
+        "Thermal_Power_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "available_heating_capacity"
+      },
+      "semantic": {
+        "point_class": "Heating_Thermal_Power_Sensor"
+      }
+    },
+    {
+      "name": "cooling_compressor_power_kw",
+      "label": "Cooling Compressor Power",
+      "fmu_variable": "PCompressor",
+      "unit": "kilowatts",
+      "conversion": "w_to_kw",
+      "suggested_point_types": [
+        "Electric_Power_Sensor",
+        "Power_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "cooling_compressor_electric_power"
+      },
+      "semantic": {
+        "point_class": "Electric_Power_Sensor"
+      }
+    },
+    {
+      "name": "supply_fan_power_kw",
+      "label": "Supply Fan Power",
+      "fmu_variable": "PFan",
+      "unit": "kilowatts",
+      "conversion": "w_to_kw",
+      "suggested_point_types": [
+        "Electric_Power_Sensor",
+        "Power_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit",
+          "Supply_Fan"
+        ],
+        "signal_role": "supply_fan_electric_power"
+      },
+      "semantic": {
+        "point_class": "Electric_Power_Sensor"
+      }
+    },
+    {
+      "name": "supply_duct_static_pressure_pa",
+      "label": "Supply Duct Static Pressure",
+      "fmu_variable": "dpSup",
+      "unit": "Pa",
+      "suggested_point_types": [
+        "Supply_Air_Static_Pressure_Sensor",
+        "Static_Pressure_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit",
+          "Supply_Fan"
+        ],
+        "signal_role": "supply_duct_static_pressure"
+      },
+      "semantic": {
+        "point_class": "Supply_Air_Static_Pressure_Sensor"
+      }
+    },
+    {
+      "name": "supply_duct_static_pressure_setpoint_pa",
+      "label": "Supply Duct Static Pressure Setpoint",
+      "fmu_variable": "dpSupSet",
+      "unit": "Pa",
+      "suggested_point_types": [
+        "Supply_Air_Static_Pressure_Setpoint",
+        "Static_Pressure_Setpoint"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "supply_duct_static_pressure_setpoint"
+      },
+      "semantic": {
+        "point_class": "Supply_Air_Static_Pressure_Setpoint"
+      }
+    },
+    {
+      "name": "cooling_part_load_ratio_pct",
+      "label": "Cooling Part-Load Ratio",
+      "fmu_variable": "coolingPLR",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "cooling_part_load_ratio"
+      },
+      "semantic": {}
+    },
+    {
+      "name": "heating_part_load_ratio_pct",
+      "label": "Heating Part-Load Ratio",
+      "fmu_variable": "heatingPLR",
+      "unit": "percent",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": [],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "heating_part_load_ratio"
+      },
+      "semantic": {}
+    },
+    {
+      "name": "total_electric_power_kw",
+      "label": "Total Electric Power",
+      "fmu_variable": "totalElectricPower",
+      "unit": "kilowatts",
+      "conversion": "w_to_kw",
+      "suggested_point_types": [
+        "Electric_Power_Sensor",
+        "Power_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "total_electric_power"
+      },
+      "semantic": {
+        "point_class": "Electric_Power_Sensor"
+      }
+    },
+    {
+      "name": "cooling_compressor_cop",
+      "label": "Cooling Compressor COP",
+      "fmu_variable": "compressorCOP",
+      "unit": "1",
+      "suggested_point_types": [],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "cooling_compressor_cop"
+      },
+      "semantic": {}
+    },
+    {
+      "name": "available_cooling_capacity_kw",
+      "label": "Available DX Cooling Capacity",
+      "fmu_variable": "availableCoolingCapacity",
+      "unit": "kW",
+      "conversion": "w_to_kw",
+      "suggested_point_types": [
+        "Cooling_Thermal_Power_Sensor"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "available_cooling_capacity"
+      },
+      "semantic": {
+        "point_class": "Cooling_Thermal_Power_Sensor"
+      }
+    },
+    {
+      "name": "compressor_stage",
+      "label": "Compressor Stage",
+      "fmu_variable": "compressorStage",
+      "unit": "1",
+      "suggested_point_types": [
+        "Compressor_Command"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "compressor_stage"
+      },
+      "semantic": {
+        "point_class": "Compressor_Command"
+      }
+    },
+    {
+      "name": "supply_fan_status",
+      "label": "Supply Fan Status",
+      "fmu_variable": "supplyFanStatus",
+      "unit": "boolean",
+      "suggested_point_types": [
+        "Fan_Status"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "supply_fan_status"
+      },
+      "semantic": {
+        "point_class": "Fan_Status"
+      }
+    },
+    {
+      "name": "cooling_status",
+      "label": "Cooling Status",
+      "fmu_variable": "coolingStatus",
+      "unit": "boolean",
+      "suggested_point_types": [
+        "Cooling_Status"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "cooling_status"
+      },
+      "semantic": {
+        "point_class": "Cooling_Status"
+      }
+    },
+    {
+      "name": "heating_status",
+      "label": "Heating Status",
+      "fmu_variable": "heatingStatus",
+      "unit": "boolean",
+      "suggested_point_types": [
+        "Heating_Status"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "heating_status"
+      },
+      "semantic": {
+        "point_class": "Heating_Status"
+      }
+    },
+    {
+      "name": "economizer_status",
+      "label": "Economizer Status",
+      "fmu_variable": "economizerStatus",
+      "unit": "boolean",
+      "suggested_point_types": [
+        "Economizer_Status"
+      ],
+      "mapping_hints": {
+        "equipment_scope": "self",
+        "preferred_equipment_types": [
+          "Rooftop_Unit"
+        ],
+        "signal_role": "economizer_status"
+      },
+      "semantic": {
+        "point_class": "Economizer_Status"
+      }
+    }
+  ],
+  "calibration": {
+    "enabled": true,
+    "goal": {
+      "output": "supply_air_temp_c",
+      "metric": "cv_rmse"
+    },
+    "tuners": [
+      {
+        "parameter": "QCoo_flow_nominal",
+        "label": "Nominal DX Cooling Capacity",
+        "unit": "W",
+        "min": -55000.0,
+        "max": -20000.0,
+        "initial": -36846.82
+      },
+      {
+        "parameter": "COP_nominal",
+        "label": "Nominal Compressor COP",
+        "unit": "1",
+        "min": 2.5,
+        "max": 5.0,
+        "initial": 3.71
+      },
+      {
+        "parameter": "kCOPPerKelvin",
+        "label": "COP Outdoor-Temperature Slope",
+        "unit": "1/K",
+        "min": 0.0,
+        "max": 0.1,
+        "initial": 0.04
+      },
+      {
+        "parameter": "kCapOutPerKelvin",
+        "label": "DX Capacity Outdoor-Temperature Slope",
+        "unit": "1/K",
+        "min": 0.0,
+        "max": 0.02,
+        "initial": 0.006
+      },
+      {
+        "parameter": "kCapMixPerKelvin",
+        "label": "DX Capacity Entering-Air Slope",
+        "unit": "1/K",
+        "min": 0.0,
+        "max": 0.03,
+        "initial": 0.01
+      },
+      {
+        "parameter": "partLoadDegradation",
+        "label": "DX Part-Load Degradation Coefficient",
+        "unit": "1",
+        "min": 0.0,
+        "max": 0.35,
+        "initial": 0.15
+      },
+      {
+        "parameter": "kSAT",
+        "label": "SAT Loop Proportional Gain",
+        "unit": "1",
+        "min": 0.05,
+        "max": 0.5,
+        "initial": 0.2
+      },
+      {
+        "parameter": "TiSAT",
+        "label": "SAT Loop Integral Time",
+        "unit": "s",
+        "min": 30.0,
+        "max": 300.0,
+        "initial": 120.0
+      },
+      {
+        "parameter": "QHea_flow_nominal",
+        "label": "Nominal Heat-Pump Heating Capacity",
+        "unit": "W",
+        "min": 15000.0,
+        "max": 50000.0,
+        "initial": 30000.0
+      },
+      {
+        "parameter": "COPHea_nominal",
+        "label": "Nominal Heating COP",
+        "unit": "1",
+        "min": 1.5,
+        "max": 5.0,
+        "initial": 3.2
+      },
+      {
+        "parameter": "kHeaCOPPerKelvin",
+        "label": "Heating COP Outdoor-Temperature Slope",
+        "unit": "1/K",
+        "min": 0.0,
+        "max": 0.15,
+        "initial": 0.06
+      },
+      {
+        "parameter": "kHeaCapPerKelvin",
+        "label": "Heating Capacity Outdoor-Temperature Slope",
+        "unit": "1/K",
+        "min": 0.0,
+        "max": 0.05,
+        "initial": 0.015
+      }
+    ],
+    "sensitivity": {
+      "method": "morris",
+      "trajectories": 100,
+      "grid_levels": 4,
+      "measure": "mu_star"
+    },
+    "optimizer": {
+      "method": "differential_evolution",
+      "metric": "cv_rmse",
+      "max_iterations": 30,
+      "population_size": 10,
+      "tolerance": 0.01,
+      "seed": 42
+    },
+    "notes": [
+      "Run Morris sensitivity screening before optimization and calibrate only influential parameters.",
+      "For energy calibration, include compressor_power_kw or total_electric_power_kw in the measured validation dataset even though the current goal schema remains supply_air_temp_c/CV-RMSE.",
+      "Use separate calibration and validation time windows; do not validate on the same samples used for fitting.",
+      "Two-stage DX settings are equipment-configuration parameters, not continuous calibration tuners; select the equipment archetype before sensitivity/calibration.",
+      "Humidity/latent-capacity physics is intentionally deferred to a separate model revision because it requires new humidity inputs/outputs and changes the air-state calibration contract.",
+      "For heat-pump energy calibration, include heating_compressor_power_kw and/or total_electric_power_kw in the measured validation dataset during heating periods.",
+      "The default heat-pump heating COP and capacity-vs-outdoor-temperature relationships are calibration placeholders, not manufacturer performance curves.",
+      "This heat-pump v1 does not model auxiliary electric resistance heat, defrost operation, or detailed refrigerant reversing-cycle states."
+    ]
+  },
+  "model_options": {
+    "dx_cooling_control": {
+      "parameter": "useTwoStageCooling",
+      "default": false,
+      "modes": {
+        "continuous_modulating": false,
+        "two_stage": true
+      },
+      "two_stage_defaults": {
+        "stage1Fraction": 0.67,
+        "stage1DemandThreshold": 0.02,
+        "stage2DemandThreshold": 0.67
+      }
+    },
+    "heating_type": {
+      "type": "air_source_heat_pump",
+      "outdoor_temperature_input": "TOut",
+      "auxiliary_electric_heat": false,
+      "defrost_modeled": false,
+      "detailed_reversing_cycle_modeled": false
+    }
+  }
+}

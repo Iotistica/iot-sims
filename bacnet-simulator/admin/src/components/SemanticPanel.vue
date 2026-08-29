@@ -1,10 +1,31 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined, AimOutlined } from '@ant-design/icons-vue'
-import cytoscape, { type Core, type ElementDefinition } from 'cytoscape'
+import { VueFlow, useVueFlow, MarkerType } from '@vue-flow/core'
+import { Background } from '@vue-flow/background'
+import { Controls } from '@vue-flow/controls'
+import dagre from '@dagrejs/dagre'
 import { api } from '../api'
+import { formatPresentValue } from '../format'
 import type { Device, SimObject, Location, Meta, SemanticEntity, SemanticRelationship } from '../types'
+import SemanticGraphNode from './SemanticGraphNode.vue'
+import SemanticFlowEdge from './SemanticFlowEdge.vue'
+
+import '@vue-flow/core/dist/style.css'
+import '@vue-flow/core/dist/theme-default.css'
+import '@vue-flow/controls/dist/style.css'
+// @vue-flow/background ships no separate stylesheet -- its dot/line
+// pattern is plain inline SVG, styled via @vue-flow/core's own CSS vars.
+
+// Same shape ObjectsPanel.vue already declares -- the app's one existing
+// live-value stream (App.vue's wsConnect(), pushed on every simulation
+// tick), reused here with no new backend endpoint.
+const props = defineProps<{
+  liveValues: Record<number, number | boolean>
+  modelValues: Record<number, number | boolean>
+  modelStates: Record<number, string>
+}>()
 
 const loading = ref(false)
 
@@ -127,7 +148,7 @@ function filterByLabel(input: string, option: { label?: string }) {
   return (option.label ?? '').toLowerCase().includes(input.toLowerCase())
 }
 
-// ── Graph (Cytoscape.js) ──────────────────────────────────────────────────
+// ── Graph (Vue Flow + Dagre) ────────────────────────────────────────────
 // This is now the entirety of the Graph tab -- read-only visualization of
 // the Brick semantic model. Manual entity/relationship editing (previously
 // its own "Entities"/"Relationships" sub-tabs here) was removed; Brick
@@ -135,12 +156,36 @@ function filterByLabel(input: string, option: { label?: string }) {
 // own drawer (mirrored into the graph automatically), and relationships are
 // created through their dedicated flows (the Controller drawer's Controls
 // field, the Equipment panel's Manage Points/Assign Controller actions).
-const graphContainer = ref<HTMLDivElement | null>(null)
+//
+// Vue Flow renders; Dagre only computes {x,y} positions from generic
+// node/edge objects (id + width/height in, position out) -- it never sees
+// predicates/entity_kind, all of that stays in buildFlowElements() below.
 const graphFocusEntityId = ref<number | null>(null)
 const graphDepth = ref<1 | 2 | 3>(2)
 const graphShowPoints = ref(true)
 const selectedGraphEntity = ref<SemanticEntity | null>(null)
-let cy: Core | null = null
+// Typed `any[]` rather than Vue Flow's Node[]/Edge[] -- the same vue-tsc
+// "excessively deep type instantiation" workaround FunctionalTestBuilder.vue
+// already uses for Vue Flow's discriminated-union types.
+const nodes = ref<any[]>([])
+const edges = ref<any[]>([])
+const { fitView } = useVueFlow()
+
+// Per-kind box size -- both what Dagre lays out around AND what each Vue
+// Flow node object's own width/height is set to, so the rendered
+// SemanticGraphNode always exactly fills the box Dagre assumed. Equipment
+// is the most prominent node, Point the most compact, per the design brief.
+const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
+  // Equipment gets extra height in Phase 2 for its resolved live-value
+  // summary block (SemanticGraphNode.vue's .sgn-summary, capped/scroll-
+  // clipped there so an equipment with many resolved points never grows
+  // the box further) -- otherwise unchanged from Phase 1.
+  equipment: { width: 190, height: 104 },
+  location: { width: 160, height: 60 },
+  controller: { width: 160, height: 60 },
+  point: { width: 118, height: 48 },
+  'point-unclassified': { width: 118, height: 48 },
+}
 
 const graphFocusOptions = computed(() =>
   entities.value
@@ -255,16 +300,211 @@ function displayEdge(r: SemanticRelationship) {
   }
 }
 
-function cssColor(name: string, fallback: string): string {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-  return value || fallback
+// ── Live value resolution (Phase 2) ────────────────────────────────────
+// Deliberately small, not a second SemanticResolver: every function below
+// is built from exactly two primitives -- direct isPointOf points, and one
+// isPartOf hop into a named sub-equipment (e.g. Supply_Fan) then ITS direct
+// isPointOf points. No per-equipment-type (AHU/RTU/VAV) special-casing, no
+// point-name matching, no topology reconstruction, no traversal beyond
+// that single isPartOf hop. If a real deployment needs more than this to
+// resolve reliably, that's a gap to report, not a reason to build deeper
+// inference here that duplicates src/semantics/resolver.py.
+
+// Sensor/status classes are shown as measured state; command classes are
+// included but always visibly labeled as commanded -- see
+// resolveEquipmentSummary()'s isCommand handling.
+const SUMMARY_SENSOR_STATUS_CLASSES = [
+  'Fan_Status', 'Supply_Air_Flow_Sensor', 'Air_Flow_Sensor', 'Outside_Air_Flow_Sensor',
+  'Supply_Air_Temperature_Sensor', 'Return_Air_Temperature_Sensor',
+  'Mixed_Air_Temperature_Sensor', 'Outside_Air_Temperature_Sensor', 'Zone_Air_Temperature_Sensor',
+  'Damper_Position_Sensor', 'Damper_Position_Status', 'Cooling_Status', 'Heating_Status',
+] as const
+const SUMMARY_COMMAND_CLASSES = [
+  'Fan_Command', 'Fan_Speed_Command', 'Damper_Position_Command', 'Cooling_Command', 'Heating_Command',
+] as const
+const SUMMARY_BRICK_CLASSES = new Set<string>([...SUMMARY_SENSOR_STATUS_CLASSES, ...SUMMARY_COMMAND_CLASSES])
+const COMMAND_CLASS_SET = new Set<string>(SUMMARY_COMMAND_CLASSES)
+
+// Only these establish measured airflow -- see resolveFeedsFlowState()'s
+// priority order. Damper_Position_Sensor is deliberately NOT in this list
+// anywhere: it may be displayed on an Equipment summary, but must never by
+// itself establish flow.
+const AIRFLOW_SENSOR_CLASSES = ['Air_Flow_Sensor', 'Supply_Air_Flow_Sensor', 'Outside_Air_Flow_Sensor']
+const AIRFLOW_ON_THRESHOLD = 5 // coarse "meaningfully more than zero" cut, not a calibrated value
+const AIRFLOW_FAST_THRESHOLD = 500 // coarse tier boundary only, not a physical calibration
+
+function pointLiveValue(point: SemanticEntity): number | boolean | undefined {
+  return point.object_id != null ? props.liveValues[point.object_id] : undefined
 }
 
-function renderGraph() {
-  if (!graphContainer.value) return
+// Direct isPointOf points on entityId whose brick_class is in the allowlist.
+function findDirectPoints(entityId: number, brickClasses: Set<string> | readonly string[]): SemanticEntity[] {
+  const wanted = brickClasses instanceof Set ? brickClasses : new Set(brickClasses)
+  const points: SemanticEntity[] = []
+  for (const r of relationships.value) {
+    if (r.predicate !== 'isPointOf' || r.target_entity_id !== entityId) continue
+    const point = entityById.value.get(r.source_entity_id)
+    if (point && wanted.has(point.brick_class)) points.push(point)
+  }
+  return points
+}
 
-  chooseDefaultGraphFocus()
+// One isPartOf hop into a named sub-equipment (e.g. Supply_Fan), then that
+// sub-equipment's own direct isPointOf points. Never goes further than
+// this single hop.
+function findSubEquipmentPoints(
+  entityId: number, subEquipmentBrickClass: string, brickClasses: Set<string> | readonly string[],
+): SemanticEntity[] {
+  const points: SemanticEntity[] = []
+  for (const r of relationships.value) {
+    if (r.predicate !== 'isPartOf' || r.target_entity_id !== entityId) continue
+    const sub = entityById.value.get(r.source_entity_id)
+    if (sub && sub.brick_class === subEquipmentBrickClass) {
+      points.push(...findDirectPoints(sub.id, brickClasses))
+    }
+  }
+  return points
+}
 
+interface SummaryLine { label: string; value: string; isCommand: boolean }
+
+// Equipment node display block -- direct + one-Supply_Fan-hop points only,
+// matched against the small allowlist above.
+function resolveEquipmentSummary(entity: SemanticEntity): SummaryLine[] {
+  if (entity.entity_kind !== 'equipment') return []
+  const points = [
+    ...findDirectPoints(entity.id, SUMMARY_BRICK_CLASSES),
+    ...findSubEquipmentPoints(entity.id, 'Supply_Fan', SUMMARY_BRICK_CLASSES),
+  ]
+
+  const lines: SummaryLine[] = []
+  const seen = new Set<string>()
+  for (const point of points) {
+    if (seen.has(point.brick_class)) continue // first match per class wins -- no duplicate lines
+    const value = pointLiveValue(point)
+    if (value === undefined) continue
+    seen.add(point.brick_class)
+    const obj = point.object_id != null ? objectById.value.get(point.object_id) : undefined
+    const isCommand = COMMAND_CLASS_SET.has(point.brick_class)
+    const unit = obj && obj.units !== 'no-units' ? ` ${obj.units}` : ''
+    lines.push({
+      label: point.brick_class.replace(/_/g, ' '),
+      value: `${isCommand ? 'Cmd: ' : ''}${formatPresentValue(obj?.object_type ?? '', value)}${unit}`,
+      isCommand,
+    })
+  }
+  return lines
+}
+
+function findAirFlowSensorValue(entityId: number): number | undefined {
+  for (const point of findDirectPoints(entityId, AIRFLOW_SENSOR_CLASSES)) {
+    const value = pointLiveValue(point)
+    if (typeof value === 'number') return value
+  }
+  return undefined
+}
+
+function findFanStatusOn(entityId: number): boolean | undefined {
+  const points = [
+    ...findDirectPoints(entityId, ['Fan_Status']),
+    ...findSubEquipmentPoints(entityId, 'Supply_Fan', ['Fan_Status']),
+  ]
+  for (const point of points) {
+    const value = pointLiveValue(point)
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'number') return value > 0.5
+  }
+  return undefined
+}
+
+type FlowStatus = 'measured' | 'qualitative' | 'off' | 'unknown'
+interface FlowState { status: FlowStatus; tier: 0 | 1 | 2 }
+
+// Per-edge (branch-aware) flow resolution for a single `feeds` edge --
+// deliberately NOT a copy of the source equipment's summary onto every
+// outgoing edge (an RTU feeding three VAVs must not show RTU's one total
+// supply airflow on all three branches). Priority order:
+//   1. The EDGE'S TARGET's own Air_Flow_Sensor (branch/downstream-specific,
+//      preferred whenever it exists).
+//   2. The edge's SOURCE's own Air_Flow_Sensor (only when the target has
+//      none of its own).
+//   3. The source's Fan_Status -- qualitative evidence the system is
+//      operating only, never a magnitude (no numeric tier scaling).
+//   4. Unknown -- static edge, no claim either way.
+// Damper_Position_Sensor is never consulted at any step.
+function resolveFeedsFlowState(sourceEntityId: number, targetEntityId: number): FlowState {
+  const targetFlow = findAirFlowSensorValue(targetEntityId)
+  if (targetFlow !== undefined) {
+    return targetFlow > AIRFLOW_ON_THRESHOLD
+      ? { status: 'measured', tier: targetFlow > AIRFLOW_FAST_THRESHOLD ? 2 : 1 }
+      : { status: 'off', tier: 0 }
+  }
+
+  const sourceFlow = findAirFlowSensorValue(sourceEntityId)
+  if (sourceFlow !== undefined) {
+    return sourceFlow > AIRFLOW_ON_THRESHOLD
+      ? { status: 'measured', tier: sourceFlow > AIRFLOW_FAST_THRESHOLD ? 2 : 1 }
+      : { status: 'off', tier: 0 }
+  }
+
+  const fanOn = findFanStatusOn(sourceEntityId)
+  if (fanOn !== undefined) {
+    return fanOn ? { status: 'qualitative', tier: 1 } : { status: 'off', tier: 0 }
+  }
+
+  return { status: 'unknown', tier: 0 }
+}
+
+// The narrow live-value reactive path -- mutates existing nodes.value[i]/
+// edges.value[i] .data fields IN PLACE and never touches .position, so a
+// live tick can never trigger applyDagreLayout()/renderGraph(). Completely
+// separate from the structural watch below.
+let previousLiveValues: Record<number, number | boolean> = {}
+const justChangedTimers = new Map<number, ReturnType<typeof setTimeout>>()
+
+function updateLiveDisplay() {
+  const current = props.liveValues
+  const changedObjectIds = new Set<number>()
+  for (const key in current) {
+    const objId = Number(key)
+    if (previousLiveValues[objId] !== current[objId]) changedObjectIds.add(objId)
+  }
+  previousLiveValues = current
+
+  for (const node of nodes.value) {
+    if (node.data.kind === 'point' || node.data.kind === 'point-unclassified') {
+      const objectId: number | null = node.data.objectId
+      const obj = objectId != null ? objectById.value.get(objectId) : undefined
+      const value = objectId != null ? current[objectId] : undefined
+      node.data.valueLabel = obj && value !== undefined
+        ? `${formatPresentValue(obj.object_type, value)}${obj.units !== 'no-units' ? ` ${obj.units}` : ''}`
+        : null
+
+      if (objectId != null && changedObjectIds.has(objectId)) {
+        node.data.justChanged = true
+        const existing = justChangedTimers.get(objectId)
+        if (existing) clearTimeout(existing)
+        justChangedTimers.set(objectId, setTimeout(() => { node.data.justChanged = false }, 900))
+      }
+    } else if (node.data.kind === 'equipment') {
+      const entity = entityById.value.get(node.data.entityId)
+      node.data.summaryLines = entity ? resolveEquipmentSummary(entity) : []
+    }
+  }
+
+  for (const edge of edges.value) {
+    if (edge.data?.predicate !== 'feeds') continue
+    edge.data.flowState = resolveFeedsFlowState(edge.data.sourceEntityId, edge.data.targetEntityId)
+  }
+}
+
+watch(() => props.liveValues, updateLiveDisplay)
+
+// Builds plain Vue Flow node/edge objects from the current focus/depth/
+// points-filtered entity set -- the direct replacement for the old
+// Cytoscape `elements` array. Positions are a placeholder here; Dagre
+// (applyDagreLayout) fills them in immediately after.
+function buildFlowElements(): { nodes: any[]; edges: any[] } {
   const ids = graphEntityIds()
   const visibleEntities = entities.value.filter(e => ids.has(e.id))
   const visibleRelationships = relationships.value.filter(
@@ -277,233 +517,162 @@ function renderGraph() {
   )
   const visibleUnclassifiedPoints = visibleHostingEdges.filter(e => e.isUnclassified)
 
-  const elements: ElementDefinition[] = [
-    ...visibleEntities.map(e => ({
-      group: 'nodes' as const,
-      data: {
-        id: `entity-${e.id}`,
-        entityId: e.id,
-        // Point nodes show just the point name -- the Brick class (often a
-        // long Condenser_Water_Temperature_Sensor-style name) is already
-        // shown in the inspector panel on click, and doesn't fit
-        // meaningfully in the small ellipse without crowding out the name.
-        label: e.entity_kind === 'point' ? e.name : `${e.name}\n${e.brick_class}`,
-        kind: e.entity_kind,
-      },
-      classes: [
-        `kind-${e.entity_kind}`,
-        e.id === graphFocusEntityId.value ? 'graph-focus' : '',
-      ].filter(Boolean).join(' '),
-    })),
-    ...visibleUnclassifiedPoints.map(e => ({
-      group: 'nodes' as const,
-      data: {
-        id: `entity-${e.targetId}`,
-        entityId: e.targetId,
-        // Name only, same as classified point nodes above -- the dashed
-        // border is what signals "unclassified", not a second text line.
-        label: e.targetName,
-        kind: 'point-unclassified',
-      },
-      classes: 'kind-point-unclassified',
-    })),
-    ...visibleRelationships.map(r => {
-      const edge = displayEdge(r)
+  const flowNodes: any[] = [
+    ...visibleEntities.map(e => {
+      const dims = NODE_DIMENSIONS[e.entity_kind] ?? NODE_DIMENSIONS.point
       return {
-        group: 'edges' as const,
+        id: `entity-${e.id}`,
+        type: 'semanticNode',
+        position: { x: 0, y: 0 },
+        width: dims.width,
+        height: dims.height,
         data: {
-          id: `relationship-${r.id}`,
-          source: `entity-${edge.source}`,
-          target: `entity-${edge.target}`,
-          label: edge.label,
-          predicate: edge.predicate,
+          entityId: e.id,
+          kind: e.entity_kind,
+          // Point nodes show just the point name -- the Brick class (often
+          // a long Condenser_Water_Temperature_Sensor-style name) is
+          // already shown in the inspector panel on click, and doesn't fit
+          // meaningfully in the compact ellipse without crowding the name.
+          label: e.name,
+          brickClass: e.entity_kind === 'point' ? null : e.brick_class,
+          isFocus: e.id === graphFocusEntityId.value,
+          // Live-display fields (Phase 2) -- objectId lets a point node
+          // look itself up in liveValues without re-deriving it later;
+          // valueLabel/justChanged/summaryLines are populated by
+          // updateLiveDisplay(), never by buildFlowElements() itself.
+          objectId: e.entity_kind === 'point' ? e.object_id ?? null : null,
+          valueLabel: null as string | null,
+          justChanged: false,
+          summaryLines: [] as { label: string; value: string; isCommand: boolean }[],
         },
       }
     }),
+    ...visibleUnclassifiedPoints.map(e => {
+      const dims = NODE_DIMENSIONS['point-unclassified']
+      return {
+        id: `entity-${e.targetId}`,
+        type: 'semanticNode',
+        position: { x: 0, y: 0 },
+        width: dims.width,
+        height: dims.height,
+        data: {
+          entityId: e.targetId,
+          kind: 'point-unclassified',
+          // Name only, same as classified point nodes above -- the dashed
+          // border is what signals "unclassified", not a second text line.
+          label: e.targetName,
+          brickClass: null,
+          isFocus: false,
+          // targetId is -objectId for the synthetic unclassified-point id
+          // space (see derivedHostingEdges' own comment above).
+          objectId: -e.targetId,
+          valueLabel: null as string | null,
+          justChanged: false,
+          summaryLines: [],
+        },
+      }
+    }),
+  ]
+
+  const flowEdges: any[] = [
+    ...visibleRelationships.map(r => {
+      const edge = displayEdge(r)
+      const isFeeds = edge.predicate === 'feeds'
+      return {
+        id: `relationship-${r.id}`,
+        source: `entity-${edge.source}`,
+        target: `entity-${edge.target}`,
+        // Phase 2 assigns 'semanticFlowEdge' to feeds edges once
+        // SemanticFlowEdge.vue exists; every other predicate keeps Vue
+        // Flow's default (labeled, non-animated) edge rendering.
+        type: isFeeds ? 'semanticFlowEdge' : undefined,
+        label: edge.label,
+        markerEnd: MarkerType.ArrowClosed,
+        style: { stroke: 'var(--border, #595959)' },
+        labelStyle: { fill: 'var(--text-muted, #8c8c8c)', fontSize: 9 },
+        labelBgStyle: { fill: 'var(--surface, #141414)', fillOpacity: 0.9 },
+        labelBgPadding: [3, 3] as [number, number],
+        // sourceEntityId/targetEntityId are the raw semantic entity ids
+        // (unlike .source/.target above, which are Vue Flow node id
+        // strings) -- flow-state resolution reads these directly rather
+        // than re-parsing the `entity-<id>` string later.
+        data: { predicate: edge.predicate, sourceEntityId: edge.source, targetEntityId: edge.target, flowState: null as unknown },
+      }
+    }),
+    // Derived (not persisted) edges -- dashed to visually distinguish
+    // "known from objects.device_id" from user-created relationships.
     ...visibleHostingEdges.map(e => ({
-      group: 'edges' as const,
-      data: {
-        id: `hosts-${e.controllerEntityId}-${e.targetId}`,
-        source: `entity-${e.controllerEntityId}`,
-        target: `entity-${e.targetId}`,
-        label: 'hosts',
-        predicate: 'hosts',
-      },
+      id: `hosts-${e.controllerEntityId}-${e.targetId}`,
+      source: `entity-${e.controllerEntityId}`,
+      target: `entity-${e.targetId}`,
+      label: 'hosts',
+      markerEnd: MarkerType.ArrowClosed,
+      style: { stroke: '#d46b08', strokeDasharray: '5 3' },
+      labelStyle: { fill: '#d46b08', fontSize: 9 },
+      labelBgStyle: { fill: 'var(--surface, #141414)', fillOpacity: 0.9 },
+      labelBgPadding: [3, 3] as [number, number],
+      data: { predicate: 'hosts' },
     })),
   ]
 
-  cy?.destroy()
+  return { nodes: flowNodes, edges: flowEdges }
+}
 
-  cy = cytoscape({
-    container: graphContainer.value,
-    elements,
-    wheelSensitivity: 0.18,
-    minZoom: 0.25,
-    maxZoom: 2.5,
-    style: [
-      {
-        selector: 'node',
-        style: {
-          'label': 'data(label)',
-          'text-wrap': 'wrap',
-          'text-max-width': '150px',
-          'text-valign': 'center',
-          'text-halign': 'center',
-          'font-size': 11,
-          'color': cssColor('--text-color', '#d9d9d9'),
-          'background-color': cssColor('--component-background', '#262626'),
-          'border-color': cssColor('--border-color-base', '#595959'),
-          'border-width': 1.5,
-          'width': 150,
-          'height': 58,
-          'padding': '8px',
-        },
-      },
-     {
-  selector: '.kind-equipment',
-  style: {
-    'shape': 'round-rectangle',
-    'background-color': '#162d4d',
-    'border-color': '#4096ff',
-    'border-width': 2,
-  },
-},
-{
-  selector: '.kind-point',
-  style: {
-    'shape': 'ellipse',
-    'background-color': '#173b2c',
-    'border-color': '#49aa19',
-    'width': 118,
-    'height': 48,
-    'font-size': 10,
-  },
-},
-{
-  selector: '.kind-location',
-  style: {
-    'shape': 'round-rectangle',
-    'background-color': '#30204d',
-    'border-color': '#9254de',
-    'border-style': 'dashed',
-    'border-width': 2,
-  },
-},
-{
-  selector: '.kind-controller',
-  style: {
-    'shape': 'round-rectangle',
-    'background-color': '#4d2b0a',
-    'border-color': '#d46b08',
-    'border-width': 2,
-  },
-},
-{
-  // Derived, unclassified BACnet object (no semantic Point entity yet) --
-  // dashed/muted variant of the ordinary point node so it visually reads
-  // as "known to exist, not yet semantically described".
-  selector: '.kind-point-unclassified',
-  style: {
-    'shape': 'ellipse',
-    'background-color': '#262626',
-    'border-color': '#595959',
-    'border-style': 'dashed',
-    'width': 118,
-    'height': 48,
-    'font-size': 10,
-    'color': cssColor('--text-muted', '#8c8c8c'),
-  },
-},
-      {
-        selector: '.graph-focus',
-        style: {
-          'border-color': cssColor('--primary-color', '#1677ff'),
-          'border-width': 4,
-        },
-      },
-      {
-        selector: 'edge',
-        style: {
-          'curve-style': 'bezier',
-          'width': 1.6,
-          'line-color': cssColor('--border-color-base', '#595959'),
-          'target-arrow-color': cssColor('--border-color-base', '#595959'),
-          'target-arrow-shape': 'triangle',
-          'arrow-scale': 0.8,
-          'label': 'data(label)',
-          'font-size': 9,
-          'color': cssColor('--text-muted', '#8c8c8c'),
-          'text-background-color': cssColor('--component-background', '#141414'),
-          'text-background-opacity': 0.9,
-          'text-background-padding': '3px',
-          'text-rotation': 'autorotate',
-        },
-      },
-      {
-        // Derived (not persisted) edges -- dashed to visually distinguish
-        // "known from objects.device_id" from user-created relationships.
-        selector: 'edge[predicate = "hosts"]',
-        style: {
-          'line-style': 'dashed',
-          'line-color': '#d46b08',
-          'target-arrow-color': '#d46b08',
-        },
-      },
-      {
-        selector: 'node:selected',
-        style: {
-          'border-color': cssColor('--primary-color', '#1677ff'),
-          'border-width': 4,
-        },
-      },
-    ],
-    layout: {
-      name: 'breadthfirst',
-      directed: false,
-      direction: 'downward',
-      roots: graphFocusEntityId.value != null
-      ? [`entity-${graphFocusEntityId.value}`]
-      : undefined,
-      fit: true,
-      padding: 48,
-      spacingFactor: 1.35,
-      avoidOverlap: true,
-      nodeDimensionsIncludeLabels: true,
-      animate: false,
-    },
-  })
+// Pure function: generic node/edge objects (id + width/height) in, {x,y}
+// positions out. No semantic/predicate logic lives here at all -- Dagre
+// only ever sees ids and dimensions, never entity_kind/brick_class/
+// predicate, satisfying "Dagre is not responsible for semantic traversal
+// or relationship logic."
+function applyDagreLayout(flowNodes: any[], flowEdges: any[]): any[] {
+  const g = new dagre.graphlib.Graph()
+  g.setGraph({ rankdir: 'LR', nodesep: 32, ranksep: 90 })
+  g.setDefaultEdgeLabel(() => ({}))
 
-  cy.on('tap', 'node', evt => {
-    const entityId = Number(evt.target.data('entityId'))
-    selectedGraphEntity.value = entityById.value.get(entityId) ?? null
-  })
+  for (const n of flowNodes) {
+    g.setNode(n.id, { width: n.width, height: n.height })
+  }
+  for (const e of flowEdges) {
+    g.setEdge(e.source, e.target)
+  }
 
-  cy.on('dbltap', 'node', evt => {
-    graphFocusEntityId.value = Number(evt.target.data('entityId'))
+  dagre.layout(g)
+
+  // Dagre positions are node centers; Vue Flow positions are top-left.
+  return flowNodes.map(n => {
+    const pos = g.node(n.id)
+    return { ...n, position: { x: pos.x - n.width / 2, y: pos.y - n.height / 2 } }
   })
+}
+
+function renderGraph() {
+  chooseDefaultGraphFocus()
+  const built = buildFlowElements()
+  nodes.value = applyDagreLayout(built.nodes, built.edges)
+  edges.value = built.edges
+  // Structural rebuilds replace nodes.value/edges.value wholesale, wiping
+  // any previously-applied live-data annotations -- reapply once so newly
+  // rendered elements don't sit blank until the next WS tick. This is a
+  // one-shot read of currently-known values, not a second reactive path;
+  // it doesn't touch .position and isn't itself triggered by a live tick.
+  updateLiveDisplay()
 }
 
 function fitGraph() {
-  cy?.fit(undefined, 48)
+  fitView({ padding: 0.15 })
 }
 
 function relayoutGraph() {
-  if (!cy) return
-  cy.layout({
-    name: 'breadthfirst',
-    directed: false,
-    direction: 'downward',
-    roots: graphFocusEntityId.value != null
-    ? [`entity-${graphFocusEntityId.value}`]
-    : undefined,
-    fit: true,
-    padding: 48,
-    spacingFactor: 1.35,
-    avoidOverlap: true,
-    nodeDimensionsIncludeLabels: true,
-    animate: true,
-    animationDuration: 250,
-  }).run()
+  nodes.value = applyDagreLayout(nodes.value, edges.value)
+  nextTick(() => fitView({ padding: 0.15 }))
+}
+
+function onNodeClick({ node }: { node: any }) {
+  const entityId = Number(node.data?.entityId)
+  selectedGraphEntity.value = entityById.value.get(entityId) ?? null
+}
+
+function onNodeDoubleClick({ node }: { node: any }) {
+  graphFocusEntityId.value = Number(node.data?.entityId)
 }
 
 watch(
@@ -514,11 +683,6 @@ watch(
   },
   { deep: true },
 )
-
-onBeforeUnmount(() => {
-  cy?.destroy()
-  cy = null
-})
 </script>
 
 <template>
@@ -578,11 +742,26 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="semantic-graph-shell">
-      <div
-        ref="graphContainer"
+      <VueFlow
+        v-model:nodes="nodes"
+        v-model:edges="edges"
         class="semantic-graph-canvas"
+        fit-view-on-init
+        :min-zoom="0.25"
+        :max-zoom="2.5"
         aria-label="Brick semantic relationship graph"
-      />
+        @node-click="onNodeClick"
+        @node-double-click="onNodeDoubleClick"
+      >
+        <Background :gap="16" />
+        <Controls />
+        <template #node-semanticNode="nodeProps">
+          <SemanticGraphNode v-bind="nodeProps" />
+        </template>
+        <template #edge-semanticFlowEdge="edgeProps">
+          <SemanticFlowEdge v-bind="edgeProps" />
+        </template>
+      </VueFlow>
 
       <div v-if="selectedGraphEntity" class="semantic-graph-inspector">
         <div class="semantic-graph-inspector-title">{{ selectedGraphEntity.name }}</div>

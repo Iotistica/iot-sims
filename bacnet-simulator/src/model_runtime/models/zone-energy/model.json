@@ -1,0 +1,150 @@
+{
+  "id": "f3f0a8e2-6a3b-4b1e-9b7a-2a7e8c4d9f10",
+  "slug": "EnergyPlusThermalZone",
+  "label": "Detailed Thermal Zone",
+  "description": "Detailed zone thermal model using the project's IDF and weather data.",
+  "fmu_path": "EnergyPlusThermalZone.fmu",
+  "warmup_seconds": 3600.0,
+  "string_parameters": [
+    {
+      "name": "epw_filename",
+      "fmu_variable": "epwName",
+      "label": "Weather (EPW)",
+      "required": false,
+      "is_file": true
+    },
+    {
+      "name": "wea_filename",
+      "fmu_variable": "weaName",
+      "label": "Weather (MOS)",
+      "required": false,
+      "is_file": true,
+      "advanced": true
+    },
+    {
+      "name": "idf_filename",
+      "fmu_variable": "idfName",
+      "label": "Building Model (IDF)",
+      "required": false,
+      "is_file": true
+    },
+    {
+      "name": "zone_name",
+      "fmu_variable": "zoneName",
+      "label": "Zone Name",
+      "required": false,
+      "default": "Core_ZN"
+    }
+  ],
+  "inputs": [
+    {
+      "name": "discharge_air_temp_c",
+      "label": "Discharge Air Temperature",
+      "fmu_variable": "TSup",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 13.0,
+      "suggested_point_types": ["Supply_Air_Temperature_Sensor"],
+      "mapping_hints": {
+        "equipment_scope": "upstream",
+        "preferred_equipment_types": ["VAV", "Rooftop_Unit"],
+        "relationship": "feeds",
+        "signal_role": "discharge_air_temperature"
+      },
+      "semantic": {"point_class": "Supply_Air_Temperature_Sensor"}
+    },
+    {
+      "name": "supply_airflow_m3_s",
+      "label": "Supply Airflow",
+      "fmu_variable": "VSup_flow",
+      "unit": "m3/s",
+      "default": 0.3,
+      "suggested_point_types": ["Air_Flow_Sensor"],
+      "mapping_hints": {
+        "equipment_scope": "upstream",
+        "preferred_equipment_types": ["VAV", "Rooftop_Unit"],
+        "relationship": "feeds",
+        "signal_role": "supply_airflow"
+      },
+      "semantic": {"point_class": "Air_Flow_Sensor"}
+    },
+    {
+      "name": "internal_heat_gain_w",
+      "label": "Internal Heat Gain",
+      "fmu_variable": "QInternal",
+      "unit": "W",
+      "default": 0.0,
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "internal_heat_gain"},
+      "semantic": {"point_class": "Zone_Internal_Load"}
+    },
+    {
+      "name": "supply_air_relative_humidity",
+      "label": "Supply Air Relative Humidity",
+      "fmu_variable": "phiSup",
+      "unit": "1",
+      "default": 0.5,
+      "suggested_point_types": ["Humidity_Sensor"],
+      "mapping_hints": {
+        "equipment_scope": "upstream",
+        "preferred_equipment_types": ["VAV", "Rooftop_Unit"],
+        "relationship": "feeds",
+        "signal_role": "supply_air_relative_humidity"
+      },
+      "semantic": {}
+    },
+    {
+      "name": "use_external_internal_gain",
+      "label": "Use External Internal Gain",
+      "fmu_variable": "useExternalInternalGain",
+      "unit": null,
+      "suggested_point_types": [],
+      "mapping_hints": {},
+      "semantic": {}
+    }
+  ],
+  "outputs": [
+    {
+      "name": "zone_temp_c",
+      "label": "Zone Air Temperature",
+      "fmu_variable": "TRoo",
+      "unit": "degC",
+      "conversion": "k_to_c",
+      "suggested_point_types": ["Zone_Air_Temperature_Sensor"],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "zone_air_temperature"},
+      "semantic": {"point_class": "Zone_Air_Temperature_Sensor"}
+    },
+    {
+      "name": "hvac_sensible_heat_flow_w",
+      "label": "HVAC Sensible Heat Flow",
+      "fmu_variable": "QHVACSensible",
+      "unit": "W",
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "hvac_sensible_heat_flow"},
+      "semantic": {}
+    },
+    {
+      "name": "supply_air_mass_flow_kg_s",
+      "label": "Supply Air Mass Flow",
+      "fmu_variable": "mSup_flow",
+      "unit": "kg/s",
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "supply_air_mass_flow"},
+      "semantic": {}
+    },
+    {
+      "name": "return_airflow_m3_s",
+      "label": "Return Airflow",
+      "fmu_variable": "VRet_flow",
+      "unit": "m3/s",
+      "suggested_point_types": ["Air_Flow_Sensor"],
+      "mapping_hints": {
+        "equipment_scope": "downstream",
+        "preferred_equipment_types": ["Rooftop_Unit"],
+        "relationship": "feeds",
+        "signal_role": "return_airflow"
+      },
+      "semantic": {"point_class": "Air_Flow_Sensor"}
+    }
+  ]
+}

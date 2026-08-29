@@ -1,0 +1,170 @@
+{
+  "id": "aaeb9641-2137-4c79-b4f4-baa88cbce5a5",
+  "slug": "ThermalZone",
+  "label": "Thermal Zone",
+  "description": "Standalone single-zone lumped thermal model with HVAC supply-air, envelope, and internal-gain heat balance.",
+  "fmu_path": "ThermalZone.fmu",
+  "warmup_seconds": 300.0,
+  "inputs": [
+    {
+      "name": "outdoor_temp_c",
+      "label": "Outdoor Temperature",
+      "fmu_variable": "TOut",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 30.0,
+      "suggested_point_types": ["Outside_Air_Temperature_Sensor"],
+      "mapping_hints": {"equipment_scope": "any", "signal_role": "outdoor_air_temperature"},
+      "semantic": {"point_class": "Outside_Air_Temperature_Sensor"}
+    },
+    {
+      "name": "people_heat_gain_w",
+      "label": "People Heat Gain",
+      "fmu_variable": "QPeople",
+      "unit": "W",
+      "default": 300.0,
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "people_heat_gain"},
+      "semantic": {"point_class": "Zone_Internal_Load"}
+    },
+    {
+      "name": "lighting_heat_gain_w",
+      "label": "Lighting Heat Gain",
+      "fmu_variable": "QLighting",
+      "unit": "W",
+      "default": 300.0,
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "lighting_heat_gain"},
+      "semantic": {"point_class": "Zone_Internal_Load"}
+    },
+    {
+      "name": "equipment_heat_gain_w",
+      "label": "Equipment Heat Gain",
+      "fmu_variable": "QEquipment",
+      "unit": "W",
+      "default": 400.0,
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "equipment_heat_gain"},
+      "semantic": {"point_class": "Zone_Internal_Load"}
+    },
+    {
+      "name": "discharge_air_temp_c",
+      "label": "Discharge Air Temperature",
+      "fmu_variable": "TSup",
+      "unit": "degC",
+      "conversion": "c_to_k",
+      "default": 13.0,
+      "suggested_point_types": ["Supply_Air_Temperature_Sensor"],
+      "mapping_hints": {
+        "equipment_scope": "upstream",
+        "preferred_equipment_types": ["VAV"],
+        "relationship": "feeds",
+        "signal_role": "discharge_air_temperature"
+      },
+      "semantic": {"point_class": "Supply_Air_Temperature_Sensor"}
+    },
+    {
+      "name": "supply_airflow_m3_s",
+      "label": "Supply Airflow",
+      "fmu_variable": "VSup_flow",
+      "unit": "m3/s",
+      "default": 0.3,
+      "suggested_point_types": ["Air_Flow_Sensor"],
+      "mapping_hints": {
+        "equipment_scope": "upstream",
+        "preferred_equipment_types": ["VAV"],
+        "relationship": "feeds",
+        "signal_role": "supply_airflow"
+      },
+      "semantic": {"point_class": "Air_Flow_Sensor"}
+    }
+  ],
+  "outputs": [
+    {
+      "name": "zone_temp_c",
+      "label": "Zone Temperature",
+      "fmu_variable": "TRoo",
+      "unit": "degC",
+      "conversion": "k_to_c",
+      "suggested_point_types": ["Zone_Air_Temperature_Sensor"],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "zone_air_temperature"},
+      "semantic": {"point_class": "Zone_Air_Temperature_Sensor"}
+    },
+    {
+      "name": "hvac_heat_flow_w",
+      "label": "HVAC Heat Flow",
+      "fmu_variable": "QHVAC",
+      "unit": "W",
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "hvac_heat_flow"},
+      "semantic": {}
+    },
+    {
+      "name": "envelope_heat_flow_w",
+      "label": "Envelope Heat Flow",
+      "fmu_variable": "QEnvelope",
+      "unit": "W",
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "envelope_heat_flow"},
+      "semantic": {}
+    },
+    {
+      "name": "net_heat_flow_w",
+      "label": "Net Heat Flow",
+      "fmu_variable": "QNet",
+      "unit": "W",
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "net_heat_flow"},
+      "semantic": {}
+    },
+    {
+      "name": "total_internal_heat_gain_w",
+      "label": "Total Internal Heat Gain",
+      "fmu_variable": "QInternalTotal",
+      "unit": "W",
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "total_internal_heat_gain"},
+      "semantic": {}
+    }
+  ],
+
+  "calibration": {
+  "enabled": true,
+
+  "goal": {
+    "output": "zone_temp_c",
+    "metric": "cv_rmse"
+  },
+
+  "tuners": [
+    {
+      "parameter": "UA",
+      "label": "Envelope UA",
+      "unit": "W/K",
+      "min": 50.0,
+      "max": 400.0,
+      "initial": 150.0
+    },
+    {
+      "parameter": "CBuilding",
+      "label": "Building Thermal Capacitance",
+      "unit": "J/K",
+      "min": 1000000.0,
+      "max": 20000000.0,
+      "initial": 5000000.0
+    }
+  ],
+
+  "sensitivity": {
+    "method": "morris",
+    "trajectories": 100,
+    "grid_levels": 4,
+    "measure": "mu_star"
+  },
+
+  "optimizer": {
+    "method": "differential_evolution",
+    "metric": "cv_rmse"
+  }
+}
+}

@@ -64,6 +64,12 @@ const meta    = ref<Meta>({ object_types: [], behaviors: [], units: [], reliabil
 const devices = ref<Device[]>([])
 const locations = ref<Location[]>([])
 const equipment = ref<Equipment[]>([])
+// Browse-tree presentation only: device_id -> equipment_id for the
+// Controller a controls edge deterministically nests under (earliest-created
+// edge wins when a Controller controls more than one Equipment). Never read
+// for anything but LeftSideView's tree placement -- controls/location_id
+// persistence is untouched. See loadControllerEquipmentMap().
+const controllerEquipmentMap = ref<Record<number, number>>({})
 const deviceSearch = ref('')
 const filteredDevices = computed(() => {
   const q = deviceSearch.value.trim().toLowerCase()
@@ -471,6 +477,40 @@ function markExternalDeviceSeen(deviceId: number, seenAt: string) {
 async function loadLocations() {
   try { locations.value = await api.locations.list() } catch { /* swallow */ }
 }
+// Browse-tree-only bulk resolution of Controller -> controls -> Equipment,
+// mirroring the per-entity resolution DeviceDrawer's "Controls" field and
+// EquipmentPanel's "Controlled By" already do, just project-wide in one
+// pass instead of per-entity on demand. Re-run wherever devices/equipment
+// (and therefore possibly their controls edges) get reloaded.
+async function loadControllerEquipmentMap() {
+  try {
+    const [controllers, equipmentEntities, controls] = await Promise.all([
+      api.semanticEntities.list({ entity_kind: 'controller' }),
+      api.semanticEntities.list({ entity_kind: 'equipment' }),
+      api.semanticRelationships.list({ predicate: 'controls' }),
+    ])
+    const deviceIdByEntityId = new Map(
+      controllers.filter(c => c.device_id != null).map(c => [c.id, c.device_id as number])
+    )
+    const equipmentIdByEntityId = new Map(
+      equipmentEntities.filter(e => e.equipment_id != null).map(e => [e.id, e.equipment_id as number])
+    )
+    // Deterministic single placement when a Controller controls >1
+    // Equipment (a real, already-possible state via DeviceDrawer's
+    // multi-select Controls field): the earliest-created controls edge
+    // wins. The API already returns relationship rows ordered by id, so
+    // the first match per device_id here IS the earliest edge.
+    const map: Record<number, number> = {}
+    for (const rel of controls) {
+      const deviceId = deviceIdByEntityId.get(rel.source_entity_id)
+      const equipmentId = equipmentIdByEntityId.get(rel.target_entity_id)
+      if (deviceId == null || equipmentId == null) continue
+      if (!(deviceId in map)) map[deviceId] = equipmentId
+    }
+    controllerEquipmentMap.value = map
+  } catch { /* swallow -- tree just falls back to today's flat placement */ }
+}
+async function onEquipmentSaved() { await loadEquipment(); await loadControllerEquipmentMap() }
 async function loadEquipment() {
   try {
     equipment.value = await api.equipment.list()
@@ -499,7 +539,7 @@ function onSelectController(deviceId: number) {
 // Device actions
 function openAddDevice(locationId: number | null = null) { editingDevice.value = null; addContextLocationId.value = locationId; deviceDrawerOpen.value = true }
 function openEditDevice(d: Device) { editingDevice.value = d; deviceDrawerOpen.value = true }
-async function onDeviceSaved() { await loadDevices(); await loadHealth() }
+async function onDeviceSaved() { await loadDevices(); await loadControllerEquipmentMap(); await loadHealth() }
 function duplicateDevice(d: Device) {
   duplicateSource.value = d
   duplicateName.value = `${d.name} Copy`
@@ -744,6 +784,7 @@ async function resetToNewProject(silent = false) {
   await loadDevices()
   await loadLocations()
   await loadEquipment()
+  await loadControllerEquipmentMap()
   await loadHealth()
   // NewProjectModal's Create flow calls this first and shows its own,
   // more specific "<name>" created" message right after — skip the
@@ -783,6 +824,7 @@ async function onNewProjectCreated(project: Project) {
   await loadLocations()
   await loadDevices()
   await loadEquipment()
+  await loadControllerEquipmentMap()
 }
 
 function openSaveAs() {
@@ -865,6 +907,7 @@ async function onProjectLoaded(
   await loadDevices()
   await loadLocations()
   await loadEquipment()
+  await loadControllerEquipmentMap()
   selectedDevice.value = null
   await loadHealth()
 }
@@ -908,7 +951,7 @@ async function loadUnackedAlarmCount() {
 }
 
 async function startApp() {
-  await Promise.all([loadMeta(), loadDevices(), loadLocations(), loadEquipment(), loadHealth(), loadUnackedAlarmCount()])
+  await Promise.all([loadMeta(), loadDevices(), loadLocations(), loadEquipment(), loadControllerEquipmentMap(), loadHealth(), loadUnackedAlarmCount()])
   await refreshDiscoveryConnections()
   wsConnect()
   healthTimer = setInterval(loadHealth, 10_000)
@@ -1003,10 +1046,10 @@ onUnmounted(() => {
           <a-radio-button value="alarms"><AlertOutlined /> Alarms{{ unackedAlarmCount ? ` (${unackedAlarmCount})` : '' }}</a-radio-button>
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
           <a-radio-button value="packet-capture"><ClusterOutlined /> Network</a-radio-button>
-          <a-radio-button value="utility"><DashboardOutlined /> Utilities</a-radio-button>
-          <a-radio-button value="semantic"><PartitionOutlined /> Graph</a-radio-button>
-          <a-radio-button value="tests"><ExperimentOutlined /> Tests</a-radio-button>
-          <a-radio-button value="graphs"><LineChartOutlined /> Data Graphs</a-radio-button>
+          <!-- Utilities, Tests, Graph, and Data Graphs hidden for now -- see
+               App.vue's activeView v-else-if render blocks + component
+               imports above, all left in place, unreferenced, so restoring
+               is just re-adding these four lines. -->
         </a-radio-group>
 
         <div style="flex:1"></div>
@@ -1041,7 +1084,12 @@ onUnmounted(() => {
       <PacketCapturePanel v-else-if="activeView === 'packet-capture'" :initial-device-id="packetCaptureDeviceFilter"/>
       <SettingsView v-else-if="activeView === 'settings'" />
       <UtilitiesDashboard v-else-if="activeView === 'utility'" />
-      <SemanticPanel v-else-if="activeView === 'semantic'" />
+      <SemanticPanel
+        v-else-if="activeView === 'semantic'"
+        :live-values="liveValues"
+        :model-values="modelValues"
+        :model-states="modelStates"
+      />
       <FunctionalTestsView v-else-if="activeView === 'tests'" />
       <SavedGraphsView v-else-if="activeView === 'graphs'" />
       <a-layout v-else>
@@ -1054,6 +1102,7 @@ onUnmounted(() => {
           :devices="devices"
           :locations="locations"
           :equipment="equipment"
+          :controller-equipment-map="controllerEquipmentMap"
           :meta="meta"
           :selected-device="selectedDevice"
           :selected-equipment="selectedEquipment"
@@ -1164,7 +1213,7 @@ onUnmounted(() => {
       :locations="locations"
       :meta="meta"
       :default-location-id="addContextLocationId"
-      @saved="loadEquipment"
+      @saved="onEquipmentSaved"
     />
 
     <!-- Create Simulation modal -->

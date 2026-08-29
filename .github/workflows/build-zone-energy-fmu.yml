@@ -1,0 +1,111 @@
+name: Build Zone-Energy FMU
+
+on:
+  push:
+    branches:
+      - main
+      - feature/**
+    paths:
+      - bacnet-simulator/src/model_runtime/models/zone-energy/EnergyPlusThermalZone.mo
+      - bacnet-simulator/src/model_runtime/models/zone-energy/model.json
+      - bacnet-simulator/src/model_runtime/models/zone-energy/Resources/**
+      - bacnet-simulator/src/model_runtime/shared/build-zone-energy-fmu.sh
+      - bacnet-simulator/src/model_runtime/shared/validate_fmu_metadata.py
+      - .github/workflows/build-zone-energy-fmu.yml
+  workflow_dispatch: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  # Published image -- already includes the Spawn binary install fix (see
+  # bacnet-simulator/src/model_runtime/docker/modelica-build/Dockerfile), no need to rebuild a local
+  # diagnostic image the way earlier attempts on this model did.
+  MODELICA_BUILD_IMAGE: iotistic/modelica-build:om-1.27.0-buildings-13.0.0
+
+concurrency:
+  group: zone-energy-fmu-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build EnergyPlusThermalZone.fmu
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: bacnet-simulator/src/model_runtime
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for Docker daemon
+        run: |
+          for i in $(seq 1 15); do
+            docker info > /dev/null 2>&1 && echo "Docker daemon ready" && break
+            echo "Waiting for Docker daemon... ($i/15)"
+            sleep 2
+          done
+          docker info
+
+      - name: Build EnergyPlusThermalZone FMU
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            "$MODELICA_BUILD_IMAGE" \
+            sh -c "mkdir -p /fmu-out && FMU_TYPE=cs FMU_OUTPUT_NAME=EnergyPlusThermalZone.fmu sh shared/build-zone-energy-fmu.sh && cp /fmu-out/EnergyPlusThermalZone.fmu models/zone-energy/EnergyPlusThermalZone.fmu"
+
+      - name: Validate & sync EnergyPlusThermalZone FMU metadata
+        run: |
+          python shared/validate_fmu_metadata.py \
+            --fmu models/zone-energy/EnergyPlusThermalZone.fmu \
+            --metadata models/zone-energy/model.json \
+            --fix
+
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "# Zone-Energy FMU Build"
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Model | EnergyPlusThermalZone (standalone, no package wrapper) |"
+            echo "| Toolchain | iotistic/modelica-build:om-1.27.0-buildings-13.0.0 |"
+            if [ -f models/zone-energy/EnergyPlusThermalZone.fmu ]; then
+              echo "| Result | FMU generated |"
+            else
+              echo "| Result | FAILED -- no FMU produced, see job log |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit generated EnergyPlusThermalZone FMU
+        run: |
+          git add models/zone-energy/EnergyPlusThermalZone.fmu models/zone-energy/model.json
+
+          if git diff --cached --quiet -- models/zone-energy/EnergyPlusThermalZone.fmu models/zone-energy/model.json; then
+            echo "No EnergyPlusThermalZone FMU changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Build EnergyPlusThermalZone FMU [skip ci]"
+
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt/5) -- fetching and rebasing onto origin/$GITHUB_REF_NAME."
+            git fetch origin "$GITHUB_REF_NAME"
+            git rebase "origin/$GITHUB_REF_NAME"
+            sleep $((attempt * 5))
+          done
+
+          echo "::error::Failed to push models/zone-energy/EnergyPlusThermalZone.fmu and model.json after 5 attempts."
+          exit 1

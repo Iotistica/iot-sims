@@ -1,0 +1,58 @@
+{
+  "id": "4f771824-75ad-4267-bed3-0da480c8e82d",
+  "slug": "Weather",
+  "label": "Weather",
+  "description": "Plays back weather data from a file -- outdoor temperature, humidity, wind speed, and solar radiation -- as simulated time advances.",
+  "fmu_path": "Weather.fmu",
+  "warmup_seconds": 0.0,
+  "string_parameters": [
+    {
+      "name": "wea_filename",
+      "fmu_variable": "weaName",
+      "label": "Weather (EPW)",
+      "required": false,
+      "is_file": true
+    }
+  ],
+  "inputs": [],
+  "outputs": [
+    {
+      "name": "outdoor_air_temp_c",
+      "label": "Outdoor Air Temperature",
+      "fmu_variable": "TDryBul",
+      "unit": "degC",
+      "conversion": "k_to_c",
+      "suggested_point_types": ["Outside_Air_Temperature_Sensor"],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "outdoor_air_temperature"},
+      "semantic": {"point_class": "Outside_Air_Temperature_Sensor"}
+    },
+    {
+      "name": "relative_humidity_pct",
+      "label": "Relative Humidity",
+      "fmu_variable": "relHum",
+      "unit": "%",
+      "conversion": "fraction_to_pct",
+      "suggested_point_types": ["Humidity_Sensor"],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "outdoor_relative_humidity"},
+      "semantic": {}
+    },
+    {
+      "name": "wind_speed_m_s",
+      "label": "Wind Speed",
+      "fmu_variable": "winSpe",
+      "unit": "m/s",
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "wind_speed"},
+      "semantic": {}
+    },
+    {
+      "name": "global_horizontal_radiation_w_m2",
+      "label": "Global Horizontal Radiation",
+      "fmu_variable": "HGloHor",
+      "unit": "W/m2",
+      "suggested_point_types": [],
+      "mapping_hints": {"equipment_scope": "self", "signal_role": "solar_radiation"},
+      "semantic": {}
+    }
+  ]
+}

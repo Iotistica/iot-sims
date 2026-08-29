@@ -100,13 +100,31 @@ from .base import FaultRule
 
 
 CANONICAL_SEMANTICS: dict[str, dict[str, object]] = {
+    # "Supply_Fan_Command"/"Supply_Fan_Status" below are FDD-internal signal-
+    # role names, not Brick classes themselves -- neither string is a real
+    # Brick class at the pinned BRICK_VERSION (verified directly against
+    # bricksrc/command.py, status.py, and deprecations.py at v1.4.4; see
+    # src/core/config.py's own verification convention). Real Brick's
+    # generic Fan_Command/Fan_Speed_Command/Fan_Status point classes cover
+    # any fan; "supply" vs "return" is expressed via equipment association
+    # (isPointOf a Supply_Fan vs Return_Fan sub-equipment entity, isPartOf
+    # the AHU/RTU), never via a distinct per-fan point-class name.
+    # FaultDetectionEngine._resolve_fan_role_points() (src/fault_detection/
+    # engine.py) resolves these two role keys via exactly that equipment-
+    # relationship disambiguation -- the same one src/semantics/resolver.py's
+    # resolve_ahu_fans() already does for the Energy Engine -- rather than
+    # the flat point_type lookup FaultContext.value() otherwise does, so
+    # they DO resolve correctly today despite not being literal Brick class
+    # names. The "brick" field names which real class(es) that resolution
+    # actually looks for, for documentation purposes only -- _value() never
+    # reads this field.
     "Supply_Fan_Command": {
-        "brick": "Supply_Fan_Command",
-        "description": "Supply-fan normalized command or enable.",
+        "brick": "Fan_Speed_Command",
+        "description": "Supply-fan normalized command or enable (Brick: Fan_Speed_Command, falling back to Fan_Command, isPointOf the Supply_Fan sub-equipment).",
     },
     "Supply_Fan_Status": {
-        "brick": "Supply_Fan_Status",
-        "description": "Proven supply-fan running status.",
+        "brick": "Fan_Status",
+        "description": "Proven supply-fan running status (Brick: Fan_Status isPointOf the Supply_Fan sub-equipment).",
     },
     "Supply_Fan_Power": {
         "brick": None,

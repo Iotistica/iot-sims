@@ -925,9 +925,16 @@ class Database:
         Lighting_Zone -- NOT equipment merely sited at that Location; a
         Location is a leaf in this scope, never expanded back out through
         `hasLocation` to pull in unrelated equipment/controllers). For every
-        scoped Equipment, includes points belonging to whichever
-        Controller(s) `controls` it (same controller->objects idiom as
-        get_assignable_points_for_equipment above).
+        scoped Equipment, prefers its own directly-assigned isPointOf
+        points; only equipment with none assigned yet falls back to every
+        object on whichever Controller(s) `controls` it (same
+        controller->objects idiom as get_assignable_points_for_equipment
+        above) -- the fallback is scoped per-equipment-with-no-assignment,
+        never applied wholesale, since a Controller device can physically
+        host a point that's semantically isPointOf a different,
+        out-of-scope entity (e.g. a zone sensor wired directly into a VAV
+        controller, isPointOf the Zone Location rather than the VAV
+        Equipment one hop away).
 
         Returns None (not an empty set) when this device has no controller
         entity or controls no Equipment -- callers must treat None as "no
@@ -956,18 +963,32 @@ class Database:
                         elif target["entity_kind"] == "location":
                             location_ids.add(target["id"])
 
-            controller_device_ids: set[int] = set()
+            # Per scoped Equipment: prefer its own directly-assigned isPointOf
+            # points; only fall back to "every object on its controlling
+            # device" when it has none assigned yet. The fallback is a real
+            # leak vector -- a Controller device can physically host a point
+            # that's semantically isPointOf a DIFFERENT, out-of-scope entity
+            # (e.g. a VAV controller with a zone temperature sensor wired
+            # directly to it, where that point is isPointOf the Zone
+            # Location two hops away, not the VAV Equipment one hop away) --
+            # so it's only trusted for equipment that hasn't been given a
+            # real semantic assignment to disambiguate its device's objects.
+            point_ids: set[int] = set()
+            fallback_device_ids: set[int] = set()
             for equipment_id in equipment_ids:
+                direct_points = self.get_entity_points(equipment_id)
+                if direct_points:
+                    point_ids.update(pt["object_id"] for pt in direct_points)
+                    continue
                 for c in self.get_related_entities(equipment_id, "controls", direction="in"):
                     if c.get("device_id") is not None:
-                        controller_device_ids.add(c["device_id"])
+                        fallback_device_ids.add(c["device_id"])
 
-            point_ids: set[int] = set()
-            if controller_device_ids:
-                placeholders = ",".join("?" for _ in controller_device_ids)
+            if fallback_device_ids:
+                placeholders = ",".join("?" for _ in fallback_device_ids)
                 rows = conn.execute(
                     f"SELECT id FROM objects WHERE device_id IN ({placeholders})",
-                    list(controller_device_ids),
+                    list(fallback_device_ids),
                 ).fetchall()
                 point_ids.update(r["id"] for r in rows)
 

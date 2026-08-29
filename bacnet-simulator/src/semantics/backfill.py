@@ -282,15 +282,20 @@ _AHU_FAN_ALIAS_MIGRATIONS: dict[str, tuple[str, str, str]] = {
     "Return_Fan_Speed_Command": ("Fan_Speed_Command", "Return_Fan", "return-fan"),
     "Supply_Fan_Status": ("Fan_Status", "Supply_Fan", "supply-fan"),
     "Return_Fan_Status": ("Fan_Status", "Return_Fan", "return-fan"),
+    # Supply_Fan_Command was never a real Brick class (unlike the four
+    # above, which were at least real Brick VFD-speed/status concepts
+    # misapplied per-fan) -- it was simply never verified against the real
+    # ontology when added. Migrates to the real, generic Fan_Command.
+    "Supply_Fan_Command": ("Fan_Command", "Supply_Fan", "supply-fan"),
 }
 
 
 def migrate_ahu_fan_aliases(conn: sqlite3.Connection) -> None:
     """One-time, idempotent DATA migration (not just a semantic_entities
     backfill) for databases/projects seeded before Brick Core: any object
-    still carrying one of the four now-removed alias point types (see
+    still carrying one of the five now-removed alias point types (see
     _AHU_FAN_ALIAS_MIGRATIONS) is rewritten in place to the canonical
-    Fan_Speed_Command/Fan_Status, and a matching Supply_Fan/Return_Fan
+    Fan_Command/Fan_Speed_Command/Fan_Status, and a matching Supply_Fan/Return_Fan
     sub-equipment entity + isPartOf + isPointOf relationships are built --
     exactly what seed_default() creates for a fresh AHU (src/legacy.py),
     so an existing, already-seeded AHU converges to the same shape instead

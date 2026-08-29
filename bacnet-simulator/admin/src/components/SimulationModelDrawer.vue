@@ -521,6 +521,50 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
   void refreshWeatherProvenance()
 }
 
+// Every point id currently referenced anywhere in form -- plain
+// mappings, Aggregate (max/min) members, Weighted Average value/weight
+// pairs, and input-exposure targets. Used only to backfill labels for
+// already-saved mappings that fall outside the topology-scoped `points`
+// list (see backfillMissingPointOptions below); never used to constrain
+// what a user can newly select.
+function referencedPointIds(): number[] {
+  const ids = new Set<number>()
+  for (const id of Object.values(form.mappings)) if (id != null) ids.add(id)
+  for (const list of Object.values(form.aggregatePoints)) for (const id of list) ids.add(id)
+  for (const pairs of Object.values(form.aggregatePairs)) {
+    for (const pair of pairs) {
+      if (pair.value != null) ids.add(pair.value)
+      if (pair.weight != null) ids.add(pair.weight)
+    }
+  }
+  for (const id of Object.values(form.inputExposures)) if (id != null) ids.add(id)
+  return [...ids]
+}
+
+// A saved model's mappings can reference points outside the just-loaded
+// device's topology scope (points.value) -- e.g. a Weighted Average pair
+// or "also write to" target picked before this device had a Controller/
+// `feeds` topology, or a genuinely cross-branch mapping made via the
+// unscoped picker previously. Without this, those ids have no matching
+// option, and antd's <a-select> renders the bare numeric id instead of
+// "Device / Name" (a mapping is never silently dropped by this -- it's
+// purely a display/backfill step). Only appends entries points.value is
+// missing; never removes/reorders what's already scoped in, so newly
+// opened pickers still default to showing just the scoped candidates.
+async function backfillMissingPointOptions() {
+  const known = new Set(points.value.map(p => p.id))
+  const missing = referencedPointIds().filter(id => !known.has(id))
+  if (!missing.length) return
+  try {
+    const unscoped = await api.simulationModels.pointOptions()
+    const missingSet = new Set(missing)
+    points.value = [...points.value, ...unscoped.filter(p => missingSet.has(p.id))]
+  } catch {
+    // Best-effort label backfill -- leave the raw ids visible rather than
+    // failing the whole drawer load over it.
+  }
+}
+
 async function load() {
   if (!props.device) return
   loading.value = true
@@ -539,12 +583,14 @@ async function load() {
     const existing = await api.simulationModels.list(props.device.id)
     if (existing.length > 0) {
       hydrateFromSavedModel(existing[0])
+      await backfillMissingPointOptions()
       return
     }
     const activeModelId = props.device.active_simulation_model?.id
     if (activeModelId != null) {
       try {
         hydrateFromSavedModel(await api.simulationModels.get(activeModelId))
+        await backfillMissingPointOptions()
         return
       } catch {
         // The active-model summary is advisory; if it points at a deleted
