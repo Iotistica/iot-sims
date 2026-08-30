@@ -34,12 +34,21 @@ VAV_DEFINITION = ModelDefinition(
     variables=(
         VariableDefinition(
             "supply_air_temp_c", "Supply Air Temperature", "input",
-            unit="degrees-celsius",
+            unit="°C",
             suggested_point_types=("Supply_Air_Temperature_Sensor",),
+            # A VAV's supply air physically comes from its upstream AHU --
+            # test_topology_upstream_preference/test_missing_topology_graceful_fallback
+            # both exercise this (upstream-preferring, with graceful fallback when no
+            # `feeds` relationship exists), unlike zone_temp_c below (self-scope).
+            mapping_hints=MappingHints(equipment_scope="upstream"),
         ),
+        # zone_temp_c is a model OUTPUT (the VAV's computed zone temperature), not an input --
+        # confirmed against the real SimpleVAVZone.fmu (test_vav_initialize_step checks it as
+        # a step response output). Direction matters here specifically: output-ownership
+        # exclusion (get_output_owners_by_point) only engages for direction="output" variables.
         VariableDefinition(
-            "zone_temp_c", "Zone Temperature", "input",
-            unit="degrees-celsius",
+            "zone_temp_c", "Zone Temperature", "output",
+            unit="°C",
             suggested_point_types=("Zone_Air_Temperature_Sensor",),
         ),
     ),
