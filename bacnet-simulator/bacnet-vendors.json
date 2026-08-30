@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-23",
+  "updated": "2026-08-30",
   "source": "BACnet International BTL Database",
   "url": "https://www.bacnetinternational.net/btl/",
   "vendors": [
@@ -662,11 +662,22 @@
         },
         {
           "name": "Acuvim II Series Multifunction Power and Energy Meter",
+          "type": "B-SA",
+          "typeLabel": "Smart Actuator",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/accuenergy (canada) inc./BTL_Listing_24465_Accuenergy_Acuvim.pdf",
+          "object_types": {
+            "AI": true,
+            "BI": true,
+            "Device": true
+          }
+        },
+        {
+          "name": "Acuvim II/L Series Multifunction Power and Energy Meter",
           "type": "B-SS",
           "typeLabel": "Smart Sensor",
           "pics_url": "https://www.bacnetinternational.net/catalog/manu/accuenergy (canada) inc./PICS Acuvim II (TC51311).pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/accuenergy (canada) inc./BTL_Listing_30936_Accuenergy_AcuvimIISeries.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/accuenergy (canada) inc./BTL_Cert_30936_Accuenergy_AcuvimIISeries.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/accuenergy (canada) inc./BTL_Listing_31626_Accuenergy_AcuvimIIL.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/accuenergy (canada) inc./BTL_Cert_31626_Accuenergy_AcuvimIIL.pdf",
           "object_types": {
             "Device": true
           }
@@ -1514,9 +1525,9 @@
           "name": "General Controller",
           "type": "B-AAC",
           "typeLabel": "Advanced Application Controller",
-          "pics_url": "https://www.bacnetinternational.net/catalog/manu/azbil corporation/AX-355E Azbil_GC_PICS_rev.1.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/azbil corporation/BTL_Listing_31133_AzbilCorporation_GeneralController.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/azbil corporation/BTL_Cert_31133_AzbilCorporation_GeneralController.pdf",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/azbil corporation/PICS__ax-355e_azbil_gc_pics_rev.1.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/azbil corporation/BTL_Listing_31620_AzbilCorporation_GeneralController.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/azbil corporation/BTL_Cert_31620_AzbilCorporation_GeneralController.pdf",
           "object_types": {
             "Device": true
           }
@@ -2959,9 +2970,9 @@
           "name": "i-Vu™ XT BACnet Link",
           "type": "B-BC",
           "typeLabel": "Building Controller",
-          "pics_url": "https://www.bacnetinternational.net/catalog/manu/carrier corporation/PICS _xt-lb_pics_v5.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/carrier corporation/BTL_Listing_31561_Carrier_iVuXT.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/carrier corporation/BTL_Cert_31561_Carrier_iVuXT.pdf",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/carrier corporation/PICS_xt-lb_pics_v5.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/carrier corporation/BTL_Listing_31622_Carrier_iVuXTBACnetLink.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/carrier corporation/BTL_Cert_31622_Carrier_iVuXTBACnetLink.pdf",
           "object_types": {
             "Device": true
           }
@@ -4986,9 +4997,9 @@
           "name": "VAV-Compact",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/catalog/manu/gruner ag/BACnet-PICS_01-10-2020.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/gruner ag/BTL_Listing_30706_GrunerAG_VAVCompact.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/gruner ag/BTL_Cert_30706_GrunerAG_VAVCompact.pdf",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/gruner ag/PICS_v118.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/gruner ag/BTL_Listing_31625_GrunerAG_VAVCompact.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/gruner ag/BTL_Cert_31625_GrunerAG_VAVCompact.pdf",
           "object_types": {
             "Device": true
           }
@@ -7447,9 +7458,9 @@
           "name": "AC Smart 5",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/catalog/manu/lg electronics inc./ACSmart5_PICS_20190131.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/lg electronics inc./BTL_Listing_30315-1_LGElectron_ACSmart5.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/lg electronics inc./BTL_Cert_30315-1_LGElectron_ACSmart5.pdf",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/lg electronics inc./ACSmart5_ACP5_PICS_20260807.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/lg electronics inc./BTL_Listing_31624_LGElectronics_ACSmart5.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/lg electronics inc./BTL_Cert_31624_LGElectronics_ACSmart5.pdf",
           "object_types": {
             "Device": true
           }
@@ -7460,17 +7471,6 @@
           "typeLabel": "Application Specific Controller",
           "pics_url": "https://www.bacnetinternational.net/catalog/manu/lg electronics inc./ACS_BACnet_PICS_20170515.pdf",
           "listing_url": "https://www.bacnetinternational.net/btl/listings/lg electronics inc./BTL_Listing_24263_LG_AC-Smart.pdf",
-          "object_types": {
-            "Device": true
-          }
-        },
-        {
-          "name": "ACP 5",
-          "type": "B-ASC",
-          "typeLabel": "Application Specific Controller",
-          "pics_url": "https://www.bacnetinternational.net/catalog/manu/lg electronics inc./acp5_pics_20191127.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/lg electronics inc./BTL_Listing_30526_LGElectronics_ACP5.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/lg electronics inc./BTL_Cert_30526_LGElectronics_ACP5.pdf",
           "object_types": {
             "Device": true
           }
@@ -10355,6 +10355,17 @@
           }
         },
         {
+          "name": "Samsung Edge Controller",
+          "type": "B-BC",
+          "typeLabel": "Building Controller",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/samsung electronics co., ltd./PICS annex-a_samsung_edge_controller.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/samsung electronics co., ltd./BTL_Listing_31623_Samsung_EdgeController.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/samsung electronics co., ltd./BTL_Cert_31623_Samsung_EdgeController.pdf",
+          "object_types": {
+            "Device": true
+          }
+        },
+        {
           "name": "b.IoT IO Module",
           "type": "B-ASC",
           "typeLabel": "Application Specific Controller",
@@ -11319,6 +11330,22 @@
           "pics_url": "https://www.bacnetinternational.net/catalog/manu/shenzhen mek intellisys pte ltd./IoT Smart Building Network Router BACnet PICS V1.01.pdf",
           "listing_url": "https://www.bacnetinternational.net/btl/listings/shenzhen mek intellisys pte ltd./BTL_Listing_30726_ShenzhenMEKIntellisys_SG100B.pdf",
           "certificate_url": "https://www.bacnetinternational.net/catalog/manu/shenzhen mek intellisys pte ltd./BTL_Cert_30726_ShenzhenMEKIntellisys_SG100B.pdf",
+          "object_types": {
+            "Device": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "Shenzhen Sunricher Technology Co.,Ltd.",
+      "models": [
+        {
+          "name": "Smart IoT Gateway (VR)",
+          "type": "B-GW",
+          "typeLabel": "Gateway",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/shenzhen sunricher technology co.,ltd./PICS_Virtual_Router_Smart_IoT_Gateway.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/shenzhen sunricher technology co.,ltd./BTL_Listing_31627_ShenzhenSunricher_SmartIoTGateway.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/shenzhen sunricher technology co.,ltd./BTL_Cert_31627_ShenzhenSunricher_SmartIoTGateway.pdf",
           "object_types": {
             "Device": true
           }
@@ -13306,8 +13333,8 @@
           "type": "B-BC",
           "typeLabel": "Building Controller",
           "pics_url": "https://www.bacnetinternational.net/catalog/manu/strato automation inc./PICS openstat_v5.pdf",
-          "listing_url": "https://www.bacnetinternational.net/btl/listings/strato automation inc./BTL_Listing_31479_StratoAutomation_OPENSTAT.pdf",
-          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/strato automation inc./BTL_Cert_31479_StratoAutomation_OPENSTAT.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/strato automation inc./BTL_Listing_31621_StratoAutomation_OPENSTAT.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/strato automation inc./BTL_Cert_31621_StratoAutomation_OPENSTAT.pdf",
           "object_types": {
             "Device": true,
             "Command": true,
