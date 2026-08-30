@@ -13,9 +13,38 @@ from src.simulation.mapping_suggestions import (
     discover_candidates,
     suggest_mapping_for_variable,
 )
-from src.simulation.models.registry import MODEL_REGISTRY, MappingHints, VariableDefinition
+from src.simulation.models.registry import (
+    MappingHints,
+    ModelDefinition,
+    VariableDefinition,
+)
 
-VAV_DEFINITION = MODEL_REGISTRY["simple_vav_zone_fmu"]
+# MODEL_REGISTRY (a static local catalog) was removed 2026-08-25 once the FMU catalog moved to
+# the model runtime's own dynamic metadata (see remote_catalog.py's definition_from_metadata) --
+# nothing populates a local registry by this key anymore. This engine only exercises the pure
+# scoring/candidate-discovery functions in mapping_suggestions.py, which take VariableDefinition
+# objects directly, so a local fixture (matching SimpleVAVZone's real supply_air_temp_c/
+# zone_temp_c inputs) is all these tests actually need -- no live catalog lookup required.
+VAV_DEFINITION = ModelDefinition(
+    model_type="simple_vav_zone_fmu",
+    label="VAV",
+    provider_type="fmu",
+    description="VAV terminal FMU with external zone-temperature input, damper control, airflow, and hot-water reheat.",
+    parameters=(),
+    variables=(
+        VariableDefinition(
+            "supply_air_temp_c", "Supply Air Temperature", "input",
+            unit="degrees-celsius",
+            suggested_point_types=("Supply_Air_Temperature_Sensor",),
+        ),
+        VariableDefinition(
+            "zone_temp_c", "Zone Temperature", "input",
+            unit="degrees-celsius",
+            suggested_point_types=("Zone_Air_Temperature_Sensor",),
+        ),
+    ),
+    factory=lambda parameters: None,
+)
 SAT_INPUT = next(v for v in VAV_DEFINITION.variables if v.name == "supply_air_temp_c")
 
 
