@@ -3,19 +3,6 @@ name: RTU Sensitivity & Calibration
 on:
   workflow_dispatch:
 
-  push:
-    branches:
-      - main
-      - feature/**
-    paths:
-      - bacnet-simulator/src/model_runtime/models/rtu/model.json
-      - bacnet-simulator/src/model_runtime/models/rtu/RTU.fmu
-      - bacnet-simulator/src/model_runtime/models/rtu/calibration/**
-      - bacnet-simulator/src/model_runtime/shared/validate_fmu_metadata.py
-      - bacnet-simulator/src/model_runtime/shared/run_sensitivity.py
-      - bacnet-simulator/src/model_runtime/shared/run_calibration.py
-      - .github/workflows/rtu-sensitivity-calibration.yml
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
   RTU_FMU: models/rtu/RTU.fmu

@@ -3,19 +3,6 @@ name: VAV Sensitivity & Calibration
 on:
   workflow_dispatch:
 
-  push:
-    branches:
-      - main
-      - feature/**
-    paths:
-      - bacnet-simulator/src/model_runtime/models/vav/model.json
-      - bacnet-simulator/src/model_runtime/models/vav/SimpleVAVZone.fmu
-      - bacnet-simulator/src/model_runtime/models/vav/calibration/**
-      - bacnet-simulator/src/model_runtime/shared/validate_fmu_metadata.py
-      - bacnet-simulator/src/model_runtime/shared/run_sensitivity.py
-      - bacnet-simulator/src/model_runtime/shared/run_calibration.py
-      - .github/workflows/vav-sensitivity-calibration.yml
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
   VAV_FMU: models/vav/SimpleVAVZone.fmu
