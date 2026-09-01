@@ -228,7 +228,6 @@ const form = reactive({
 const variableCandidateScores = ref<Record<string, Map<number, number>>>({})
 
 const providerOptions = computed(() => providers.value
-  .filter(p => p.provider_type !== 'learned')
   .map(p => ({
     value: p.provider_type,
     label: p.label,
@@ -433,7 +432,6 @@ function resetForModel(modelType: string) {
 }
 
 function resetForProvider(providerType: SimulationProviderType) {
-  if (providerType === 'learned') return
   if (providerType === 'builtin') {
     form.provider_type = 'builtin'
     form.model_type = ''

@@ -202,7 +202,7 @@ class SimulationModelInputExposurePayload(BaseModel):
 
 class SimulationModelPayload(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    provider_type: Literal["fmu", "learned"] = "fmu"
+    provider_type: Literal["fmu", "ai"] = "fmu"
     model_type: str = Field(min_length=1)
     enabled: bool = True
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -273,7 +273,7 @@ def _runtime_definition(database: Any, model_type: str):
 
 class MappingSuggestionsRequest(BaseModel):
     model_type: str = Field(min_length=1)
-    provider_type: Literal["fmu", "learned"] = "fmu"
+    provider_type: Literal["fmu", "ai"] = "fmu"
     created_from_device_id: int | None = None
     current_model_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -581,7 +581,11 @@ def _validate_mapping_contract(
     *,
     model_id: int | None = None,
 ) -> None:
-    if payload.provider_type == "learned":
+    if payload.provider_type == "ai":
+        # AI-backed models use plain point mapping only (see the plan's v1
+        # scope decision) -- the validation below is specifically about
+        # FMU's aggregate/constant/point input-sourcing complexity, which
+        # doesn't apply here.
         return
 
     # A variable declared in BOTH raw lists is a structural conflict, not
@@ -982,13 +986,14 @@ def _provider_catalog() -> list[dict[str, Any]]:
             ),
         },
         {
-            "provider_type": "learned",
-            "label": "Learned Twin",
-            "available": False,
+            "provider_type": "ai",
+            "label": "AI",
+            "available": True,
             "persistent_model_required": True,
             "description": (
-                "Learned-model runtime scaffold. Loading/training is not "
-                "implemented yet."
+                "ML-trained model driven through the same configured runtime API "
+                "as an FMU. Inputs/outputs map to BACnet points the same way; no "
+                "constant or aggregate input sourcing yet."
             ),
         },
     ]

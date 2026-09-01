@@ -227,10 +227,16 @@ def definition_from_metadata(metadata: dict[str, Any]) -> ModelDefinition:
     )
     if str(metadata.get("slug") or "") == _WEATHER_MODEL_SLUG:
         parameters = parameters + (_PLAYBACK_START_MONTH_PARAMETER,)
+    # iot-models reports runtime_type per model (added alongside its ONNX
+    # surrogate backend) -- this is the one place that decides which
+    # provider category ("FMU" vs "AI") a given catalog model shows up
+    # under in this admin UI. Defaults to "fmu" for any model.json that
+    # predates runtime_type (every real FMU model to date).
+    provider_type = "ai" if metadata.get("runtime_type") == "onnx" else "fmu"
     return ModelDefinition(
         model_type=model_id,
         label=str(metadata.get("label") or model_id),
-        provider_type="fmu",
+        provider_type=provider_type,
         description=str(metadata.get("description") or ""),
         parameters=parameters,
         variables=tuple(variables),

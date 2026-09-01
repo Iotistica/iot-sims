@@ -190,7 +190,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export type SimulationProviderType =
   | 'builtin'
   | 'fmu'
-  | 'learned'
+  | 'ai'
 
 export interface SimulationProviderCatalogEntry {
   provider_type: SimulationProviderType

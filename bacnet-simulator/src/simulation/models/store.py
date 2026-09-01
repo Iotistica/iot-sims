@@ -636,7 +636,7 @@ def list_enabled_simulation_models(database: Any) -> list[dict]:
 # provider whose implementation is gone from the codebase (e.g. 'weather',
 # removed in 47a1a46 in favor of the FMU-based Weather.mo model) with no
 # code path left that can ever load it again.
-_REGISTRABLE_OR_LEGACY_PROVIDER_TYPES = ("fmu", "learned", "system")
+_REGISTRABLE_OR_LEGACY_PROVIDER_TYPES = ("fmu", "ai", "system")
 
 
 def purge_unsupported_simulation_models(database: Any) -> list[dict[str, Any]]:
@@ -807,7 +807,7 @@ def get_exposure_owners_by_point(
     """Return explicit simulation-model input-exposure ownership by point
     id. Mirrors get_output_owners_by_point's shape/filters exactly -- used
     alongside it so a point driven by a mirrored INPUT value (rather than a
-    plain OUTPUT mapping) is still surfaced as FMU/Learned-driven in the
+    plain OUTPUT mapping) is still surfaced as FMU/AI-driven in the
     UI's Behavior column, instead of falling through to that point's raw,
     stale `behavior` field."""
     ensure_simulation_model_schema(database)
@@ -849,7 +849,7 @@ def get_exposure_owners_by_point(
 
 
 def reconcile_provider_owned_raw_behavior(database: Any) -> None:
-    """Relabel every currently provider (FMU/learned model)-owned point
+    """Relabel every currently provider (FMU/AI model)-owned point
     still showing the legacy `behavior='constant'` default to the clearer
     'raw' (see VALID_BEHAVIORS in src/core/config.py). The two mean exactly
     the same thing for a provider-owned point -- a pure passthrough of the

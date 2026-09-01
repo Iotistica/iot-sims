@@ -52,7 +52,7 @@ VALID_RELIABILITY = {
 VALID_POLARITY = {"normal", "reverse"}
 
 VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault", "raw"}
-# "raw" is only meaningful for a provider (FMU/learned model)-owned point --
+# "raw" is only meaningful for a provider (FMU/AI model)-owned point --
 # an explicit, clearly-named way to reset out of whatever Behavior is
 # currently configured, back to just following the model's live raw output
 # (see SimEngine._apply_fmu_behavior). Functionally identical to "constant"

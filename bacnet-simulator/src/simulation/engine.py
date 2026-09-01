@@ -170,7 +170,7 @@ class SimEngine:
         #
         # "builtin" is always present and owns every normal simulated point
         # that has not been explicitly claimed as an output by another
-        # provider. Additional providers (FMU/Learned/etc.) register
+        # provider. Additional providers (FMU/AI/etc.) register
         # their input/output point bindings through register_simulation_provider().
         #
         # BACnet object lifecycle, alarms, trends, history and snapshots stay
@@ -285,7 +285,7 @@ class SimEngine:
         reading SAT from the Built-in provider or from an AHU System model).
 
         A point can have only one output owner. This prevents Built-in + System,
-        two System models, or a future FMU/Learned provider from racing to write
+        two System models, or a future FMU/AI provider from racing to write
         the same point in one tick.
 
         Providers execute in registration order after Built-in. This gives a
@@ -704,7 +704,7 @@ class SimEngine:
 
         # A start/reload rebuilds the BACnet runtime from DB, so rebuild only
         # the Built-in adapter from the same source of truth. Registered FMU/
-        # Learned providers remain registered and keep their output claims.
+        # AI providers remain registered and keep their output claims.
         self._replace_builtin_provider(BuiltInSimulationProvider())
         provider_participants: list[int] = []
         provider_points: list[PointConfig] = []
@@ -914,7 +914,7 @@ class SimEngine:
             self._builtin_provider.start()
 
         # Keep registered non-built-in models alive across BACnet runtime
-        # rebuilds. Device/object CRUD reloads should not rewind FMU/Learned
+        # rebuilds. Device/object CRUD reloads should not rewind FMU/AI
         # sessions; their output ownership/mappings remain valid because the
         # DB object IDs do not change.
         for provider_id, provider in list(self._providers.items()):
@@ -1225,7 +1225,7 @@ class SimEngine:
     def _apply_fmu_behavior(
         self, behavior: Behavior, behavior_name: str, raw_value: Any, state: SimState,
     ) -> Any:
-        """Apply a provider (FMU/learned model)-owned point's configured
+        """Apply a provider (FMU/AI model)-owned point's configured
         Behavior on top of the provider's raw value for this tick.
 
         Reuses each Behavior class's own compute() math completely
@@ -1376,7 +1376,7 @@ class SimEngine:
             self._builtin_provider.start()
         self._builtin_provider.step(dependencies.TICK_SECONDS)
 
-        # Then run FMU/Learned providers in registration order. Inputs
+        # Then run FMU/AI providers in registration order. Inputs
         # resolve against the newest value already generated this tick, so a
         # System model can consume a Built-in point (or an earlier provider's
         # output) without duplicating the point.
@@ -1440,7 +1440,7 @@ class SimEngine:
             val = provider_outputs[obj_id]
             owner = self._point_output_owner.get(obj_id, "builtin")
             if owner != "builtin":
-                # The provider (FMU/learned model) remains the source of
+                # The provider (FMU/AI model) remains the source of
                 # truth; the raw value is preserved for diagnostics BEFORE
                 # any Behavior transformation, and the provider keeps
                 # computing it every tick regardless of whether a Behavior
@@ -1883,7 +1883,7 @@ class SimEngine:
     async def reload(self) -> None:
         """Rebuild the BACnet stack from DB (called after config changes).
 
-        Registered FMU/Learned providers are NOT re-registered here (see
+        Registered FMU/AI providers are NOT re-registered here (see
         start()'s own comment) -- only the BACnet objects/_prev_values get
         torn down and rebuilt. Snapshot _prev_values first so
         _create_object() can restore each provider-owned raw/constant

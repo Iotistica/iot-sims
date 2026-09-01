@@ -100,12 +100,13 @@ const simulationProviderLabel = computed(() => {
   const provider = props.device.active_simulation_model?.provider_type
   if (!provider) return null
   if (provider === 'fmu') return simulationModelDisplayName.value ? `FMU: ${simulationModelDisplayName.value}` : 'FMU'
+  if (provider === 'ai') return simulationModelDisplayName.value ? `AI: ${simulationModelDisplayName.value}` : 'AI'
   return provider
 })
 const simulationProviderColor = computed(() => {
   const provider = props.device.active_simulation_model?.provider_type
   if (provider === 'fmu') return 'purple'
-  if (provider === 'learned') return 'cyan'
+  if (provider === 'ai') return 'cyan'
   return 'default'
 })
 const simulationProviderTitle = computed(() => {

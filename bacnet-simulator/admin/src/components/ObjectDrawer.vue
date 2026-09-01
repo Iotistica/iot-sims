@@ -435,7 +435,7 @@ function doDelete() {
 
       <a-form-item v-if="simulationOutputOwner" label="Provider">
         <a-tag :color="simulationOutputOwner?.provider_type === 'fmu' ? 'purple' : 'cyan'">
-          {{ simulationOutputOwner?.provider_type === 'fmu' ? 'FMU' : 'Learned' }}
+          {{ simulationOutputOwner?.provider_type === 'fmu' ? 'FMU' : 'AI' }}
         </a-tag>
         <span style="font-size:12px;color:var(--text-secondary)">
           {{ simulationOutputOwner?.name }} / {{ simulationOutputOwner?.variable }}

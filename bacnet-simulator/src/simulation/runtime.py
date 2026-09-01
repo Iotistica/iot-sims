@@ -508,7 +508,7 @@ async def lifespan(app: FastAPI):
     dependencies._apply_settings_live(await asyncio.to_thread(dependencies.db.get_settings))
     await dependencies.engine.start()
 
-    # Restore persisted FMU/Learned model registrations only after the
+    # Restore persisted FMU/AI model registrations only after the
     # BACnet runtime exists. Built-in remains the default/fallback provider.
     # Deferred to avoid circular import -- same reasoning as
     # mirror_sync_loop's deferred discovery import above.

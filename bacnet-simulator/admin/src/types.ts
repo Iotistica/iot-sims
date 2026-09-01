@@ -34,7 +34,7 @@ export interface Device {
   active_simulation_model?: {
     id: number
     name: string
-    provider_type: 'fmu' | 'learned'
+    provider_type: 'fmu' | 'ai'
     model_type: string
     model_count?: number
   } | null
@@ -116,11 +116,11 @@ export interface SimObject {
   polarity: string
   point_type?: string | null
   description?: string | null
-  /** Explicit model output owner. When present, the provider (FMU/learned model) generates this point's raw value; `behavior` is applied on top of it every tick (see SimEngine._apply_fmu_behavior). */
+  /** Explicit model output owner. When present, the provider (FMU/AI model) generates this point's raw value; `behavior` is applied on top of it every tick (see SimEngine._apply_fmu_behavior). */
   simulation_output_owner?: {
     id: number
     name: string
-    provider_type: 'fmu' | 'learned'
+    provider_type: 'fmu' | 'ai'
     model_type: string
     variable: string
   } | null

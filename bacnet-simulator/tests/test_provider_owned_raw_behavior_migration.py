@@ -59,7 +59,7 @@ def _make_input_exposure(database, point_id: int, *, enabled: bool = True):
     ensure_simulation_model_schema(database)
     conn = database._conn()
     conn.execute(
-        "INSERT INTO simulation_model_configs (name, provider_type, model_type, enabled) VALUES (?, 'learned', 'RTU', ?)",
+        "INSERT INTO simulation_model_configs (name, provider_type, model_type, enabled) VALUES (?, 'ai', 'RTU', ?)",
         (f"exposure-model-for-{point_id}", 1 if enabled else 0),
     )
     model_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]

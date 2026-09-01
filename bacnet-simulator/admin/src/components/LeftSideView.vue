@@ -284,7 +284,7 @@ function simulationProviderLabel(device: Device): string | null {
   const provider = device.active_simulation_model?.provider_type
   if (!provider) return null
   if (provider === 'fmu') return 'FMU'
-  if (provider === 'learned') return 'Learned'
+  if (provider === 'ai') return 'AI'
   return provider
 }
 
@@ -295,7 +295,7 @@ function replayRecordingLabel(device: Device): string {
 function simulationProviderColor(device: Device): string {
   const provider = device.active_simulation_model?.provider_type
   if (provider === 'fmu') return 'purple'
-  if (provider === 'learned') return 'cyan'
+  if (provider === 'ai') return 'cyan'
   return 'default'
 }
 

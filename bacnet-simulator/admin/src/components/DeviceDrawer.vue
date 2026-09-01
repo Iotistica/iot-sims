@@ -95,7 +95,7 @@ const equipmentOptionGroups = computed(() => {
 
 // ── Simulation provider -------------------------------------------------------
 // Built-in is the fallback/default provider. A controller does not persist a
-// single provider field because explicit System/FMU/Learned models may map
+// single provider field because explicit System/FMU/AI models may map
 // points across multiple controllers. This selector exposes the available
 // provider families and reflects enabled models created from this controller.
 // Choosing a non-built-in provider is the starting context for Add Model; point

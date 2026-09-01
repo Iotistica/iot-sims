@@ -30,7 +30,7 @@ from ..providers.fmu import FMURuntimeClient
 log = logging.getLogger("bacnet-sim")
 
 
-RUNTIME_PREFIXES = ("fmu:", "learned:")
+RUNTIME_PREFIXES = ("fmu:", "ai:")
 
 # Circuit breaker for recover_unhealthy_simulation_models: a model whose
 # model_type doesn't resolve in the catalog (e.g. orphaned by an upstream
@@ -188,9 +188,9 @@ def _build_fmu_provider(
     settings = config.get("_settings") or {}
     definition = get_remote_model_definition(settings, str(config["model_type"]))
 
-    if definition.provider_type != "fmu":
+    if definition.provider_type not in ("fmu", "ai"):
         raise ValueError(
-            f"Model {config['model_type']!r} is not an FMU model"
+            f"Model {config['model_type']!r} is not an FMU or AI model"
         )
 
     parameters = dict(config.get("parameters") or {})
@@ -487,13 +487,14 @@ def register_model_config(
     config = dict(config)
     provider_type = str(config["provider_type"])
 
-    if provider_type == "fmu":
+    if provider_type in ("fmu", "ai"):
+        # Same builder for both -- an AI-backed model answers the exact
+        # same iot-models REST API shape (/initialize, /step, /terminate)
+        # an FMU-backed one does, so there's no separate integration to
+        # build; "ai" vs "fmu" is a catalog/UI categorization, not a
+        # different runtime protocol. See _build_fmu_provider's own
+        # provider_type check for the corresponding widened guard.
         provider, context, inputs, outputs = _build_fmu_provider(config, engine)
-    elif provider_type == "learned":
-        raise ValueError(
-            "Learned Twin model persistence is recognized but learned-model "
-            "loading is not implemented yet"
-        )
     else:
         raise ValueError(f"Unsupported provider type: {provider_type}")
 
@@ -673,7 +674,11 @@ def recover_unhealthy_simulation_models(database: Any, engine: Any) -> dict[str,
     persisted = [
         {**config, "_settings": settings}
         for config in list_enabled_simulation_models(database)
-        if str(config.get("provider_type")) == "fmu"
+        # AI-backed models talk to the exact same remote runtime (same
+        # FMURuntimeClient, same HTTP health semantics) via _build_fmu_provider
+        # -- they get the same auto-recovery benefit an FMU model already
+        # does, not just the FMU ones.
+        if str(config.get("provider_type")) in ("fmu", "ai")
     ]
     if not persisted:
         return {"recovered": [], "skipped": [], "errors": [], "runtime_unreachable": False}
