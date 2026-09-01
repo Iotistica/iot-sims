@@ -15,21 +15,21 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ...core.config import BINARY_TYPES, MULTISTATE_TYPES
-from ...integrations.azure_openai import AzureStructuredClient
-from ...simulation.mapping_ai_suggestions import suggest_point_for_variable_via_ai
-from ...simulation.mapping_conversions import CONVERSIONS
-from ...simulation.mapping_suggestions import (
+from ...integrations.llm import build_llm_client
+from ...simulation.mapping.ai_suggestions import suggest_point_for_variable_via_ai
+from ...simulation.mapping.conversions import CONVERSIONS
+from ...simulation.mapping.suggestions import (
     build_shortlist,
     relationship_context_string,
     suggest_mappings_for_model,
 )
-from ...simulation.model_runtime import (
+from ...simulation.models.runtime import (
     provider_runtime_id,
     reconcile_enabled_models,
     reload_model,
     runtime_signature,
 )
-from ...simulation.model_store import (
+from ...simulation.models.store import (
     create_simulation_model,
     delete_simulation_model,
     ensure_simulation_model_schema,
@@ -118,7 +118,7 @@ class SimulationModelMappingPayload(BaseModel):
     conversion: str | None = Field(
         default=None,
         description=(
-            "Named value conversion (see simulation.mapping_conversions."
+            "Named value conversion (see simulation.mapping.conversions."
             "CONVERSIONS) applied to this variable's FMU value at the "
             "mapping boundary -- e.g. 'zero_based_to_multistate' for a "
             "zero-based FMU output (0/1/2/...) mapped to this "
@@ -194,7 +194,7 @@ class SimulationModelInputExposurePayload(BaseModel):
     "mapping" in the read/write direction=input/output sense
     SimulationModelMappingPayload uses -- see
     simulation_model_input_exposures's own schema comment in
-    model_store.py for why this is a separate list/table instead of a
+    models/store.py for why this is a separate list/table instead of a
     third `direction` value."""
     variable: str = Field(min_length=1)
     point_id: int = Field(gt=0)
@@ -625,7 +625,7 @@ def _validate_mapping_contract(
     # triggered a reload), the FMU's own "uFan>0.01 else yFan=0" interlock
     # latched the fan off permanently, with no way to recover short of a
     # manual point edit. Checked here (save time) so the mistake can't be
-    # made through the UI/API at all; model_runtime.py's
+    # made through the UI/API at all; models/runtime.py's
     # _build_fmu_provider has the same check as defense-in-depth for
     # configs saved before this existed.
     input_point_ids = {m["point_id"] for m in effective_mappings if m["direction"] == "input"}
@@ -1379,7 +1379,8 @@ async def simulation_mapping_suggestion_ai(
     relationship_context = relationship_context_string(variable, scope_used, related_name)
 
     try:
-        client = AzureStructuredClient()
+        llm_settings = await asyncio.to_thread(database.get_settings)
+        client = build_llm_client(llm_settings)
         result = await asyncio.to_thread(
             suggest_point_for_variable_via_ai,
             client,
@@ -1396,7 +1397,7 @@ async def simulation_mapping_suggestion_ai(
         )
         raise HTTPException(
             status_code=502,
-            detail="AI suggestion is unavailable. Check Azure OpenAI configuration.",
+            detail="AI suggestion is unavailable. Check the AI provider configuration in Settings.",
         )
 
     # Authoritative shortlist check -- the model's response schema does
@@ -1435,7 +1436,7 @@ async def simulation_variable_candidates(
     request: Request,
 ):
     """Read-only ranked shortlist for ONE variable, reusing the exact same
-    discovery/scoring path as Auto Map (mapping_suggestions.build_shortlist)
+    discovery/scoring path as Auto Map (mapping.suggestions.build_shortlist)
     -- used by the Aggregate multi-select picker to sort compatible points
     by mapping_hints/suggested_point_types relevance instead of duplicating
     that scoring logic client-side (the equipment_scope="downstream"
@@ -1672,9 +1673,13 @@ async def edit_simulation_model(
             "never touches the runtime engine, regardless of the model's "
             "enabled state. True (Apply): also push the saved configuration "
             "to the runtime (reload if enabled; no-op registration-wise if "
-            "disabled). Either way, the model's enabled/disabled state is "
-            "whatever payload.enabled says -- this endpoint never flips it; "
-            "see PUT .../enabled for the dedicated ON/OFF control."
+            "disabled) -- reloads if the config changed OR the currently-"
+            "running provider isn't actually healthy, so Apply always "
+            "either confirms the model is genuinely running or fixes it; "
+            "no failure mode should ever require the enable toggle instead. "
+            "Either way, the model's enabled/disabled state is whatever "
+            "payload.enabled says -- this endpoint never flips it; see "
+            "PUT .../enabled for the dedicated ON/OFF control."
         ),
     ),
 ):
@@ -1750,20 +1755,46 @@ async def edit_simulation_model(
         if old_runtime_id != new_runtime_id:
             engine.unregister_simulation_provider(old_runtime_id)
 
-        # Skip the restart entirely when the model was already enabled and
-        # nothing runtime_signature() cares about actually changed (e.g.
-        # Apply was clicked after only editing the name, or with no edits
-        # at all). reload_model() always unregisters then reregisters
-        # unconditionally -- for an EnergyPlus/Spawn-backed FMU that means
-        # re-running the model's full warmup and logging a fresh "FMU
-        # model started" every single Apply, even a no-op one. A real
-        # config change (mappings, parameters, model_type, ...), or a
-        # disabled -> enabled transition (nothing running yet to compare
-        # against), still always goes through reload_model() below.
+        # Skip the restart entirely when the model was already enabled,
+        # nothing runtime_signature() cares about actually changed, AND the
+        # currently-registered provider is actually healthy right now (e.g.
+        # Apply was clicked after only editing the name, or with no edits at
+        # all, on a model that's genuinely running fine). reload_model()
+        # always unregisters then reregisters unconditionally -- for an
+        # EnergyPlus/Spawn-backed FMU that means re-running the model's full
+        # warmup and logging a fresh "FMU model started" every single Apply,
+        # even a no-op one, so this optimization is worth keeping -- but it
+        # must never let Apply silently do nothing to a model that's
+        # actually broken. A real config change (mappings, parameters,
+        # model_type, ...), a disabled -> enabled transition (nothing
+        # running yet to compare against), or an unhealthy current provider,
+        # still always goes through reload_model() below -- this is what
+        # makes Apply a strict superset of the dedicated enable toggle,
+        # which already reloads unconditionally: no failure mode should
+        # ever require disable-then-enable when Apply could have fixed it.
+        # See recover_unhealthy_simulation_models's own comment on
+        # last_http_status for why status alone isn't enough here either --
+        # a provider stuck on a persistent runtime error (e.g. a sustained
+        # HTTP 5xx from the FMU runtime) never leaves ProviderStatus.RUNNING,
+        # by design, so it wouldn't be caught by a status-only check.
+        # Deliberately checks diagnostics.last_http_status, NOT
+        # diagnostics.error -- error is also set for a perfectly normal
+        # warmup-in-progress response (a 200 reporting runtime_state !=
+        # "RUNNING"); keying off error alone here would restart a model's
+        # warmup from scratch on every Apply click made while it's still
+        # legitimately warming up, same mistake the recovery sweep made
+        # first (see its own comment -- confirmed live there).
+        current_provider_info = engine.get_simulation_providers().get(old_runtime_id, {})
+        current_last_http_status = (current_provider_info.get("diagnostics") or {}).get("last_http_status")
+        provider_unhealthy = (
+            current_provider_info.get("status") != "running"
+            or (current_last_http_status is not None and current_last_http_status >= 400)
+        )
         needs_restart = (
             not existing["enabled"]
             or old_runtime_id != new_runtime_id
             or runtime_signature(existing) != runtime_signature(model)
+            or provider_unhealthy
         )
 
         if model["enabled"] and needs_restart:

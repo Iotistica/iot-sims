@@ -8,7 +8,7 @@ that coupling to FastAPI and to bacnet_calendar already existed in the
 original file; this is a move, not a redesign.
 """
 import json
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -82,6 +82,8 @@ class EquipmentCreate(BaseModel):
     description: str = Field("", max_length=500)
     location_id: Optional[int] = None
     equipment_type: Optional[str] = None
+    manufacturer: Optional[str] = Field(None, max_length=200)
+    model: Optional[str] = Field(None, max_length=200)
 
     def validate_semantic(self) -> None:
         if self.equipment_type is not None and self.equipment_type not in EQUIPMENT_TYPES:
@@ -90,6 +92,36 @@ class EquipmentCreate(BaseModel):
 
 class EquipmentUpdate(EquipmentCreate):
     pass
+
+
+class AiSuggestionAcceptance(BaseModel):
+    suggested_class: str = Field(..., min_length=1, max_length=100)
+    accepted_class: str = Field(..., min_length=1, max_length=100)
+    confidence: str = Field(..., min_length=1, max_length=20)
+    reason: str = Field("", max_length=1000)
+
+
+class TemplateObjectPayload(BaseModel):
+    object_type: str
+    object_instance: int
+    name: str
+    units: str
+    behavior: str
+    behavior_params: str
+    point_type: Optional[str] = None
+
+
+class TemplateCreate(BaseModel):
+    label: str = Field(..., min_length=1, max_length=200)
+    description: str = Field("", max_length=500)
+    objects: list[TemplateObjectPayload] = Field(..., min_length=1)
+    equipment_types: Optional[list[str]] = None
+
+    def validate_semantic(self) -> None:
+        if self.equipment_types is not None:
+            invalid = [t for t in self.equipment_types if t not in EQUIPMENT_TYPES]
+            if invalid:
+                raise HTTPException(400, f"equipment_types contains unknown type(s): {invalid}")
 
 
 class ObjectCreate(BaseModel):
@@ -393,6 +425,20 @@ class SettingsPayload(BaseModel):
     jwt_expire_hours: int = Field(24, ge=1, le=8760)
     fmu_runtime_url: str = Field("http://localhost:8002", min_length=1, max_length=500)
     fmu_runtime_timeout_s: float = Field(20.0, ge=1.0, le=120.0)
+    # Optional -- empty means the runtime is unauthenticated (matches its
+    # own RUNTIME_API_KEY default in iot-models). Sent as X-API-Key on
+    # every outgoing call once set -- see remote_catalog.get_runtime_settings.
+    fmu_runtime_api_key: str = Field("", max_length=500)
+    azure_openai_endpoint: str = Field("", max_length=500)
+    azure_openai_api_key: str = Field("", max_length=500)
+    azure_openai_deployment: str = Field("", max_length=200)
+    azure_openai_api_version: str = Field("2024-10-21", max_length=50)
+    llm_provider: Literal["azure_openai", "openai", "openai_compatible"] = "azure_openai"
+    openai_api_key: str = Field("", max_length=500)
+    openai_model: str = Field("", max_length=200)
+    openai_compatible_base_url: str = Field("", max_length=500)
+    openai_compatible_api_key: str = Field("", max_length=500)
+    openai_compatible_model: str = Field("", max_length=200)
 
 
 class PriorityWrite(BaseModel):

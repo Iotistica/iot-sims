@@ -10,6 +10,7 @@ const loading = ref(false)
 const savingGeneral = ref(false)
 const savingSimulation = ref(false)
 const savingBuffers = ref(false)
+const savingAi = ref(false)
 
 const form = reactive<Settings>({
   tick_seconds: 5.0,
@@ -25,6 +26,17 @@ const form = reactive<Settings>({
   jwt_expire_hours: 24,
   fmu_runtime_url: 'http://localhost:8002',
   fmu_runtime_timeout_s: 20,
+  fmu_runtime_api_key: '',
+  azure_openai_endpoint: '',
+  azure_openai_api_key: '',
+  azure_openai_deployment: '',
+  azure_openai_api_version: '2024-10-21',
+  llm_provider: 'azure_openai',
+  openai_api_key: '',
+  openai_model: '',
+  openai_compatible_base_url: '',
+  openai_compatible_api_key: '',
+  openai_compatible_model: '',
 })
 
 async function load() {
@@ -74,6 +86,18 @@ async function saveBuffers() {
   }
 }
 
+async function saveAi() {
+  savingAi.value = true
+  try {
+    Object.assign(form, await api.settings.update({ ...form }))
+    message.success('Settings saved')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to save settings')
+  } finally {
+    savingAi.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -118,8 +142,11 @@ onMounted(load)
               <a-form-item label="Runtime URL" tooltip="Base URL for the generic IoT FMU model runtime">
                 <a-input v-model:value="form.fmu_runtime_url" placeholder="http://localhost:8002" />
               </a-form-item>
-              <a-form-item label="Runtime Timeout (seconds)" tooltip="Timeout for FMU model catalog and simulation runtime requests" style="margin-bottom:0">
+              <a-form-item label="Runtime Timeout (seconds)" tooltip="Timeout for FMU model catalog and simulation runtime requests">
                 <a-input-number v-model:value="form.fmu_runtime_timeout_s" :min="1" :max="120" :step="1" style="width:100%" />
+              </a-form-item>
+              <a-form-item label="Runtime API Key" tooltip="Sent as X-API-Key on every request. Leave blank if the runtime doesn't require one." style="margin-bottom:0">
+                <a-input-password v-model:value="form.fmu_runtime_api_key" placeholder="Optional" autocomplete="new-password" />
               </a-form-item>
             </a-form>
           </div>
@@ -155,6 +182,65 @@ onMounted(load)
             </a-form>
           </div>
           <a-button type="primary" :loading="savingBuffers" style="margin-top:14px" @click="saveBuffers">Save</a-button>
+        </a-spin>
+      </a-tab-pane>
+
+      <a-tab-pane key="ai" tab="AI Suggestions">
+        <a-spin :spinning="loading">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">
+            Used by "Use AI" in the Simulation Model mapping review and the object tree's semantic
+            suggestions -- only called when you explicitly ask for it, never automatically. Leave
+            the selected provider's fields blank to disable; falls back to the matching environment
+            variables when unset.
+          </div>
+          <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:16px;max-width:480px">
+            <a-form layout="vertical">
+              <a-form-item label="Provider" style="margin-bottom:16px">
+                <a-select v-model:value="form.llm_provider" style="width:100%" :options="[
+                  { value: 'azure_openai', label: 'Azure OpenAI' },
+                  { value: 'openai', label: 'OpenAI' },
+                  { value: 'openai_compatible', label: 'OpenAI-Compatible (Custom)' },
+                ]" />
+              </a-form-item>
+
+              <template v-if="form.llm_provider === 'azure_openai'">
+                <a-form-item label="Endpoint" tooltip="Azure OpenAI resource endpoint, e.g. https://my-resource.openai.azure.com">
+                  <a-input v-model:value="form.azure_openai_endpoint" placeholder="https://my-resource.openai.azure.com" />
+                </a-form-item>
+                <a-form-item label="API Key">
+                  <a-input-password v-model:value="form.azure_openai_api_key" placeholder="Azure OpenAI API key" autocomplete="new-password" />
+                </a-form-item>
+                <a-form-item label="Deployment" tooltip="Deployment name, not the underlying model name">
+                  <a-input v-model:value="form.azure_openai_deployment" placeholder="gpt-4o-mapping" />
+                </a-form-item>
+                <a-form-item label="API Version" style="margin-bottom:0">
+                  <a-input v-model:value="form.azure_openai_api_version" placeholder="2024-10-21" />
+                </a-form-item>
+              </template>
+
+              <template v-else-if="form.llm_provider === 'openai'">
+                <a-form-item label="API Key">
+                  <a-input-password v-model:value="form.openai_api_key" placeholder="OpenAI API key" autocomplete="new-password" />
+                </a-form-item>
+                <a-form-item label="Model" style="margin-bottom:0">
+                  <a-input v-model:value="form.openai_model" placeholder="gpt-4o-mini" />
+                </a-form-item>
+              </template>
+
+              <template v-else-if="form.llm_provider === 'openai_compatible'">
+                <a-form-item label="Base URL" tooltip="Any OpenAI-compatible chat completions endpoint, e.g. a local Ollama/vLLM server or a hosted provider like Groq/Together">
+                  <a-input v-model:value="form.openai_compatible_base_url" placeholder="http://localhost:11434/v1" />
+                </a-form-item>
+                <a-form-item label="API Key" tooltip="Leave blank if the endpoint doesn't require one">
+                  <a-input-password v-model:value="form.openai_compatible_api_key" placeholder="API key (if required)" autocomplete="new-password" />
+                </a-form-item>
+                <a-form-item label="Model" style="margin-bottom:0">
+                  <a-input v-model:value="form.openai_compatible_model" placeholder="llama3.1" />
+                </a-form-item>
+              </template>
+            </a-form>
+          </div>
+          <a-button type="primary" :loading="savingAi" style="margin-top:14px" @click="saveAi">Save</a-button>
         </a-spin>
       </a-tab-pane>
 

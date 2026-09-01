@@ -31,7 +31,7 @@ from ..semantics.backfill import (
 from ..semantics.keys import derive_semantic_key
 from ..semantics.mirror import sync_entity_from_flat_field, sync_flat_field_from_entity, sync_device_location_relationship, sync_controller_entity
 from ..semantics.validation import validate_semantic_entity
-from ..simulation.model_store import (
+from ..simulation.models.store import (
     ensure_simulation_model_schema,
     get_aggregate_membership_owner,
     insert_simulation_model,
@@ -61,6 +61,17 @@ SETTINGS_SCHEMA: dict[str, type] = {
     "jwt_expire_hours": int,
     "fmu_runtime_url": str,
     "fmu_runtime_timeout_s": float,
+    "fmu_runtime_api_key": str,
+    "azure_openai_endpoint": str,
+    "azure_openai_api_key": str,
+    "azure_openai_deployment": str,
+    "azure_openai_api_version": str,
+    "llm_provider": str,
+    "openai_api_key": str,
+    "openai_model": str,
+    "openai_compatible_base_url": str,
+    "openai_compatible_api_key": str,
+    "openai_compatible_model": str,
 }
 
 
@@ -86,6 +97,32 @@ def _default_settings() -> dict:
         "fmu_runtime_timeout_s": float(
             os.environ.get("FMU_MODEL_RUNTIME_TIMEOUT_S", "20")
         ),
+        # Optional -- empty means the runtime is unauthenticated, matching
+        # its own RUNTIME_API_KEY default in iot-models.
+        "fmu_runtime_api_key": os.environ.get("FMU_MODEL_RUNTIME_API_KEY", ""),
+        # Seeded from the same env vars src/integrations/azure_openai.py already
+        # falls back to -- an existing deployment that sets these keeps working
+        # unchanged; Settings > Simulation just gives it a UI instead of only an
+        # env var. See that module's own docstring for the full resolution order.
+        "azure_openai_endpoint": os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+        "azure_openai_api_key": os.environ.get("AZURE_OPENAI_API_KEY", ""),
+        "azure_openai_deployment": os.environ.get("AZURE_OPENAI_DEPLOYMENT", ""),
+        "azure_openai_api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+        # Default provider stays Azure so an existing deployment's AZURE_OPENAI_*
+        # config keeps working unchanged. Unlike the Azure fields above, the
+        # openai/openai_compatible secrets are NOT seeded from env vars here --
+        # Settings > AI Suggestions always saves the whole form (see
+        # SettingsView.vue's saveAi()), so seeding a secret into this default
+        # would risk it getting silently written into the settings table the
+        # next time any tab is saved. build_llm_client() (src/integrations/
+        # llm/factory.py) does the "setting or env var" fallback itself, at
+        # call time, without ever persisting the env var's value.
+        "llm_provider": "azure_openai",
+        "openai_api_key": "",
+        "openai_model": "",
+        "openai_compatible_base_url": "",
+        "openai_compatible_api_key": "",
+        "openai_compatible_model": "",
     }
 
 
@@ -756,7 +793,7 @@ class Database:
         each device's objects, and those objects' simulation_model_mappings/
         input_exposures, with them automatically. If any surviving object
         is still an aggregate-mapping member (ON DELETE RESTRICT, see
-        model_store.ensure_simulation_model_schema's own comment), that
+        models.store.ensure_simulation_model_schema's own comment), that
         bulk DELETE raises sqlite3.IntegrityError here -- deliberately left
         uncaught so the whole transaction rolls back; the API layer
         (locations.py::delete_location) translates it into a clean 409,
@@ -810,11 +847,11 @@ class Database:
             r = conn.execute("SELECT * FROM equipment WHERE id=?", (equipment_id,)).fetchone()
             return dict(r) if r else None
 
-    def create_equipment(self, name: str, description: str, location_id: Optional[int], equipment_type: Optional[str] = None) -> dict:
+    def create_equipment(self, name: str, description: str, location_id: Optional[int], equipment_type: Optional[str] = None, manufacturer: Optional[str] = None, model: Optional[str] = None) -> dict:
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO equipment (name, description, location_id, equipment_type) VALUES (?,?,?,?)",
-                (name, description, location_id, equipment_type),
+                "INSERT INTO equipment (name, description, location_id, equipment_type, manufacturer, model) VALUES (?,?,?,?,?,?)",
+                (name, description, location_id, equipment_type, manufacturer, model),
             )
             sync_entity_from_flat_field(
                 conn, entity_kind="equipment", name=name, brick_class=equipment_type, equipment_id=cur.lastrowid,
@@ -822,11 +859,11 @@ class Database:
             conn.commit()
             return dict(conn.execute("SELECT * FROM equipment WHERE id=?", (cur.lastrowid,)).fetchone())
 
-    def update_equipment(self, equipment_id: int, name: str, description: str, location_id: Optional[int], equipment_type: Optional[str] = None) -> Optional[dict]:
+    def update_equipment(self, equipment_id: int, name: str, description: str, location_id: Optional[int], equipment_type: Optional[str] = None, manufacturer: Optional[str] = None, model: Optional[str] = None) -> Optional[dict]:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE equipment SET name=?, description=?, location_id=?, equipment_type=? WHERE id=?",
-                (name, description, location_id, equipment_type, equipment_id),
+                "UPDATE equipment SET name=?, description=?, location_id=?, equipment_type=?, manufacturer=?, model=? WHERE id=?",
+                (name, description, location_id, equipment_type, manufacturer, model, equipment_id),
             )
             sync_entity_from_flat_field(
                 conn, entity_kind="equipment", name=name, brick_class=equipment_type, equipment_id=equipment_id,
@@ -1569,6 +1606,21 @@ class Database:
             r = conn.execute("SELECT * FROM objects WHERE id=?", (obj_id,)).fetchone()
             return dict(r) if r else None
 
+    def get_classified_points(self, exclude_object_id: Optional[int] = None) -> list[dict]:
+        """Every already-classified point project-wide (point_type set, by
+        any means -- rule engine, an accepted AI suggestion, or typed in by
+        hand; source is not tracked here and doesn't matter for this use).
+        Used by src/semantics/ai_suggestions.py to ground a new AI
+        classification in real examples rather than the static prompt
+        alone. Small/simple by design (name/units/object_type/point_type
+        only) -- similarity scoring happens in Python, not SQL."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, name, units, object_type, point_type FROM objects "
+                "WHERE point_type IS NOT NULL AND point_type != ''"
+            ).fetchall()
+        return [dict(r) for r in rows if exclude_object_id is None or r["id"] != exclude_object_id]
+
     def touch_external_device_last_seen(self, device_id: int) -> None:
         """Bumps external_last_seen_at after a successful discover/refresh
         touch -- the minimal "seen/not seen" signal, no device-health
@@ -1688,6 +1740,95 @@ class Database:
                 )
             conn.commit()
             return len(objects)
+
+    # ── AI suggestion acceptances ────────────────────────────────────────────
+
+    def record_ai_suggestion_acceptance(
+        self,
+        object_id: int,
+        device_id: int,
+        suggested_class: str,
+        accepted_class: str,
+        confidence: str,
+        reason: str = "",
+    ) -> dict:
+        """Called from the Semantic Suggestions modal's Apply step, only for
+        rows whose suggestion came from AI (never for rule-only suggestions)
+        -- a side record of what happened, independent of the point_type
+        write itself (see api/routers/objects.py's update_object). accepted_class
+        vs suggested_class distinguishes "applied as-is" from "AI suggested
+        X, user corrected to Y before applying"."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO ai_suggestion_acceptances "
+                "(object_id, device_id, suggested_class, accepted_class, confidence, reason) "
+                "VALUES (?,?,?,?,?,?)",
+                (object_id, device_id, suggested_class, accepted_class, confidence, reason),
+            )
+            conn.commit()
+            return dict(conn.execute(
+                "SELECT * FROM ai_suggestion_acceptances WHERE id=?", (cur.lastrowid,),
+            ).fetchone())
+
+    # ── Templates ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _template_row_to_dict(row: sqlite3.Row) -> dict:
+        """Decodes objects_json/equipment_types_json into real lists -- every
+        consumer (the API router, tests) gets usable structures, never a raw
+        JSON string to parse itself."""
+        d = dict(row)
+        d["objects"] = json.loads(d.pop("objects_json"))
+        equipment_types_json = d.pop("equipment_types_json")
+        d["equipment_types"] = json.loads(equipment_types_json) if equipment_types_json else None
+        d["is_builtin"] = bool(d["is_builtin"])
+        return d
+
+    def list_templates(self) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM templates ORDER BY is_builtin DESC, id"
+            ).fetchall()
+        return [self._template_row_to_dict(r) for r in rows]
+
+    def get_template(self, template_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM templates WHERE id=?", (template_id,)).fetchone()
+        return self._template_row_to_dict(row) if row else None
+
+    def create_template(
+        self,
+        label: str,
+        description: str,
+        objects: list[dict],
+        equipment_types: Optional[list[str]] = None,
+    ) -> dict:
+        # Server-generated -- was client-generated (`user-${Date.now()}`) back
+        # when templates only ever lived in localStorage; `key` is now purely
+        # an internal/migration-seeding identifier, never something a caller
+        # supplies (the row's `id` is the real identifier everywhere else).
+        key = f"user-{int(time.time() * 1000)}"
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO templates (key, label, description, objects_json, equipment_types_json, is_builtin) "
+                "VALUES (?,?,?,?,?,0)",
+                (
+                    key,
+                    label,
+                    description,
+                    json.dumps(objects),
+                    json.dumps(equipment_types) if equipment_types else None,
+                ),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM templates WHERE id=?", (cur.lastrowid,)).fetchone()
+        return self._template_row_to_dict(row)
+
+    def delete_template(self, template_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM templates WHERE id=?", (template_id,))
+            conn.commit()
+            return cur.rowcount > 0
 
     # ── Energy────────────────────────────────────────────
 
@@ -3323,7 +3464,7 @@ class Database:
             # back fine. list_all_simulation_models reuses the same
             # assembly logic the /simulation/models API already returns
             # (mappings + aggregate_mappings merged, matching
-            # model_runtime._is_aggregate_row's own "point_ids" discriminator).
+            # models.runtime._is_aggregate_row's own "point_ids" discriminator).
             simulation_models = list_all_simulation_models(conn)
             data = json.dumps({
                 "locations": locations,
@@ -3430,7 +3571,7 @@ class Database:
             # Must run BEFORE devices, not just before locations: a point
             # that's a simulation_model_aggregate_members row (max or
             # weighted_average) is ON DELETE RESTRICT (see
-            # model_store.ensure_simulation_model_schema's own comment on
+            # models.store.ensure_simulation_model_schema's own comment on
             # that table), so DELETE FROM devices below would otherwise
             # cascade into deleting that point's object row and hit a
             # foreign-key-constraint failure -- deleting the model config
@@ -3684,12 +3825,14 @@ class Database:
                 old_equipment_id = eq.pop("id", None)
                 old_location_id = eq.get("location_id")
                 eq_cur = conn.execute(
-                    "INSERT INTO equipment (name, description, location_id, equipment_type) VALUES (?,?,?,?)",
+                    "INSERT INTO equipment (name, description, location_id, equipment_type, manufacturer, model) VALUES (?,?,?,?,?,?)",
                     (
                         eq["name"],
                         eq.get("description", ""),
                         location_id_map.get(old_location_id) if old_location_id is not None else None,
                         eq.get("equipment_type"),
+                        eq.get("manufacturer"),
+                        eq.get("model"),
                     ),
                 )
                 if old_equipment_id is not None:

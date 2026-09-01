@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ..mapping_conversions import apply_output_conversion
+from ..mapping.conversions import apply_output_conversion
 from .base import ProviderStatus, SimulationContext, SimulationProvider, ValidationResult
 
 
@@ -55,11 +55,11 @@ class FMUPointBinding:
     point_id: int
     variable: str
     direction: str
-    # Named conversion (see mapping_conversions.CONVERSIONS) applied to an
+    # Named conversion (see mapping/conversions.CONVERSIONS) applied to an
     # output binding's raw FMU value at _convert_output_value() below,
     # before the value ever reaches engine.py's own type-coercion/
     # multi-state clamp. None (the vast majority of bindings) is a no-op.
-    # Only meaningful for direction="output" -- see model_runtime.py's
+    # Only meaningful for direction="output" -- see models/runtime.py's
     # construction of this dataclass.
     conversion: str | None = None
 
@@ -119,9 +119,10 @@ class FMURuntimeResponse:
 
 
 class FMURuntimeClient:
-    def __init__(self, base_url: str, timeout_s: float = 20.0) -> None:
+    def __init__(self, base_url: str, timeout_s: float = 20.0, api_key: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.api_key = api_key
 
     def _request(
         self,
@@ -137,6 +138,8 @@ class FMURuntimeClient:
 
         data = None
         headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
         if body is not None:
             data = json.dumps(dict(body)).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -247,6 +250,7 @@ class FMUSimulationProvider(SimulationProvider):
         string_parameters: Mapping[str, str] | None = None,
         warmup_seconds: float | None = None,
         timeout_s: float = 20.0,
+        api_key: str | None = None,
         input_variables: set[str] | None = None,
         output_variables: set[str] | None = None,
     ) -> None:
@@ -257,22 +261,23 @@ class FMUSimulationProvider(SimulationProvider):
         self._input_exposures = list(input_exposures or [])
         self._input_defaults = dict(input_defaults or {})
         # Session-lifetime FMI String parameter overrides, resolved once by
-        # model_runtime._build_fmu_provider and captured here for the whole
+        # runtime._build_fmu_provider and captured here for the whole
         # provider lifetime -- unlike self._inputs, these are never
         # re-resolved per tick, matching the runtime's own once-at-
         # initialize() semantics (see shared/runtime/models/manager.py's
         # RuntimeSession.string_parameters).
         self._string_parameters = dict(string_parameters or {})
         # Per-session warmup override (e.g. Weather's "Playback Start
-        # Month", converted to seconds by model_runtime._build_fmu_provider)
+        # Month", converted to seconds by runtime._build_fmu_provider)
         # -- distinct from self._warmup_seconds below, which holds the
         # runtime's *reported* warmup_seconds for progress tracking.
         self._warmup_seconds_override = warmup_seconds
         self._timeout_s = float(timeout_s)
+        self._api_key = api_key
         self._input_variables = set(input_variables or ())
         self._output_variables = set(output_variables or ())
         self._context: SimulationContext | None = None
-        self._client = FMURuntimeClient(self._runtime_url, self._timeout_s)
+        self._client = FMURuntimeClient(self._runtime_url, self._timeout_s, self._api_key)
         self._session_id: str | None = None
         self._inputs: dict[int, Any] = {}
         self._outputs: dict[int, Any] = {}
@@ -586,7 +591,7 @@ class FMUSimulationProvider(SimulationProvider):
     def _aggregate_member_metadata(self, agg: FMUAggregateInput, point_id: int) -> dict[str, Any]:
         """Mirrors _binding_metadata() but keyed off point_id + the
         aggregate's own variable, since aggregate members don't have their
-        own FMUPointBinding -- model_runtime.py adds one context.metadata
+        own FMUPointBinding -- models/runtime.py adds one context.metadata
         "bindings" entry per member (variable=agg.variable,
         direction="input", point_id=member) precisely so this lookup works
         the same way for both ordinary and aggregate-member points."""

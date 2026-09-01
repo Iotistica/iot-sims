@@ -24,9 +24,12 @@ def normalize_remote_model_id(model_id: str) -> str:
     return model_id
 
 
-def _request_json(base_url: str, timeout_s: float, path: str) -> dict[str, Any]:
+def _request_json(base_url: str, timeout_s: float, path: str, api_key: str | None = None) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{path}"
-    request = Request(url, headers={"Accept": "application/json"}, method="GET")
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
+    request = Request(url, headers=headers, method="GET")
     try:
         with urlopen(request, timeout=timeout_s) as response:
             raw = response.read().decode("utf-8")
@@ -53,10 +56,11 @@ def _request_json(base_url: str, timeout_s: float, path: str) -> dict[str, Any]:
     return decoded
 
 
-def get_runtime_settings(settings: dict[str, Any]) -> tuple[str, float]:
+def get_runtime_settings(settings: dict[str, Any]) -> tuple[str, float, str | None]:
     base_url = str(settings.get("fmu_runtime_url") or "http://localhost:8002").strip()
     timeout_s = float(settings.get("fmu_runtime_timeout_s") or 20.0)
-    return base_url.rstrip("/"), timeout_s
+    api_key = str(settings.get("fmu_runtime_api_key") or "").strip() or None
+    return base_url.rstrip("/"), timeout_s, api_key
 
 
 def fetch_remote_catalog(
@@ -64,7 +68,7 @@ def fetch_remote_catalog(
     *,
     force_refresh: bool = False,
 ) -> list[dict[str, Any]]:
-    base_url, timeout_s = get_runtime_settings(settings)
+    base_url, timeout_s, api_key = get_runtime_settings(settings)
     cache_key = (base_url, timeout_s)
     now = time.monotonic()
     cached = _catalog_cache.get(cache_key)
@@ -75,7 +79,7 @@ def fetch_remote_catalog(
     ):
         return cached[1]
 
-    payload = _request_json(base_url, timeout_s, "/models")
+    payload = _request_json(base_url, timeout_s, "/models", api_key)
     models = payload.get("models")
     if not isinstance(models, list):
         raise RuntimeError("FMU model runtime /models response did not include a models list")
@@ -90,7 +94,7 @@ def fetch_remote_metadata(
     *,
     force_refresh: bool = False,
 ) -> dict[str, Any]:
-    base_url, timeout_s = get_runtime_settings(settings)
+    base_url, timeout_s, api_key = get_runtime_settings(settings)
     normalized_model_id = normalize_remote_model_id(model_id)
     cache_key = (base_url, timeout_s, normalized_model_id)
     now = time.monotonic()
@@ -106,6 +110,7 @@ def fetch_remote_metadata(
         base_url,
         timeout_s,
         f"/models/{normalized_model_id}/metadata",
+        api_key,
     )
     _metadata_cache[cache_key] = (now, metadata)
     return metadata

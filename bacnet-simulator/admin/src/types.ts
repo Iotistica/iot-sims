@@ -79,6 +79,8 @@ export interface Equipment {
   description: string
   location_id?: number | null
   equipment_type?: string | null
+  manufacturer?: string | null
+  model?: string | null
 }
 
 /** A candidate object for the Equipment panel's "Assign Points" action --
@@ -208,6 +210,17 @@ export interface Settings {
   jwt_expire_hours: number
   fmu_runtime_url: string
   fmu_runtime_timeout_s: number
+  fmu_runtime_api_key: string
+  azure_openai_endpoint: string
+  azure_openai_api_key: string
+  azure_openai_deployment: string
+  azure_openai_api_version: string
+  llm_provider: 'azure_openai' | 'openai' | 'openai_compatible'
+  openai_api_key: string
+  openai_model: string
+  openai_compatible_base_url: string
+  openai_compatible_api_key: string
+  openai_compatible_model: string
 }
 
 export interface NotificationRecipient {
@@ -1025,5 +1038,39 @@ export interface FunctionalTestRun {
   current_node_id: string | null
   error: string | null
   details: FunctionalTestRunDetail[]
+  created_at: string
+}
+
+/** One object a Template applies to a device on creation -- object_type/
+ * object_instance/name/units/behavior/behavior_params/point_type only (no
+ * id/enabled -- those are assigned/forced when the template is applied,
+ * see DeviceDrawer.vue and TemplatePickerModal.vue's applyTemplate()). */
+export interface TplObject {
+  object_type: string
+  object_instance: number
+  name: string
+  units: string
+  behavior: string
+  behavior_params: string
+  point_type?: string
+}
+
+/** A saved object template -- built-in (is_builtin=true, seeded, delete-
+ * protected -- see src/db/migrations/registry.py's templates migration) or
+ * user-created (POST /templates from SaveTemplateModal.vue). Both are the
+ * same kind of row/response shape; only is_builtin distinguishes them.
+ * equipment_types (optional) is used only to filter the picker in
+ * DeviceDrawer.vue when adding a controller for equipment whose type is
+ * already known -- a template with none set simply never appears in that
+ * filtered list, but stays visible in TemplatePickerModal.vue's own
+ * unfiltered browse-all view. */
+export interface Template {
+  id: number
+  key: string
+  label: string
+  description: string
+  objects: TplObject[]
+  equipment_types: string[] | null
+  is_builtin: boolean
   created_at: string
 }
