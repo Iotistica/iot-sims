@@ -19,7 +19,7 @@ OUTPUT_VARIABLE = "compressorStage"
 class _FakeFMUProvider:
     def __init__(self, *, runtime_url, model, bindings, aggregate_inputs=None,
                  input_exposures=None, input_defaults=None, timeout_s=20.0,
-                 input_variables=None, output_variables=None) -> None:
+                 input_variables=None, output_variables=None, api_key=None) -> None:
         self.runtime_url = runtime_url
         self.model = model
         self.bindings = list(bindings)

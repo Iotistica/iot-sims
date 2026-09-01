@@ -73,7 +73,8 @@ class _FakeFMUProvider:
     _FakeFMUProvider -- construction must succeed without a real FMU
     runtime for register_model_config to complete."""
     def __init__(self, *, runtime_url, model, bindings, aggregate_inputs=None,
-                 input_exposures=None, input_defaults, timeout_s, input_variables, output_variables) -> None:
+                 input_exposures=None, input_defaults, timeout_s, input_variables, output_variables,
+                 api_key=None) -> None:
         self.runtime_url = runtime_url
         self.model = model
         self.bindings = list(bindings)

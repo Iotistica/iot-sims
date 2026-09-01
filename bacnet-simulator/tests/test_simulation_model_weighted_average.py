@@ -718,7 +718,7 @@ def test_delete_weighted_average_value_point_is_still_rejected(client, database,
 class _FakeFMUProvider:
     created: list["_FakeFMUProvider"] = []
 
-    def __init__(self, *, runtime_url, model, bindings, aggregate_inputs=None, input_exposures=None, input_defaults, timeout_s, input_variables, output_variables) -> None:
+    def __init__(self, *, runtime_url, model, bindings, aggregate_inputs=None, input_exposures=None, input_defaults, timeout_s, input_variables, output_variables, api_key=None) -> None:
         self.bindings = list(bindings)
         self.aggregate_inputs = list(aggregate_inputs or [])
         self.input_exposures = list(input_exposures or [])

@@ -70,6 +70,7 @@ class _FakeFMUProvider:
         timeout_s,
         input_variables,
         output_variables,
+        api_key=None,
     ) -> None:
         self.runtime_url = runtime_url
         self.model = model

@@ -245,7 +245,8 @@ class _DiagnosticsEngine:
 
 class _FakeFMUProvider:
     def __init__(self, *, runtime_url, model, bindings, aggregate_inputs=None,
-                 input_exposures=None, input_defaults, timeout_s, input_variables, output_variables) -> None:
+                 input_exposures=None, input_defaults, timeout_s, input_variables, output_variables,
+                 api_key=None) -> None:
         self.runtime_url = runtime_url
         self.model = model
         self.bindings = list(bindings)

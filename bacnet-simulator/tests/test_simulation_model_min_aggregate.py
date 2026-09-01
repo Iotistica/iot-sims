@@ -311,7 +311,7 @@ class _FakeFMUProvider:
 
     def __init__(
         self, *, runtime_url, model, bindings, aggregate_inputs=None, input_exposures=None,
-        input_defaults, timeout_s, input_variables, output_variables,
+        input_defaults, timeout_s, input_variables, output_variables, api_key=None,
     ) -> None:
         self.bindings = list(bindings)
         self.aggregate_inputs = list(aggregate_inputs or [])
