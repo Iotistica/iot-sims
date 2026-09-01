@@ -139,13 +139,13 @@ onMounted(load)
               </a-form-item>
 
               <a-divider orientation="left">FMU Runtime</a-divider>
-              <a-form-item label="Runtime URL" tooltip="Base URL for the generic IoT FMU model runtime">
+              <a-form-item label="URL" tooltip="Base URL for the generic IoT FMU model runtime">
                 <a-input v-model:value="form.fmu_runtime_url" placeholder="http://localhost:8002" />
               </a-form-item>
-              <a-form-item label="Runtime Timeout (seconds)" tooltip="Timeout for FMU model catalog and simulation runtime requests">
+              <a-form-item label="Timeout (seconds)" tooltip="Timeout for FMU model catalog and simulation runtime requests">
                 <a-input-number v-model:value="form.fmu_runtime_timeout_s" :min="1" :max="120" :step="1" style="width:100%" />
               </a-form-item>
-              <a-form-item label="Runtime API Key" tooltip="Sent as X-API-Key on every request. Leave blank if the runtime doesn't require one." style="margin-bottom:0">
+              <a-form-item label="API Key" tooltip="Sent as X-API-Key on every request. Leave blank if the runtime doesn't require one." style="margin-bottom:0">
                 <a-input-password v-model:value="form.fmu_runtime_api_key" placeholder="Optional" autocomplete="new-password" />
               </a-form-item>
             </a-form>
