@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from ...bacnet.schemas import DeviceCreate, DeviceUpdate, EnergyModelConfigCreate
 from ...energy.registry import energy_model_config_to_api, validate_energy_model_parameters
-from ...simulation.model_store import (
+from ...simulation.models.store import (
     get_active_simulation_models_by_device,
     get_devices_with_disabled_simulation_model,
 )
@@ -417,7 +417,7 @@ async def delete_device(
         )
     except sqlite3.IntegrityError as exc:
         # A cascade from this device's objects hit an aggregate member's
-        # ON DELETE RESTRICT (see model_store.ensure_simulation_model_schema).
+        # ON DELETE RESTRICT (see models.store.ensure_simulation_model_schema).
         # Coarser than delete_object's error (doesn't name the exact point/
         # aggregate) since this is a safety-net path, not the primary one --
         # the actionable error is delete_object's.

@@ -39,8 +39,8 @@ import math
 import pytest
 
 from src.api.routers import simulation as simulation_router
-from src.simulation import model_runtime
-from src.simulation.model_store import get_simulation_model
+from src.simulation.models import runtime as model_runtime
+from src.simulation.models.store import get_simulation_model
 from src.simulation.models.registry import ModelDefinition, VariableDefinition
 from src.simulation.providers import FMUAggregateInput, FMUPointBinding, SimulationContext
 from src.simulation.providers.fmu import (

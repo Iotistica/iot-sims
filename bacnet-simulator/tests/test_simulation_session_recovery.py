@@ -4,8 +4,8 @@ import logging
 
 import pytest
 
-from src.simulation import model_runtime
-from src.simulation.model_store import create_simulation_model
+from src.simulation.models import runtime as model_runtime
+from src.simulation.models.store import create_simulation_model
 from src.simulation.models.registry import ModelDefinition, VariableDefinition
 from src.simulation.providers import FMUPointBinding, SimulationContext
 from src.simulation.providers.fmu import FMUInputResolutionError, FMUSimulationProvider

@@ -414,7 +414,7 @@ function doDelete() {
         <a-input v-model:value="form.name" placeholder="Supply Temp" />
       </a-form-item>
 
-      <a-form-item label="Semantic Type" help="Describes what this point represents in the building.">
+      <a-form-item label="Type" help="Describes what this point represents in the building.">
         <a-select
           v-model:value="form.point_type"
           show-search

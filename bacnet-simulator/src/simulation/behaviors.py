@@ -23,7 +23,7 @@ def _dependencies():
     Do not import src.dependencies at module import time.
 
     src.dependencies imports src.db.database, which itself reaches this
-    module at import time via simulation.model_store -> simulation.models
+    module at import time via simulation.models.store -> simulation.models
     -> simulation.providers -> simulation.providers.builtin ->
     bacnet.app -> simulation.behaviors (this module). Importing
     src.dependencies eagerly here would re-enter that partially initialized

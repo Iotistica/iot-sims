@@ -35,7 +35,7 @@ from ..monitoring.event_log import (
 )
 from ..monitoring.metrics import broadcast_metrics, build_metrics_snapshot
 from .engine import SimEngine
-from .model_runtime import recover_unhealthy_simulation_models
+from .models.runtime import recover_unhealthy_simulation_models
 
 log = logging.getLogger("bacnet-sim")
 

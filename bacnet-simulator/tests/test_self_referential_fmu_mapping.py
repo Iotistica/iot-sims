@@ -1,14 +1,14 @@
 """Regression tests for two related production bugs, both surfaced while
 investigating RTU stuck at 0% fan command after a stuck-low fault was
 removed (see the incident trace in engine.py's reload()/_create_object()
-comments and model_runtime.py's _build_fmu_provider):
+comments and models/runtime.py's _build_fmu_provider):
 
 1. A point mapped as BOTH a model's input source and its output target is
    a self-referential feedback loop with no independent driving signal --
    RTU-1-Supply-Fan-Command was mapped as both fan_command_pct's input
    (uFan) and output (yFan). Now rejected at save time
    (simulation.py::_validate_mapping_contract) and at registration time
-   (model_runtime.py::_build_fmu_provider, defense-in-depth for configs
+   (models/runtime.py::_build_fmu_provider, defense-in-depth for configs
    saved before this existed).
 
 2. Any object edit anywhere triggers engine.reload(), which rebuilds every
@@ -27,7 +27,7 @@ from __future__ import annotations
 import pytest
 
 from src.api.routers import simulation as simulation_router
-from src.simulation import model_runtime
+from src.simulation.models import runtime as model_runtime
 from src.simulation.engine import SimEngine
 from src.simulation.models.registry import ModelDefinition, VariableDefinition
 

@@ -6,8 +6,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from ...bacnet.schemas import AiSuggestionAcceptance
 from ...core.config import POINT_TYPES
-from ...integrations.azure_openai import AzureStructuredClient
+from ...integrations.llm import build_llm_client
 from ...semantics.ai_suggestions import suggest_point_via_ai
 from ...semantics.suggestions import (
     DeviceSnapshot,
@@ -146,20 +147,28 @@ async def suggest_point_ai(device_id: int, object_id: int, request: Request):
         equipment_context = suggest_equipment(snapshot).suggested_class
 
     try:
-        client = AzureStructuredClient()
+        llm_settings = await asyncio.to_thread(database.get_settings)
+        client = build_llm_client(llm_settings)
+        # Grounds the prompt in real already-classified points project-wide
+        # (any source -- rule, accepted AI, or hand-typed; see
+        # get_classified_points' own docstring) rather than the static
+        # prompt alone. Excludes the target itself -- irrelevant, since it's
+        # exactly what's being classified.
+        classified_points = await asyncio.to_thread(database.get_classified_points, object_id)
         result = suggest_point_via_ai(
             client, device=device, target=target, siblings=siblings, equipment_context=equipment_context,
+            classified_points=classified_points,
         )
     except Exception:
         # The real exception (which can include endpoint/deployment/config
-        # detail from the Azure SDK) is logged server-side only -- the
+        # detail from the provider's SDK) is logged server-side only -- the
         # HTTP response must never carry it.
         log.warning(
             "AI semantic suggestion failed for device=%s object=%s", device_id, object_id, exc_info=True,
         )
         raise HTTPException(
             status_code=502,
-            detail="AI suggestion is unavailable. Check Azure OpenAI configuration.",
+            detail="AI suggestion is unavailable. Check the AI provider configuration in Settings.",
         )
 
     # Authoritative vocabulary check -- the model's response schema does
@@ -183,3 +192,35 @@ async def suggest_point_ai(device_id: int, object_id: int, request: Request):
         "alternatives": [],
         "source": "ai",
     }
+
+
+@router.post("/points/{object_id}/ai-accept", status_code=201)
+async def accept_ai_suggestion(device_id: int, object_id: int, body: AiSuggestionAcceptance, request: Request):
+    """
+    Records that an AI-suggested point classification (from the endpoint
+    above) was applied via the Semantic Suggestions modal's Apply step --
+    called right alongside the actual PUT /devices/{id}/objects/{id} write,
+    never instead of it; this is a side record only, never authoritative
+    for the point's own point_type (that's still whatever was last written
+    there). accepted_class may differ from suggested_class if the user
+    changed the picker before applying.
+    """
+    database = get_database(request)
+
+    device = await asyncio.to_thread(database.get_device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    objects = await asyncio.to_thread(database.get_objects, device_id)
+    if not any(o["id"] == object_id for o in objects):
+        raise HTTPException(status_code=404, detail="Object not found")
+
+    return await asyncio.to_thread(
+        database.record_ai_suggestion_acceptance,
+        object_id,
+        device_id,
+        body.suggested_class,
+        body.accepted_class,
+        body.confidence,
+        body.reason,
+    )

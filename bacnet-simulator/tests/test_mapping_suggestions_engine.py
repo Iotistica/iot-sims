@@ -1,4 +1,4 @@
-"""Pure-engine tests for src/simulation/mapping_suggestions.py -- the
+"""Pure-engine tests for src/simulation/mapping/suggestions.py -- the
 deterministic Auto Map scoring/candidate-discovery engine used by the
 Simulation Model drawer's "Auto Map" action. Uses the `client`/`database`
 fixtures only to build device/object/semantic-relationship fixtures
@@ -7,7 +7,7 @@ test are called directly, not through HTTP.
 """
 from __future__ import annotations
 
-from src.simulation.mapping_suggestions import (
+from src.simulation.mapping.suggestions import (
     build_shortlist,
     confidence_for,
     discover_candidates,
@@ -22,7 +22,7 @@ from src.simulation.models.registry import (
 # MODEL_REGISTRY (a static local catalog) was removed 2026-08-25 once the FMU catalog moved to
 # the model runtime's own dynamic metadata (see remote_catalog.py's definition_from_metadata) --
 # nothing populates a local registry by this key anymore. This engine only exercises the pure
-# scoring/candidate-discovery functions in mapping_suggestions.py, which take VariableDefinition
+# scoring/candidate-discovery functions in mapping/suggestions.py, which take VariableDefinition
 # objects directly, so a local fixture (matching SimpleVAVZone's real supply_air_temp_c/
 # zone_temp_c inputs) is all these tests actually need -- no live catalog lookup required.
 VAV_DEFINITION = ModelDefinition(
@@ -243,7 +243,7 @@ def test_missing_topology_graceful_fallback(client, database):
 
 
 def test_output_ownership_excluded(client, database):
-    from src.simulation.model_store import create_simulation_model, ensure_simulation_model_schema
+    from src.simulation.models.store import create_simulation_model, ensure_simulation_model_schema
 
     vav = _make_vav(client, 2011, "VAV-5")
     zone_temp = client.post(f"/devices/{vav['id']}/objects", json={

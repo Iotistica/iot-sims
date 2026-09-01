@@ -60,6 +60,7 @@ from .api.routers.functional_tests import router as functional_tests_router
 from .api.routers.custom_graphs import router as custom_graphs_router
 from .api.routers.functional_test_runs import router as functional_test_runs_router
 from .api.routers.points import router as points_router
+from .api.routers.templates import router as templates_router
 
 
 api = FastAPI(title="BACnet Simulator", lifespan=lifespan)
@@ -93,6 +94,7 @@ api.include_router(functional_tests_router)
 api.include_router(custom_graphs_router)
 api.include_router(functional_test_runs_router)
 api.include_router(points_router)
+api.include_router(templates_router)
 
 api.add_middleware(
     CORSMiddleware,

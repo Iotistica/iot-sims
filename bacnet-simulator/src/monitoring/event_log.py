@@ -56,7 +56,7 @@ def _log_event(device_id: Optional[int], level: str, message: str, *, category: 
     category distinguishes audit/config-change events (the default -- every
     call site that existed before this parameter was added) from simulation
     lifecycle events (category="simulation": FMU model started, simulation
-    enabled/disabled, recovery outcomes -- see src/simulation/model_runtime.py
+    enabled/disabled, recovery outcomes -- see src/simulation/models/runtime.py
     and the PUT .../enabled route). It's a separate dimension from `level`:
     the admin UI's Activity Log filters on both independently.
     """

@@ -2,7 +2,6 @@
 import { ref, computed, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { api } from '../api'
-import { getEquipmentIcon } from '../equipmentIcons'
 import type { Device, Location, Equipment, Meta, SemanticEntity, AssignablePoint } from '../types'
 
 const props = defineProps<{
@@ -14,6 +13,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   edit: [Equipment]
   'select-controller': [number]
+  /** No controller exists yet to assign -- "Assign Controller" opens the
+   * Add Controller drawer instead (same one as the tree's "+ Add >
+   * Controller"), pre-wired to this equipment, rather than showing an
+   * empty picker. */
+  'add-controller': [Equipment]
 }>()
 
 interface PointRow {
@@ -95,7 +99,7 @@ watch(() => props.equipment.id, loadSummary, { immediate: true })
 
 const pointColumns = [
   { title: 'Name', dataIndex: 'name', key: 'name' },
-  { title: 'Semantic Type', dataIndex: 'brick_class', key: 'brick_class' },
+  { title: 'Type', dataIndex: 'brick_class', key: 'brick_class' },
 ]
 
 // ── Assign Controller ───────────────────────────────────────────────────
@@ -106,6 +110,10 @@ const assignControllerDeviceId = ref<number | null>(null)
 const controllerDevices = computed(() => props.devices.filter(d => d.has_controller_entity))
 
 function openAssignController() {
+  if (!controllers.value.length) {
+    emit('add-controller', props.equipment)
+    return
+  }
   assignControllerDeviceId.value = null
   assignControllerOpen.value = true
 }
@@ -181,7 +189,7 @@ async function doAssignPoints() {
   const equipmentEntityId = equipmentEntity.value.id
   const rows = candidates.value.filter(c => selectedObjectIds.value.includes(c.object_id))
   const missingType = rows.find(r => !r.point_entity_id && !rowSemanticType.value[r.object_id])
-  if (missingType) { message.error(`Choose a Semantic Type for ${missingType.name} before assigning`); return }
+  if (missingType) { message.error(`Choose a Type for ${missingType.name} before assigning`); return }
 
   assignPointsLoading.value = true
   try {
@@ -215,33 +223,43 @@ async function doAssignPoints() {
 
 <template>
   <div>
-    <div style="margin-bottom:16px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
-      <div>
-        <div style="font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px">
-          <component :is="getEquipmentIcon(equipment.equipment_type)" style="font-size:20px;color:var(--text-primary)" />
-          {{ equipment.name }}
-        </div>
-        <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
-          Equipment
-          <template v-if="equipment.equipment_type"> · {{ equipmentTypeLabel[equipment.equipment_type] ?? equipment.equipment_type }}</template>
-          <template v-else> · Not classified</template>
-          <template v-if="locationName"> · Location: {{ locationName }}</template>
-        </div>
+    <div style="margin-bottom:16px">
+      <div style="font-size:18px;font-weight:600">
+        {{ equipment.name }}
       </div>
-      <a-button @click="emit('edit', equipment)">Edit Equipment</a-button>
+      <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
+        Equipment
+        <template v-if="equipment.equipment_type"> · {{ equipmentTypeLabel[equipment.equipment_type] ?? equipment.equipment_type }}</template>
+        <template v-else> · Not classified</template>
+        <template v-if="locationName"> · Location: {{ locationName }}</template>
+      </div>
+    </div>
+
+    <!-- One grouped toolbar below the header, matching ObjectsPanel's toolbar-row pattern
+         (Edit + its other actions all together in one place) instead of scattering a button
+         next to each section below. -->
+    <div style="margin-bottom:16px;display:flex;justify-content:flex-end">
+      <a-space>
+        <a-button @click="emit('edit', equipment)">Edit Equipment</a-button>
+        <a-button :disabled="!equipmentEntity" @click="openAssignController">
+          {{ controllers.length ? 'Assign Controller' : 'Add Controller' }}
+        </a-button>
+        <a-tooltip :title="!controllers.length ? 'Relate a Controller to this equipment first' : undefined">
+          <a-button :disabled="!controllers.length" @click="openAssignPoints">Assign Points</a-button>
+        </a-tooltip>
+      </a-space>
     </div>
 
     <div v-if="!loading && !equipmentEntity" style="padding:24px;text-align:center;color:var(--text-placeholder);background:var(--surface-alt);border:1px solid var(--border);border-radius:6px">
-      This equipment has no Semantic Type set yet, so it isn't part of the semantic model.
-      <br />Edit Equipment and choose a Semantic Type to enable Controlled By, Points, and assignment.
+      This equipment has no Type set yet, so it isn't part of the semantic model.
+      <br />Edit Equipment and choose a Type to enable Controlled By, Points, and assignment.
     </div>
 
     <template v-else>
       <!-- Controlled By -->
       <div style="margin-bottom:20px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="margin-bottom:8px">
           <span style="font-size:13px;font-weight:600">Controlled By</span>
-          <a-button size="small" :disabled="!equipmentEntity" @click="openAssignController">Assign Controller</a-button>
         </div>
         <div v-if="!controllers.length" style="color:var(--text-placeholder);font-size:13px">
           No Controller is currently related to this equipment.
@@ -255,11 +273,8 @@ async function doAssignPoints() {
 
       <!-- Points -->
       <div style="margin-bottom:20px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="margin-bottom:8px">
           <span style="font-size:13px;font-weight:600">Points</span>
-          <a-tooltip :title="!controllers.length ? 'Relate a Controller to this equipment first' : undefined">
-            <a-button size="small" :disabled="!controllers.length" @click="openAssignPoints">Assign Points</a-button>
-          </a-tooltip>
         </div>
         <div v-if="!points.length" style="color:var(--text-placeholder);font-size:13px">
           No points are assigned to this equipment. Assign Points to build its semantic model.
@@ -294,9 +309,9 @@ async function doAssignPoints() {
 
       <!-- Feeds / Serves -->
       <div style="margin-bottom:20px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:8px">Feeds / Serves</div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">Serves</div>
         <div v-if="!feeds.length" style="color:var(--text-placeholder);font-size:13px">
-          Feeds nothing.
+          Serves nothing.
         </div>
         <a-space v-else wrap>
           <a-tag v-for="f in feeds" :key="f.id" :color="f.entity_kind === 'location' ? 'purple' : undefined">{{ f.name }}</a-tag>
@@ -368,7 +383,7 @@ async function doAssignPoints() {
       >
         <a-table-column title="Name" data-index="name" key="name" />
         <a-table-column title="Controller" data-index="device_name" key="device_name" />
-        <a-table-column title="Semantic Type" key="semantic_type">
+        <a-table-column title="Type" key="semantic_type">
           <template #default="{ record }">
             <a-tag v-if="record.point_entity_id">{{ pointTypeLabel[rowSemanticType[record.object_id] ?? ''] ?? rowSemanticType[record.object_id] }}</a-tag>
             <a-select

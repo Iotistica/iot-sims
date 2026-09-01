@@ -66,7 +66,7 @@ def start_hour_of_year(start_date: date) -> float:
     onto Feb 28 rather than raising.
 
     Used by the FMU-based Weather model's "Playback Start Month" parameter
-    (model_runtime.py's _build_fmu_provider, which converts a selected
+    (models/runtime.py's _build_fmu_provider, which converts a selected
     month into a session warmup_seconds override using this conversion)."""
     try:
         reference = date(2001, start_date.month, start_date.day)

@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ...simulation.calibration_export import build_calibration_dataset
-from ...simulation.mapping_suggestions import MappingAlternative, suggest_mapping_for_variable
+from ...simulation.mapping.suggestions import MappingAlternative, suggest_mapping_for_variable
 from ...simulation.models.remote_calibration import (
     cancel_calibration_job, create_calibration_job, get_calibration_job,
     get_calibration_results, upload_calibration_dataset,

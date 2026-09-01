@@ -71,6 +71,8 @@ async def create_equipment(
         body.description,
         body.location_id,
         body.equipment_type,
+        body.manufacturer,
+        body.model,
     )
 
 
@@ -163,6 +165,8 @@ async def update_equipment(
         body.description,
         body.location_id,
         body.equipment_type,
+        body.manufacturer,
+        body.model,
     )
 
     return updated

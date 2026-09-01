@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from src.simulation.model_store import ensure_simulation_model_schema
+from src.simulation.models.store import ensure_simulation_model_schema
 from src.simulation.engine import SimEngine
 
 

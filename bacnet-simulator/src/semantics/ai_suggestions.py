@@ -22,7 +22,8 @@ from typing import Literal, Optional
 from pydantic import BaseModel
 
 from ..core.config import POINT_TYPES
-from ..integrations.azure_openai import AzureStructuredClient
+from ..integrations.llm import StructuredLLMClient
+from .suggestions import tokens_for
 
 
 class AiPointSuggestion(BaseModel):
@@ -58,8 +59,37 @@ def _format_point_types() -> str:
     return "\n".join(f"- {name} ({label})" for name, label in sorted(POINT_TYPES.items()))
 
 
+# How many already-classified points to surface as few-shot grounding, and
+# the minimum similarity score (see _score_similarity) to bother including
+# one at all -- an unrelated point is worse than no example.
+_MAX_SIMILAR_EXAMPLES = 5
+
+
+def _score_similarity(target: dict, candidate: dict) -> int:
+    """Cheap, explainable similarity -- name-token overlap dominates (reuses
+    the same tokens_for()/TOKEN_ALIASES the deterministic engine scores
+    with, so "SAT" and "Supply-Air-Temp" still overlap), units/object_type
+    matches are secondary tie-breakers. Not the same scoring as suggestions.
+    py's own rule engine (that scores a point against a Brick rule; this
+    scores a point against another point) -- deliberately simpler, since
+    this only ever ranks candidates against each other, never against a
+    confidence threshold."""
+    name_overlap = len(tokens_for(target.get("name")) & tokens_for(candidate.get("name")))
+    units_match = 1 if target.get("units") and target.get("units") == candidate.get("units") else 0
+    type_match = 1 if target.get("object_type") == candidate.get("object_type") else 0
+    return name_overlap * 2 + units_match + type_match
+
+
+def _find_similar_examples(target: dict, classified_points: list[dict]) -> list[dict]:
+    scored = [(c, _score_similarity(target, c)) for c in classified_points]
+    scored = [(c, score) for c, score in scored if score > 0]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return [c for c, _score in scored[:_MAX_SIMILAR_EXAMPLES]]
+
+
 def _build_user_prompt(
     *, device: dict, target: dict, siblings: list[dict], equipment_context: str | None,
+    similar_examples: list[dict],
 ) -> str:
     lines: list[str] = []
 
@@ -83,6 +113,16 @@ def _build_user_prompt(
         for s in siblings:
             lines.append(f"  - {s.get('name')} ({s.get('object_type')}, units={s.get('units') or 'none'})")
 
+    if similar_examples:
+        lines.append("")
+        lines.append(
+            "Similar points already classified elsewhere in this project (real examples, "
+            "for reference -- weigh them alongside the target's own name/units/context, "
+            "don't copy one blindly if the target clearly differs):"
+        )
+        for ex in similar_examples:
+            lines.append(f"  - \"{ex.get('name')}\" ({ex.get('object_type')}, units={ex.get('units') or 'none'}) -> {ex.get('point_type')}")
+
     lines.append("")
     lines.append("Allowed point classes (choose exactly one name from this list, or null):")
     lines.append(_format_point_types())
@@ -91,15 +131,18 @@ def _build_user_prompt(
 
 
 def suggest_point_via_ai(
-    client: AzureStructuredClient,
+    client: StructuredLLMClient,
     *,
     device: dict,
     target: dict,
     siblings: list[dict],
     equipment_context: str | None,
+    classified_points: list[dict] | None = None,
 ) -> AiPointSuggestion:
+    similar_examples = _find_similar_examples(target, classified_points or [])
     user_prompt = _build_user_prompt(
         device=device, target=target, siblings=siblings, equipment_context=equipment_context,
+        similar_examples=similar_examples,
     )
     return client.parse(
         response_model=AiPointSuggestion,

@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from src.api.routers import simulation as simulation_router
-from src.simulation import model_runtime
+from src.simulation.models import runtime as model_runtime
 from src.simulation.behaviors import Behavior, make_behavior
 from src.simulation.engine import SimEngine
 from src.simulation.models.registry import ModelDefinition, VariableDefinition
@@ -55,7 +55,7 @@ def test_make_behavior_raw_preserves_stored_seed_value(database):
     """Regression: make_behavior("raw", ...) must NOT fall through to the
     generic unrecognized-type fallback (ConstantBehavior({"value": 0})),
     which silently discards behavior_params. A point relabeled from
-    'constant' to 'raw' by model_store.reconcile_provider_owned_raw_behavior
+    'constant' to 'raw' by models.store.reconcile_provider_owned_raw_behavior
     keeps its original behavior_params untouched -- its pre-FMU-tick
     initial seed (SimEngine._create_object's `behavior.compute(state)`
     call, used before the provider has ever produced a value) must still

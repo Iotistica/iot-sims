@@ -1,8 +1,8 @@
 """FMUSimulationProvider._convert_output_value() applies a binding's
-declared `conversion` (see mapping_conversions.CONVERSIONS) to the raw
+declared `conversion` (see mapping/conversions.CONVERSIONS) to the raw
 FMU output value, before engine.py ever sees it. This is the actual
 mapping-boundary application point described in
-mapping_conversions.py's own module docstring -- these tests exercise it
+mapping/conversions.py's own module docstring -- these tests exercise it
 directly against FMUPointBinding, with no live FMU runtime needed (only
 _convert_output_value/_binding_metadata are used, neither of which
 requires an active session)."""

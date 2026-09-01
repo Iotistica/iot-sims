@@ -2,7 +2,7 @@
 topology scoping:
   - Database.get_controller_topology_point_ids (src/db/database.py)
   - GET /simulation/points/options?device_id= (src/api/routers/simulation.py)
-  - discover_candidates(..., allowed_point_ids=...) (src/simulation/mapping_suggestions.py)
+  - discover_candidates(..., allowed_point_ids=...) (src/simulation/mapping/suggestions.py)
 
 Builds the exact RTU / VAV-1 / Zone-1 example from the spec:
     RTU Controller -> controls -> RTU
@@ -19,7 +19,7 @@ create_object has no such dependency and is exactly what the route calls.
 """
 from __future__ import annotations
 
-from src.simulation.mapping_suggestions import discover_candidates
+from src.simulation.mapping.suggestions import discover_candidates
 from src.simulation.models.registry import VariableDefinition
 
 

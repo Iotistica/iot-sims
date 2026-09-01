@@ -10,7 +10,7 @@ outputs happen to be mapped to a point.
 """
 from __future__ import annotations
 
-from src.simulation.model_store import (
+from src.simulation.models.store import (
     create_simulation_model,
     get_active_simulation_models_by_device,
     get_devices_with_disabled_simulation_model,

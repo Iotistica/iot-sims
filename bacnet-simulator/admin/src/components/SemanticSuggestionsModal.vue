@@ -48,6 +48,15 @@ function setAllPointRows(checked: boolean) {
   for (const row of selectablePointRows.value) row.included = checked
 }
 
+// a-checkbox's change event isn't typed as specifically as a-radio-group's
+// (see CustomGraphModal.vue's onAxisChange for that working pattern) -- an
+// inline-typed arrow in the template can't parse a nested object-type
+// literal, and a bare untyped one trips noImplicitAny, so the annotation
+// lives here instead, same as onAxisChange's.
+function onSelectAllChange(e: { target: { checked: boolean } }) {
+  setAllPointRows(e.target.checked)
+}
+
 // High/medium default checked; low defaults unchecked; an already-classified
 // record (existing_class set) always defaults unchecked -- existing
 // user-entered semantics are never silently replaced (requirement 20).
@@ -165,6 +174,26 @@ async function apply() {
         polarity: obj.polarity, point_type: row.chosenClass,
       })
       count++
+
+      // Side record of "an AI suggestion was applied" -- never blocks/fails
+      // the classification write above if it errors, and only recorded when
+      // this row's suggestion genuinely came from AI with a real suggested
+      // class (not a rule-only suggestion, and not one the AI's own
+      // hallucinated-class check already rejected server-side to null).
+      if (row.suggestion.source === 'ai' && row.suggestion.suggested_class) {
+        try {
+          await api.semanticSuggestions.acceptAi(device.id, obj.id, {
+            suggested_class: row.suggestion.suggested_class,
+            accepted_class: row.chosenClass,
+            confidence: row.suggestion.confidence,
+            reason: row.suggestion.reasons[0] ?? '',
+          })
+        } catch {
+          // Best-effort -- the classification itself already succeeded
+          // above; losing this side record must never surface as an apply
+          // failure.
+        }
+      }
     }
 
     message.success(count ? `Applied ${count} classification${count !== 1 ? 's' : ''}` : 'Nothing selected to apply')
@@ -221,7 +250,7 @@ async function apply() {
             <a-checkbox
               :checked="allPointRowsSelected"
               :disabled="selectablePointRows.length === 0"
-              @change="(e: { target: { checked: boolean } }) => setAllPointRows(e.target.checked)"
+              @change="onSelectAllChange"
             >
               Select all
             </a-checkbox>

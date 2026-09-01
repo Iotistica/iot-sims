@@ -3,11 +3,11 @@ relay functions (remote_calibration.py/remote_catalog.py) rather than
 hitting a real iot-models server, and monkeypatch
 suggest_mapping_for_variable itself to test only this router's own
 recording-scoped filtering, not the scoring engine it reuses (already
-covered by mapping_suggestions.py's own tests)."""
+covered by mapping/suggestions.py's own tests)."""
 from __future__ import annotations
 
 import src.api.routers.calibration as calibration_routes
-from src.simulation.mapping_suggestions import MappingAlternative, MappingSuggestion
+from src.simulation.mapping.suggestions import MappingAlternative, MappingSuggestion
 
 
 def _make_device(client, *, instance: int, name: str) -> dict:

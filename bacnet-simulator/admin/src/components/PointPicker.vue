@@ -113,7 +113,7 @@ function filterOption(input: string, option: { label?: string }): boolean {
 
 const columns: TableColumnsType<PointRow> = [
   { title: 'Device / Point Name', key: 'identity' },
-  { title: 'Semantic Type', key: 'semantic', width: 190 },
+  { title: 'Type', key: 'semantic', width: 190 },
   { title: 'Object', key: 'object', width: 140 },
   { title: 'Units', key: 'units', width: 90 },
   { title: 'Live Value', key: 'live', width: 100 },
@@ -158,7 +158,7 @@ const columns: TableColumnsType<PointRow> = [
       />
       <a-select
         v-model:value="semanticFilter" allow-clear show-search size="small"
-        placeholder="Semantic Type" style="width:190px" :options="semanticOptions" :filter-option="filterOption"
+        placeholder="Type" style="width:190px" :options="semanticOptions" :filter-option="filterOption"
       />
     </GridFilterToolbar>
 

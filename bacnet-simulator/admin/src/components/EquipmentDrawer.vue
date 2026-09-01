@@ -21,7 +21,11 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
-  saved: []
+  /** equipmentId is the created/updated equipment's id -- omitted after a
+   * delete (nothing left to focus). Lets App.vue switch tree focus to the
+   * equipment that was actually just created/edited, instead of leaving
+   * selection wherever it was -- same convention as DeviceDrawer's `saved`. */
+  saved: [equipmentId?: number]
 }>()
 
 const loading = ref(false)
@@ -30,6 +34,8 @@ const form = reactive({
   name: '',
   description: '',
   location_id: null as number | null,
+  manufacturer: '',
+  model: '',
   equipment_type: null as string | null,
 })
 
@@ -143,10 +149,12 @@ watch(() => props.open, (v) => {
       name: props.equipment.name,
       description: props.equipment.description ?? '',
       location_id: props.equipment.location_id ?? null,
+      manufacturer: props.equipment.manufacturer ?? '',
+      model: props.equipment.model ?? '',
       equipment_type: props.equipment.equipment_type ?? null,
     })
   } else {
-    Object.assign(form, { name: '', description: '', location_id: props.defaultLocationId ?? null, equipment_type: null })
+    Object.assign(form, { name: '', description: '', location_id: props.defaultLocationId ?? null, manufacturer: '', model: '', equipment_type: null })
   }
 })
 
@@ -155,7 +163,7 @@ const treeOptions = computed(() => buildLocationTreeOptions(props.locations, nul
 async function save() {
   if (!form.name.trim()) { message.error('Name is required'); return }
   loading.value = true
-  const body = { name: form.name, description: form.description, location_id: form.location_id, equipment_type: form.equipment_type }
+  const body = { name: form.name, description: form.description, location_id: form.location_id, manufacturer: form.manufacturer, model: form.model, equipment_type: form.equipment_type }
   try {
     let equipmentId: number
     if (props.equipment) {
@@ -169,7 +177,7 @@ async function save() {
     }
     await syncFeedsRelationships(equipmentId)
     emit('update:open', false)
-    emit('saved')
+    emit('saved', equipmentId)
   } catch (e: unknown) {
     message.error((e as Error).message)
   } finally {
@@ -228,7 +236,15 @@ function doDelete() {
         />
       </a-form-item>
 
-      <a-form-item label="Semantic Type" help="Describes what this equipment represents in the building.">
+      <a-form-item label="Manufacturer">
+        <a-input v-model:value="form.manufacturer" placeholder="Optional" />
+      </a-form-item>
+
+      <a-form-item label="Model">
+        <a-input v-model:value="form.model" placeholder="Optional" />
+      </a-form-item>
+
+      <a-form-item label="Type" help="Describes what this equipment represents in the building.">
         <a-select
           v-model:value="form.equipment_type"
           show-search
@@ -238,14 +254,14 @@ function doDelete() {
         />
       </a-form-item>
 
-      <a-form-item label="Feeds / Serves" help="Downstream equipment or locations this feeds or serves. Only classified equipment and locations can be selected.">
+      <a-form-item label="Serves" help="Downstream equipment or locations this feeds or serves. Only classified equipment and locations can be selected.">
         <a-select
           v-model:value="feedsSelection"
           mode="multiple"
           show-search
           allow-clear
           :disabled="!form.equipment_type"
-          :placeholder="form.equipment_type ? 'No downstream equipment or locations selected' : 'Set a Semantic Type to enable Feeds / Serves'"
+          :placeholder="form.equipment_type ? 'No downstream equipment or locations selected' : 'Set a Type to enable Serves'"
           :options="feedsOptionGroups"
           :filter-option="filterOption"
         />

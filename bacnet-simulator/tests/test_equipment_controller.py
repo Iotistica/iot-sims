@@ -25,24 +25,36 @@ def _make_device(database, *, device_instance=301, name="AHU-1", equipment_type=
 # ─── Equipment CRUD API ──────────────────────────────────────────────────────
 
 def test_equipment_crud_round_trip(client):
-    resp = client.post("/equipment", json={"name": "Boiler 1", "description": "", "equipment_type": "Boiler"})
+    resp = client.post("/equipment", json={
+        "name": "Boiler 1", "description": "", "equipment_type": "Boiler",
+        "manufacturer": "Trane", "model": "Boiler-9000",
+    })
     assert resp.status_code == 201, resp.text
     eq = resp.json()
     eq_id = eq["id"]
     assert eq["name"] == "Boiler 1"
     assert eq["equipment_type"] == "Boiler"
+    assert eq["manufacturer"] == "Trane"
+    assert eq["model"] == "Boiler-9000"
 
     resp = client.get(f"/equipment/{eq_id}")
     assert resp.status_code == 200
     assert resp.json()["name"] == "Boiler 1"
+    assert resp.json()["manufacturer"] == "Trane"
+    assert resp.json()["model"] == "Boiler-9000"
 
     resp = client.get("/equipment")
     assert resp.status_code == 200
     assert len(resp.json()) == 1
 
-    resp = client.put(f"/equipment/{eq_id}", json={"name": "Boiler 1 Renamed", "description": "", "equipment_type": "Boiler"})
+    resp = client.put(f"/equipment/{eq_id}", json={
+        "name": "Boiler 1 Renamed", "description": "", "equipment_type": "Boiler",
+        "manufacturer": "Carrier", "model": "Boiler-X",
+    })
     assert resp.status_code == 200
     assert resp.json()["name"] == "Boiler 1 Renamed"
+    assert resp.json()["manufacturer"] == "Carrier"
+    assert resp.json()["model"] == "Boiler-X"
 
     resp = client.delete(f"/equipment/{eq_id}")
     assert resp.status_code == 204
@@ -224,7 +236,7 @@ def test_database_setup_never_backfills_controller_entities(seeded_database):
 
 def test_equipment_and_controller_survive_project_reload(database):
     loc = database.create_location("Mechanical Room", None, "")
-    equipment = database.create_equipment("Boiler 1", "", loc["id"], "Boiler")
+    equipment = database.create_equipment("Boiler 1", "", loc["id"], "Boiler", "Trane", "Boiler-9000")
     device_id = _make_device(database, device_instance=701, name="Boiler-Controller")
     controller_entity = database.ensure_controller_entity(device_id)
     equipment_entity = next(
@@ -241,6 +253,12 @@ def test_equipment_and_controller_survive_project_reload(database):
     assert new_equipment[0]["id"] != equipment["id"]  # id was reassigned
     assert new_equipment[0]["name"] == "Boiler 1"
     assert new_equipment[0]["location_id"] is not None
+    # manufacturer/model are plain descriptive columns with no id-remapping
+    # concern (unlike location_id) -- restore_project's equipment-insert loop
+    # must still carry them through, since it enumerates columns explicitly
+    # rather than using SELECT * (see load_project's equipment restore loop).
+    assert new_equipment[0]["manufacturer"] == "Trane"
+    assert new_equipment[0]["model"] == "Boiler-9000"
 
     new_device = next(d for d in database.get_devices() if d["device_instance"] == 701)
     assert new_device["id"] != device_id

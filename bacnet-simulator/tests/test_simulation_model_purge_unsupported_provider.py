@@ -13,8 +13,8 @@ is gone after the first reconcile and the device falls back to built-in.
 """
 from __future__ import annotations
 
-from src.simulation.model_runtime import reconcile_enabled_models
-from src.simulation.model_store import (
+from src.simulation.models.runtime import reconcile_enabled_models
+from src.simulation.models.store import (
     create_simulation_model,
     get_active_simulation_models_by_device,
     list_simulation_models,

@@ -22,7 +22,7 @@ class MappingHints:
     """Optional Auto Map guidance for a single model variable: where the
     signal is expected to come from/go to (relative to the model's source
     device) and what BACnet relationship to follow to find it. Purely
-    advisory -- consumed only by src/simulation/mapping_suggestions.py;
+    advisory -- consumed only by src/simulation/mapping/suggestions.py;
     never a hard filter, and never required (a variable with no hints
     behaves exactly like Revision 1: device-first, then fleet-wide).
     """

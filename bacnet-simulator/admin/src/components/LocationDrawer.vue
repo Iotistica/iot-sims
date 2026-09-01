@@ -200,7 +200,7 @@ async function doDelete() {
         />
       </a-form-item>
 
-      <a-form-item label="Semantic Type" help="Describes what this location represents in the building.">
+      <a-form-item label="Type" help="Describes what this location represents in the building.">
         <a-select
           v-model:value="form.kind"
           show-search

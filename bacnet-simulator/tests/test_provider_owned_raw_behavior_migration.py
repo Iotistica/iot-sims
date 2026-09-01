@@ -1,5 +1,5 @@
 """Regression test for the ongoing reconciliation step
-(model_store.reconcile_provider_owned_raw_behavior) that relabels an
+(models.store.reconcile_provider_owned_raw_behavior) that relabels an
 already-provider-owned point's `behavior='constant'` to `'raw'`.
 
 "constant" and "raw" are 100% functionally identical for a provider-owned
@@ -17,7 +17,7 @@ time (Database._conn() opens a brand-new connection every call).
 """
 from __future__ import annotations
 
-from src.simulation.model_store import ensure_simulation_model_schema, reconcile_provider_owned_raw_behavior
+from src.simulation.models.store import ensure_simulation_model_schema, reconcile_provider_owned_raw_behavior
 
 
 def _make_device_and_point(database, *, instance: int, behavior: str = "constant"):

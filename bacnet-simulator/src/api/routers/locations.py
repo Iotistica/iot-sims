@@ -240,7 +240,7 @@ async def delete_location(
         except sqlite3.IntegrityError as exc:
             # A cascade from one of this location's devices hit an
             # aggregate member's ON DELETE RESTRICT (see
-            # model_store.ensure_simulation_model_schema). The admin UI
+            # models.store.ensure_simulation_model_schema). The admin UI
             # checks GET .../deletion-impact before ever offering cascade
             # delete, so this is a safety net, not the primary path --
             # mirrors devices.py::delete_device's own coarser message.

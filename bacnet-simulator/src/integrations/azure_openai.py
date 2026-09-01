@@ -1,48 +1,44 @@
-"""Azure OpenAI structured-output client.
+"""Backward-compatible, env-var-only Azure OpenAI client.
 
-Relocated verbatim from scripts/bacnet_pics/azure.py (the offline PICS-PDF
-parsing tooling's own Azure client) so the running app -- which only ships
-src/, never scripts/, see Dockerfile -- can reuse the exact same
-integration instead of a second, parallel one. scripts/bacnet_pics/azure.py
-now re-exports from here; there is still exactly one implementation.
+Kept for scripts/bacnet_pics/azure.py's offline PICS-PDF parsing tooling,
+which has no DB/Settings to read and always wants plain AZURE_OPENAI_* env
+vars with zero constructor arguments. The app's own routers use
+src.integrations.llm.build_llm_client instead (Settings-driven, provider-
+generic); this class is not used by them anymore.
 
 Same environment variable names as before: AZURE_OPENAI_ENDPOINT,
 AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT (all required),
-AZURE_OPENAI_API_VERSION (optional, defaults "2024-10-21"). Never read
-elsewhere and never logged/exposed -- callers must construct this lazily
-(inside a request handler, not at import time) so a missing/misconfigured
-Azure setup only fails the one call that needed it, not app startup.
+AZURE_OPENAI_API_VERSION (optional, defaults "2024-10-21").
 """
 from __future__ import annotations
 
 import os
-import time
-from typing import TypeVar, Type
 
 from openai import AzureOpenAI
-from pydantic import BaseModel
 
-T = TypeVar("T", bound=BaseModel)
+from .llm.client import OpenAIStructuredClient
 
 
-class AzureStructuredClient:
+class AzureStructuredClient(OpenAIStructuredClient):
     def __init__(
         self,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+        api_version: str | None = None,
         deployment: str | None = None,
         max_retries: int = 3,
     ) -> None:
-        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
-        self.deployment = deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT")
-        self.max_retries = max_retries
+        endpoint = endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
+        api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY")
+        api_version = api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+        deployment = deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
         missing = [
             name
             for name, value in {
                 "AZURE_OPENAI_ENDPOINT": endpoint,
                 "AZURE_OPENAI_API_KEY": api_key,
-                "AZURE_OPENAI_DEPLOYMENT": self.deployment,
+                "AZURE_OPENAI_DEPLOYMENT": deployment,
             }.items()
             if not value
         ]
@@ -51,47 +47,9 @@ class AzureStructuredClient:
                 "Missing required environment variables: " + ", ".join(missing)
             )
 
-        self.client = AzureOpenAI(
+        sdk_client = AzureOpenAI(
             azure_endpoint=endpoint,
             api_key=api_key,
             api_version=api_version,
         )
-
-    def parse(
-        self,
-        *,
-        response_model: Type[T],
-        system_prompt: str,
-        user_prompt: str,
-    ) -> T:
-        last_error: Exception | None = None
-
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                completion = self.client.beta.chat.completions.parse(
-                    model=self.deployment,
-                    temperature=0,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    response_format=response_model,
-                )
-
-                message = completion.choices[0].message
-                if message.parsed is not None:
-                    return message.parsed
-
-                refusal = getattr(message, "refusal", None)
-                raise RuntimeError(
-                    f"Model returned no parsed result. Refusal: {refusal!r}"
-                )
-            except Exception as exc:
-                last_error = exc
-                if attempt >= self.max_retries:
-                    break
-                time.sleep(2 ** (attempt - 1))
-
-        raise RuntimeError(
-            f"Azure OpenAI request failed after {self.max_retries} attempts"
-        ) from last_error
+        super().__init__(client=sdk_client, model=deployment, max_retries=max_retries)

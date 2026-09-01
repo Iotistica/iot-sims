@@ -161,9 +161,17 @@ function blurActiveInput(e: Event) {
   (e.target as HTMLInputElement)?.blur()
 }
 
-function onAxisChange(entry: ResolvedSeries, e: { target: { value: string } }) {
-  entry.axis = e.target.value === 'right' ? 'right' : 'left'
-  void persist()
+// a-radio-group's change event isn't typed specifically enough for the
+// template to infer `e`'s type on its own, and an inline type annotation in
+// the template itself doesn't parse (see SemanticSuggestionsModal.vue's
+// onSelectAllChange for the same issue on a-checkbox) -- returning the
+// actual handler, fully typed here, lets the template just call
+// onAxisChange(s) and stay annotation-free.
+function onAxisChange(entry: ResolvedSeries) {
+  return (e: { target: { value: string } }) => {
+    entry.axis = e.target.value === 'right' ? 'right' : 'left'
+    void persist()
+  }
 }
 
 function onVisibleChange() {
@@ -274,7 +282,7 @@ function fmtDate(iso: string): string {
             size="small"
             button-style="solid"
             style="flex:none"
-            @change="(e) => onAxisChange(s, e)"
+            @change="onAxisChange(s)"
           >
             <a-radio-button value="left">L</a-radio-button>
             <a-radio-button value="right">R</a-radio-button>

@@ -10,7 +10,7 @@ semantic_relationships at the top of load_project()) were missing or wrong."""
 from __future__ import annotations
 
 from src.semantics.resolver import SemanticResolver
-from src.simulation.model_store import create_simulation_model, list_simulation_models
+from src.simulation.models.store import create_simulation_model, list_simulation_models
 
 
 def _object_id(seeded_database, device_id: int, name: str) -> int:
@@ -211,7 +211,7 @@ def test_simulation_models_survive_project_reload(seeded_database):
     """simulation_model_configs (and its mappings) was never part of
     save_project()/update_project()'s exported JSON -- see
     list_all_simulation_models()/insert_simulation_model() in
-    model_store.py and their use in legacy.py's save_project()/
+    models/store.py and their use in legacy.py's save_project()/
     update_project()/load_project(). Every project reload silently
     deleted every simulation model and never recreated it, the same
     class of bug as test_energy_model_configs_survive_project_reload

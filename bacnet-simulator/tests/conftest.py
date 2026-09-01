@@ -105,6 +105,12 @@ def _routers():
     except ImportError:
         pass
 
+    try:
+        from src.api.routers.templates import router as templates_router
+        routers.append(templates_router)
+    except ImportError:
+        pass
+
     return routers
 
 

@@ -42,6 +42,7 @@ import { isDark, toggleDark, themeConfig } from './theme'
 import { copyDeviceAndObjects } from './deviceCopy'
 import { getLocationIcon } from './locationIcons'
 import { getEquipmentIcon, getControllerIcon } from './equipmentIcons'
+import { migrateLocalStorageTemplates } from './templates'
 import { ClusterOutlined, EditOutlined, ApiOutlined, CopyOutlined, FileAddOutlined, LineChartOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, UserOutlined, LogoutOutlined, DashboardOutlined, ApartmentOutlined, EllipsisOutlined, DownloadOutlined, UploadOutlined, SearchOutlined, AlertOutlined, CalendarOutlined, ScheduleOutlined, BulbOutlined, SettingOutlined, FolderAddOutlined, PartitionOutlined, ThunderboltOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, DeploymentUnitOutlined, FolderOutlined } from '@ant-design/icons-vue'
 
 const activeView = ref<
@@ -308,6 +309,11 @@ const editingEquipment    = ref<Equipment | null>(null)
 // never when editing (see DeviceDrawer/LocationDrawer's defaultLocationId/
 // defaultParentLocationId props).
 const addContextLocationId = ref<number | null>(null)
+// Set only when DeviceDrawer is opened via EquipmentPanel's "Assign
+// Controller" -> "Add Controller" fallback (no controller yet available) --
+// see openAddControllerForEquipment. Reset to null by every other path that
+// opens/edits a device, so it never leaks into an unrelated Add/Edit.
+const lockedEquipmentIdForNewController = ref<number | null>(null)
 const projectsDrawerOpen   = ref(false)
 const createCopyModalOpen  = ref(false)
 const createCopySource     = ref<Device | null>(null)
@@ -510,7 +516,17 @@ async function loadControllerEquipmentMap() {
     controllerEquipmentMap.value = map
   } catch { /* swallow -- tree just falls back to today's flat placement */ }
 }
-async function onEquipmentSaved() { await loadEquipment(); await loadControllerEquipmentMap() }
+async function onEquipmentSaved(equipmentId?: number) {
+  await loadEquipment()
+  await loadControllerEquipmentMap()
+  // Switch tree focus to the equipment that was actually just created/edited
+  // -- omitted after a delete, where there's nothing left to focus. Mirrors
+  // openAddControllerForEquipment's handling of DeviceDrawer's `saved` id.
+  if (equipmentId != null) {
+    const created = equipment.value.find(e => e.id === equipmentId)
+    if (created) selectEquipment(created)
+  }
+}
 async function loadEquipment() {
   try {
     equipment.value = await api.equipment.list()
@@ -537,9 +553,40 @@ function onSelectController(deviceId: number) {
 }
 
 // Device actions
-function openAddDevice(locationId: number | null = null) { editingDevice.value = null; addContextLocationId.value = locationId; deviceDrawerOpen.value = true }
-function openEditDevice(d: Device) { editingDevice.value = d; deviceDrawerOpen.value = true }
-async function onDeviceSaved() { await loadDevices(); await loadControllerEquipmentMap(); await loadHealth() }
+function openAddDevice(locationId: number | null = null) { editingDevice.value = null; addContextLocationId.value = locationId; lockedEquipmentIdForNewController.value = null; deviceDrawerOpen.value = true }
+function openEditDevice(d: Device) { editingDevice.value = d; lockedEquipmentIdForNewController.value = null; deviceDrawerOpen.value = true }
+
+// EquipmentPanel's "Assign Controller" falls back to this when no
+// controller exists yet to assign -- opens the same Add Controller drawer,
+// with Location/Controls already fully determined (this equipment's own
+// location; controls this equipment) so DeviceDrawer hides those two fields
+// and wires them up silently on save instead of asking the user to restate
+// facts this flow already knows.
+function openAddControllerForEquipment(equipment: Equipment) {
+  editingDevice.value = null
+  addContextLocationId.value = equipment.location_id ?? null
+  lockedEquipmentIdForNewController.value = equipment.id
+  deviceDrawerOpen.value = true
+}
+async function onDeviceSaved(deviceId?: number) {
+  await loadDevices()
+  await loadControllerEquipmentMap()
+  await loadHealth()
+
+  // The equipment panel's "Add Controller" flow just created a new
+  // controller for the equipment currently in focus -- switch to it instead
+  // of leaving the Equipment panel showing, now stale for what the user was
+  // just doing. Consumed once: cleared here so an unrelated later save
+  // (e.g. editing this same device again from its own panel) never
+  // re-triggers this.
+  if (lockedEquipmentIdForNewController.value != null) {
+    lockedEquipmentIdForNewController.value = null
+    if (deviceId != null) {
+      const device = devices.value.find(d => d.id === deviceId)
+      if (device) selectDevice(device)
+    }
+  }
+}
 function duplicateDevice(d: Device) {
   duplicateSource.value = d
   duplicateName.value = `${d.name} Copy`
@@ -988,6 +1035,10 @@ onMounted(async () => {
       currentUser.value = await api.auth.me()
       loadActiveProjectFromStorage()
       await startApp()
+      // One-time bridge for anyone who saved a template under the old,
+      // purely client-side localStorage behavior -- fire-and-forget, never
+      // blocks app startup. See templates.ts for details.
+      void migrateLocalStorageTemplates()
     } catch {
       // api.ts already cleared the (invalid/expired) token on the 401; the
       // template's v-if="!authToken" will fall back to the login screen.
@@ -1136,6 +1187,7 @@ onUnmounted(() => {
             :meta="meta"
             @edit="openEditEquipment"
             @select-controller="onSelectController"
+            @add-controller="openAddControllerForEquipment"
           />
 
           <ObjectsPanel
@@ -1191,6 +1243,7 @@ onUnmounted(() => {
       :equipment="equipment"
       :existing-instances="devices.map(d => d.device_instance)"
       :default-location-id="addContextLocationId"
+      :locked-equipment-id="lockedEquipmentIdForNewController"
       @saved="onDeviceSaved"
       @simulation-model="openSimulationModel"
     />

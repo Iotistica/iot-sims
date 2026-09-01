@@ -15,7 +15,7 @@ from ...bacnet.schemas import (
     SetValueRequest,
 )
 from ...core.config import COMMANDABLE_TYPES, VALID_BEHAVIORS
-from ...simulation.model_store import (
+from ...simulation.models.store import (
     get_aggregate_membership_owner,
     get_exposure_owners_by_point,
     get_output_owners_by_point,

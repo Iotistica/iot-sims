@@ -25,8 +25,8 @@ import pytest
 
 from src.api.routers import simulation as simulation_router
 from src.monitoring.event_log import get_device_log_entries
-from src.simulation import model_runtime
-from src.simulation.model_store import list_simulation_models
+from src.simulation.models import runtime as model_runtime
+from src.simulation.models.store import list_simulation_models
 from src.simulation.models.registry import ModelDefinition, VariableDefinition
 
 
@@ -355,7 +355,7 @@ def test_reload_model_logs_on_success(client, database, monkeypatch, engine):
     started = [e for e in recorded.entries if "FMU model started" in e["message"]]
     assert not started, "enabled=false must not register a provider or log a start event"
 
-    from src.simulation.model_store import set_simulation_model_enabled
+    from src.simulation.models.store import set_simulation_model_enabled
     set_simulation_model_enabled(database, created["id"], True)
     recorded.entries.clear()
 
@@ -610,7 +610,7 @@ def test_reload_model_log_success_false_suppresses_started_message(client, datab
     device, point = _make_device_and_point(client, instance=7006, name="AHU-SuppressLog")
     created = client.post("/simulation/models", json=_payload(device["id"], point["id"], enabled=False)).json()
 
-    from src.simulation.model_store import set_simulation_model_enabled
+    from src.simulation.models.store import set_simulation_model_enabled
     set_simulation_model_enabled(database, created["id"], True)
     recorded.entries.clear()
 

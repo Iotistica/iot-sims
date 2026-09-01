@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from src.api.routers import simulation as simulation_router
-from src.simulation import model_runtime
-from src.simulation.model_store import (
+from src.simulation.models import runtime as model_runtime
+from src.simulation.models.store import (
     create_simulation_model,
     get_simulation_model,
     update_simulation_model,

@@ -339,7 +339,7 @@ const columns = computed<TableColumnsType<SimObject>>(() => {
     { title: 'Inst.', dataIndex: 'object_instance', key: 'instance', width: 65, sorter: (a, b) => a.object_instance - b.object_instance, sortDirections: ['ascend', 'descend'] },
     { title: 'Behavior', key: 'behavior', width: 120, sorter: (a, b) => compareText(a.behavior, b.behavior), sortDirections: ['ascend', 'descend'] },
     {
-      title: 'Semantic Type', key: 'point_type', width: 190,
+      title: 'Type', key: 'point_type', width: 190,
       sorter: (a, b) => compareText(
         a.point_type ? pointTypeLabel.value[a.point_type] ?? a.point_type : '',
         b.point_type ? pointTypeLabel.value[b.point_type] ?? b.point_type : '',
@@ -789,7 +789,9 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
   <SaveTemplateModal
     v-model:open="saveTemplateOpen"
     :objects="objects"
+    :device-id="device.id"
     :device-name="device.name"
+    :meta="meta"
   />
 
   <!-- Template picker -->

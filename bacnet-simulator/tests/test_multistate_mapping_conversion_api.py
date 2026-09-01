@@ -1,6 +1,6 @@
 """API-level coverage for SimulationModelMappingPayload.conversion: a
 mapping can declare a named value conversion (see
-mapping_conversions.CONVERSIONS) applied to its FMU output at the mapping
+mapping/conversions.CONVERSIONS) applied to its FMU output at the mapping
 boundary. Exercises the real create/persist/read round-trip (POST
 /simulation/models -> DB -> GET /simulation/models/{id}), following this
 codebase's established _make_provider_owned_point pattern from
@@ -10,7 +10,7 @@ analog one.
 from __future__ import annotations
 
 from src.api.routers import simulation as simulation_router
-from src.simulation import model_runtime
+from src.simulation.models import runtime as model_runtime
 from src.simulation.models.registry import ModelDefinition, VariableDefinition
 
 OUTPUT_VARIABLE = "compressorStage"

@@ -1,4 +1,4 @@
-"""mapping_conversions.CONVERSIONS is a named, declarative registry of
+"""mapping/conversions.CONVERSIONS is a named, declarative registry of
 value conversions applied to an FMU output at the mapping boundary --
 e.g. 'zero_based_to_multistate' for a zero-based Modelica/FMU state
 output (0=off, 1=stage 1, 2=stage 2, ...) mapped onto this simulator's
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.simulation.mapping_conversions import CONVERSIONS, apply_output_conversion
+from src.simulation.mapping.conversions import CONVERSIONS, apply_output_conversion
 
 
 def test_no_conversion_is_a_passthrough():

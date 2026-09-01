@@ -26,7 +26,7 @@ def _create_simulated_ahu(client):
 
 
 class _FakeAzureClient:
-    """Stands in for AzureStructuredClient -- construction never touches
+    """Stands in for the built LLM client -- construction never touches
     real env vars/network; .parse() is never called directly since the
     tests below patch suggest_point_via_ai() itself, one level up."""
     def __init__(self, *a, **kw):
@@ -35,7 +35,7 @@ class _FakeAzureClient:
 
 @pytest.fixture
 def no_real_azure_client(monkeypatch):
-    monkeypatch.setattr(ss_module, "AzureStructuredClient", _FakeAzureClient)
+    monkeypatch.setattr(ss_module, "build_llm_client", lambda settings: _FakeAzureClient())
 
 
 def test_ai_suggestion_success_marks_source_ai(client, database, no_real_azure_client, monkeypatch):
@@ -71,7 +71,7 @@ def test_ai_failure_returns_generic_error_and_no_mutation(client, database, no_r
     resp = client.post(f"/devices/{device['id']}/semantic-suggestions/points/{temp1['id']}/ai")
     assert resp.status_code == 502
     detail = resp.json()["detail"]
-    assert detail == "AI suggestion is unavailable. Check Azure OpenAI configuration."
+    assert detail == "AI suggestion is unavailable. Check the AI provider configuration in Settings."
     # The real exception (which could carry endpoint/key detail) must never
     # reach the response body.
     assert "secret.example.com" not in detail
@@ -100,4 +100,58 @@ def test_out_of_vocabulary_class_is_rejected_server_side(client, no_real_azure_c
 def test_ai_endpoint_404s_for_unknown_object(client, no_real_azure_client):
     device = client.post("/devices", json={"device_instance": 1004, "name": "AHU-2"}).json()
     resp = client.post(f"/devices/{device['id']}/semantic-suggestions/points/999999/ai")
+    assert resp.status_code == 404
+
+
+# ─── POST .../points/{id}/ai-accept -- recording an applied AI suggestion ────
+
+def test_ai_accept_records_suggestion(client, database):
+    device, (sat, temp1) = _create_simulated_ahu(client)
+    resp = client.post(
+        f"/devices/{device['id']}/semantic-suggestions/points/{temp1['id']}/ai-accept",
+        json={"suggested_class": "Temperature_Sensor", "accepted_class": "Temperature_Sensor", "confidence": "medium", "reason": "generic temperature point"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["object_id"] == temp1["id"]
+    assert body["device_id"] == device["id"]
+    assert body["suggested_class"] == "Temperature_Sensor"
+    assert body["accepted_class"] == "Temperature_Sensor"
+    assert body["confidence"] == "medium"
+    assert body["reason"] == "generic temperature point"
+
+    with database._conn() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM ai_suggestion_acceptances")]
+    assert len(rows) == 1
+    assert rows[0]["object_id"] == temp1["id"]
+
+
+def test_ai_accept_records_override_distinctly(client, database):
+    """The user changed the picker before applying -- accepted_class differs
+    from suggested_class, both are still recorded (not collapsed to one)."""
+    device, (sat, temp1) = _create_simulated_ahu(client)
+    resp = client.post(
+        f"/devices/{device['id']}/semantic-suggestions/points/{temp1['id']}/ai-accept",
+        json={"suggested_class": "Temperature_Sensor", "accepted_class": "Humidity_Sensor", "confidence": "low", "reason": "weak match"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["suggested_class"] == "Temperature_Sensor"
+    assert body["accepted_class"] == "Humidity_Sensor"
+
+
+def test_ai_accept_404s_for_unknown_object(client):
+    device = client.post("/devices", json={"device_instance": 1005, "name": "AHU-3"}).json()
+    resp = client.post(
+        f"/devices/{device['id']}/semantic-suggestions/points/999999/ai-accept",
+        json={"suggested_class": "Temperature_Sensor", "accepted_class": "Temperature_Sensor", "confidence": "medium", "reason": ""},
+    )
+    assert resp.status_code == 404
+
+
+def test_ai_accept_404s_for_unknown_device(client):
+    resp = client.post(
+        "/devices/999999/semantic-suggestions/points/1/ai-accept",
+        json={"suggested_class": "Temperature_Sensor", "accepted_class": "Temperature_Sensor", "confidence": "medium", "reason": ""},
+    )
     assert resp.status_code == 404

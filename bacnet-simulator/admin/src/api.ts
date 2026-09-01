@@ -54,6 +54,8 @@ import type {
   PointRow,
   CustomGraphDefinition,
   SavedGraph,
+  Template,
+  TplObject,
 } from './types'
 
 import { authToken, logout } from './auth'
@@ -259,7 +261,7 @@ export interface SimulationModelMapping {
 
 /** point_metadata keys are point_ids -- always strings once this crosses
  * the JSON wire, even though the backend builds the dict with int keys
- * internally (see model_store._load_aggregate_mappings). Weight points
+ * internally (see models.store._load_aggregate_mappings). Weight points
  * (weighted_average only) share the same point_metadata dict as value
  * points -- a lookup by point_id works identically for either. */
 export interface SimulationModelAggregateMapping {
@@ -289,7 +291,7 @@ export interface SimulationModelAggregateMapping {
  * BACnet point's Present Value each step, without recomputing it. Not a
  * "mapping" in the read/write direction sense SimulationModelMapping uses
  * -- see simulation_model_input_exposures's schema comment in the
- * backend's model_store.py for why this is its own list/table. */
+ * backend's models/store.py for why this is its own list/table. */
 export interface SimulationModelInputExposure {
   id?: number
   model_config_id?: number
@@ -314,7 +316,7 @@ export interface SimulationModelConfig {
   created_from_device_id: number | null
   /** A row is an aggregate mapping iff it has "point_ids" (plural) instead
    * of "point_id" -- the same discriminator the backend's
-   * model_runtime._is_aggregate_row uses. */
+   * models.runtime._is_aggregate_row uses. */
   mappings: Array<SimulationModelMapping | SimulationModelAggregateMapping>
   input_exposures?: SimulationModelInputExposure[]
   runtime_id?: string
@@ -381,7 +383,7 @@ export interface MappingSuggestionsResponse {
 }
 
 /** One ranked candidate from POST /simulation/models/variable-candidates --
- * mirrors the backend's PointCandidate dataclass exactly (mapping_suggestions.py). */
+ * mirrors the backend's PointCandidate dataclass exactly (mapping/suggestions.py). */
 export interface VariableCandidateEntry {
   id: number
   name: string
@@ -556,6 +558,13 @@ export const api = {
     update: (id: number, b: Omit<Equipment, 'id'>) => req<Equipment>(`/equipment/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
     del:    (id: number)                           => req<null>(`/equipment/${id}`, { method: 'DELETE' }),
     assignablePoints: (id: number)                 => req<AssignablePoint[]>(`/equipment/${id}/assignable-points`),
+  },
+
+  templates: {
+    list:   () => req<Template[]>('/templates'),
+    create: (b: { label: string; description: string; objects: TplObject[]; equipment_types?: string[] | null }) =>
+      req<Template>('/templates', { method: 'POST', body: JSON.stringify(b) }),
+    del:    (id: number) => req<null>(`/templates/${id}`, { method: 'DELETE' }),
   },
 
   semanticEntities: {
@@ -748,6 +757,8 @@ export const api = {
       req<SemanticSuggestionsResponse>(`/devices/${deviceId}/semantic-suggestions`, { method: 'POST' }),
     aiForPoint: (deviceId: number, objectId: number) =>
       req<SemanticSuggestionEntry>(`/devices/${deviceId}/semantic-suggestions/points/${objectId}/ai`, { method: 'POST' }),
+    acceptAi: (deviceId: number, objectId: number, body: { suggested_class: string; accepted_class: string; confidence: string; reason: string }) =>
+      req(`/devices/${deviceId}/semantic-suggestions/points/${objectId}/ai-accept`, { method: 'POST', body: JSON.stringify(body) }),
   },
 
   // Whole-database snapshot/restore — distinct from `projects` above (which

@@ -26,6 +26,7 @@ short name, done -- no new dependency, no separate tooling to learn.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Callable, NamedTuple
 
@@ -839,6 +840,229 @@ def _migration_019_replay_recording_tables(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_020_equipment_manufacturer_model(conn: sqlite3.Connection) -> None:
+    """Free-text descriptive fields (like devices' own vendor_name/model_name)
+    -- never read by the BACnet protocol/simulation engine, no relation to
+    equipment_type's Brick vocabulary."""
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(equipment)")}
+    if "manufacturer" not in existing_cols:
+        conn.execute("ALTER TABLE equipment ADD COLUMN manufacturer TEXT")
+    if "model" not in existing_cols:
+        conn.execute("ALTER TABLE equipment ADD COLUMN model TEXT")
+
+
+def _migration_021_ai_suggestion_acceptances(conn: sqlite3.Connection) -> None:
+    """Records every AI-suggested point classification (src/semantics/
+    ai_suggestions.py) the user actually applied via the Semantic
+    Suggestions modal -- accepted_class vs suggested_class distinguishes
+    "applied as-is" from "AI suggested X, user corrected to Y before
+    applying" (the more valuable signal for future fine-tuning). Deletes
+    with its point (ON DELETE CASCADE) -- without the point's own name/
+    units/description, a row here is no longer a usable training example
+    anyway, nothing here is meant to outlive the point it describes."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS ai_suggestion_acceptances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            object_id INTEGER NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+            device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            suggested_class TEXT NOT NULL,
+            accepted_class TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_suggestion_acceptances_object ON ai_suggestion_acceptances(object_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_suggestion_acceptances_device ON ai_suggestion_acceptances(device_id);
+        """
+    )
+
+
+# The 8 built-in object templates, ported verbatim from admin/src/templates.ts
+# (written earlier this session) -- same keys, labels, descriptions, object
+# lists, and equipmentTypes tags. Icons aren't ported (not serializable);
+# the frontend keeps its own key-keyed icon lookup for these same 8 keys.
+_BUILTIN_TEMPLATES: list[dict] = [
+    {
+        "key": "ahu",
+        "label": "Air Handling Unit",
+        "description": "Supply/return fans, temps, valves, static pressure, alarms",
+        "equipment_types": ["Air_Handling_Unit", "Rooftop_Unit"],
+        "objects": [
+            {"object_type": "binary-input", "object_instance": 1, "name": "SF-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Fan_Status"},
+            {"object_type": "binary-input", "object_instance": 2, "name": "RF-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Fan_Status"},
+            {"object_type": "analog-input", "object_instance": 3, "name": "SF-Speed", "units": "percent", "behavior": "sine", "behavior_params": '{"base":75,"amplitude":15,"period_hours":12}'},
+            {"object_type": "analog-input", "object_instance": 4, "name": "RF-Speed", "units": "percent", "behavior": "sine", "behavior_params": '{"base":70,"amplitude":12,"period_hours":12}'},
+            {"object_type": "analog-input", "object_instance": 5, "name": "SAT", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":13,"noise":0.4}', "point_type": "Supply_Air_Temperature_Sensor"},
+            {"object_type": "analog-input", "object_instance": 6, "name": "RAT", "units": "degrees-celsius", "behavior": "sine", "behavior_params": '{"base":22,"amplitude":2,"period_hours":24}', "point_type": "Return_Air_Temperature_Sensor"},
+            {"object_type": "analog-input", "object_instance": 7, "name": "MAT", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":16,"noise":0.8}', "point_type": "Mixed_Air_Temperature_Sensor"},
+            {"object_type": "analog-input", "object_instance": 8, "name": "OAT", "units": "degrees-celsius", "behavior": "sine", "behavior_params": '{"base":12,"amplitude":8,"period_hours":24}', "point_type": "Outside_Air_Temperature_Sensor"},
+            {"object_type": "analog-output", "object_instance": 9, "name": "OAD-Position", "units": "percent", "behavior": "sine", "behavior_params": '{"base":28,"amplitude":18,"period_hours":24}', "point_type": "Damper_Position_Command"},
+            {"object_type": "analog-output", "object_instance": 10, "name": "CC-Valve", "units": "percent", "behavior": "sine", "behavior_params": '{"base":55,"amplitude":25,"period_hours":12}', "point_type": "Valve_Position_Command"},
+            {"object_type": "analog-output", "object_instance": 11, "name": "HC-Valve", "units": "percent", "behavior": "sine", "behavior_params": '{"base":10,"amplitude":9,"period_hours":24}', "point_type": "Valve_Position_Command"},
+            {"object_type": "analog-input", "object_instance": 12, "name": "SA-Flow", "units": "cubic-feet-per-minute", "behavior": "noise", "behavior_params": '{"base":8500,"noise":250}', "point_type": "Air_Flow_Sensor"},
+            {"object_type": "analog-input", "object_instance": 13, "name": "SA-Static-Pressure", "units": "pascals", "behavior": "noise", "behavior_params": '{"base":375,"noise":12}', "point_type": "Static_Pressure_Sensor"},
+            {"object_type": "binary-input", "object_instance": 14, "name": "Filter-DP-Alarm", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":false}', "point_type": "Change_Filter_Alarm"},
+            {"object_type": "binary-input", "object_instance": 15, "name": "Freeze-Stat", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":false}', "point_type": "Freeze_Status"},
+        ],
+    },
+    {
+        "key": "vav",
+        "label": "VAV Box",
+        "description": "Zone temp, airflow, damper, reheat valve, CO₂, occupancy",
+        "equipment_types": ["Variable_Air_Volume_Box"],
+        "objects": [
+            {"object_type": "analog-input", "object_instance": 1, "name": "Zone-Temp", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":22,"noise":0.3}', "point_type": "Zone_Air_Temperature_Sensor"},
+            {"object_type": "analog-value", "object_instance": 2, "name": "Zone-Setpoint", "units": "degrees-celsius", "behavior": "constant", "behavior_params": '{"value":22}', "point_type": "Room_Air_Temperature_Setpoint"},
+            {"object_type": "analog-input", "object_instance": 3, "name": "Damper-Pos", "units": "percent", "behavior": "noise", "behavior_params": '{"base":55,"noise":3}', "point_type": "Damper_Position_Status"},
+            {"object_type": "analog-output", "object_instance": 4, "name": "Damper-Cmd", "units": "percent", "behavior": "sine", "behavior_params": '{"base":55,"amplitude":14,"period_hours":8}', "point_type": "Damper_Position_Command"},
+            {"object_type": "analog-input", "object_instance": 5, "name": "Zone-Airflow", "units": "cubic-feet-per-minute", "behavior": "noise", "behavior_params": '{"base":350,"noise":18}', "point_type": "Air_Flow_Sensor"},
+            {"object_type": "analog-output", "object_instance": 6, "name": "Reheat-Valve", "units": "percent", "behavior": "sine", "behavior_params": '{"base":0,"amplitude":10,"period_hours":12}', "point_type": "Valve_Position_Command"},
+            {"object_type": "binary-input", "object_instance": 7, "name": "Occupancy", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Occupancy_Sensor"},
+            {"object_type": "analog-input", "object_instance": 8, "name": "Zone-CO2", "units": "parts-per-million", "behavior": "random_walk", "behavior_params": '{"value":650,"step":30,"min":400,"max":1200}', "point_type": "CO2_Level_Sensor"},
+        ],
+    },
+    {
+        "key": "fcu",
+        "label": "Fan Coil Unit",
+        "description": "Room temp, setpoint, cooling/heating valves, fan speeds",
+        "equipment_types": None,
+        "objects": [
+            {"object_type": "analog-input", "object_instance": 1, "name": "Room-Temp", "units": "degrees-celsius", "behavior": "sine", "behavior_params": '{"base":23,"amplitude":1,"period_hours":24}', "point_type": "Zone_Air_Temperature_Sensor"},
+            {"object_type": "analog-value", "object_instance": 2, "name": "Room-Setpoint", "units": "degrees-celsius", "behavior": "constant", "behavior_params": '{"value":22}', "point_type": "Room_Air_Temperature_Setpoint"},
+            {"object_type": "analog-input", "object_instance": 3, "name": "Coil-Temp", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":12,"noise":0.5}', "point_type": "Temperature_Sensor"},
+            {"object_type": "analog-output", "object_instance": 4, "name": "Cooling-Valve", "units": "percent", "behavior": "manual", "behavior_params": '{"value":0}', "point_type": "Valve_Position_Command"},
+            {"object_type": "analog-output", "object_instance": 5, "name": "Heating-Valve", "units": "percent", "behavior": "manual", "behavior_params": '{"value":0}', "point_type": "Valve_Position_Command"},
+            {"object_type": "binary-output", "object_instance": 6, "name": "Fan-Low-Speed", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Fan_Speed_Command"},
+            {"object_type": "binary-output", "object_instance": 7, "name": "Fan-High-Speed", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":false}', "point_type": "Fan_Speed_Command"},
+        ],
+    },
+    {
+        "key": "chiller",
+        "label": "Chiller Plant",
+        "description": "Dual chillers, condenser tower, CW loop flow & temps",
+        "equipment_types": ["Chiller"],
+        "objects": [
+            {"object_type": "binary-input", "object_instance": 1, "name": "CH-1-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Run_Status"},
+            {"object_type": "analog-input", "object_instance": 2, "name": "CH-1-kW", "units": "kilowatts", "behavior": "random_walk", "behavior_params": '{"value":212,"step":8,"min":80,"max":320}', "point_type": "Power_Sensor"},
+            {"object_type": "analog-input", "object_instance": 3, "name": "CH-1-COP", "units": "no-units", "behavior": "noise", "behavior_params": '{"base":5.8,"noise":0.2}'},
+            {"object_type": "binary-input", "object_instance": 4, "name": "CH-2-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Run_Status"},
+            {"object_type": "analog-input", "object_instance": 5, "name": "CH-2-kW", "units": "kilowatts", "behavior": "random_walk", "behavior_params": '{"value":198,"step":8,"min":80,"max":320}', "point_type": "Power_Sensor"},
+            {"object_type": "analog-input", "object_instance": 6, "name": "CH-2-COP", "units": "no-units", "behavior": "noise", "behavior_params": '{"base":5.6,"noise":0.2}'},
+            {"object_type": "analog-input", "object_instance": 7, "name": "CW-Supply-Temp", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":6.5,"noise":0.2}', "point_type": "Condenser_Water_Temperature_Sensor"},
+            {"object_type": "analog-input", "object_instance": 8, "name": "CW-Return-Temp", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":12.2,"noise":0.2}', "point_type": "Condenser_Water_Temperature_Sensor"},
+            {"object_type": "analog-input", "object_instance": 9, "name": "CW-Flow", "units": "liters-per-second", "behavior": "noise", "behavior_params": '{"base":48,"noise":1.5}', "point_type": "Water_Flow_Sensor"},
+            {"object_type": "analog-input", "object_instance": 10, "name": "CW-Diff-Pressure", "units": "pascals", "behavior": "noise", "behavior_params": '{"base":225,"noise":8}', "point_type": "Water_Differential_Pressure_Sensor"},
+            {"object_type": "binary-input", "object_instance": 11, "name": "CT-Fan-1-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Fan_Status"},
+            {"object_type": "binary-input", "object_instance": 12, "name": "CT-Fan-2-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Fan_Status"},
+            {"object_type": "analog-input", "object_instance": 13, "name": "CT-Leaving-Water-Temp", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":29.5,"noise":0.5}', "point_type": "Condenser_Water_Temperature_Sensor"},
+            {"object_type": "binary-input", "object_instance": 15, "name": "CW-Pump-1-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Run_Status"},
+            {"object_type": "binary-input", "object_instance": 16, "name": "CW-Pump-2-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":false}', "point_type": "Run_Status"},
+        ],
+    },
+    {
+        "key": "boiler",
+        "label": "Hot Water Boiler",
+        "description": "Dual boilers, HW supply/return temps, pumps, gas flow",
+        "equipment_types": ["Boiler"],
+        "objects": [
+            {"object_type": "binary-input", "object_instance": 1, "name": "BLR-1-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Run_Status"},
+            {"object_type": "analog-input", "object_instance": 2, "name": "BLR-1-Firing-Rate", "units": "percent", "behavior": "noise", "behavior_params": '{"base":62,"noise":5}'},
+            {"object_type": "analog-input", "object_instance": 3, "name": "BLR-1-Flue-Temp", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":88,"noise":3}', "point_type": "Temperature_Sensor"},
+            {"object_type": "binary-input", "object_instance": 4, "name": "BLR-2-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":false}', "point_type": "Run_Status"},
+            {"object_type": "analog-input", "object_instance": 5, "name": "BLR-2-Firing-Rate", "units": "percent", "behavior": "manual", "behavior_params": '{"value":0}'},
+            {"object_type": "analog-input", "object_instance": 6, "name": "HW-Supply-Temp", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":71,"noise":0.8}', "point_type": "Leaving_Hot_Water_Temperature_Sensor"},
+            {"object_type": "analog-input", "object_instance": 7, "name": "HW-Return-Temp", "units": "degrees-celsius", "behavior": "noise", "behavior_params": '{"base":58.5,"noise":0.8}', "point_type": "Entering_Hot_Water_Temperature_Sensor"},
+            {"object_type": "analog-input", "object_instance": 8, "name": "HW-Diff-Pressure", "units": "pascals", "behavior": "noise", "behavior_params": '{"base":180,"noise":6}', "point_type": "Water_Differential_Pressure_Sensor"},
+            {"object_type": "analog-input", "object_instance": 9, "name": "Gas-Flow", "units": "cubic-feet-per-minute", "behavior": "random_walk", "behavior_params": '{"value":44,"step":3,"min":10,"max":85}'},
+            {"object_type": "binary-input", "object_instance": 10, "name": "HW-Pump-1-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Run_Status"},
+            {"object_type": "binary-input", "object_instance": 11, "name": "HW-Pump-2-Run", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":false}', "point_type": "Run_Status"},
+        ],
+    },
+    {
+        "key": "bms",
+        "label": "BMS / Supervisor",
+        "description": "Building occupancy, alarms, energy, outside air conditions",
+        "equipment_types": None,
+        "objects": [
+            {"object_type": "binary-value", "object_instance": 1, "name": "Building-Occupied", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Occupancy_Status"},
+            {"object_type": "analog-value", "object_instance": 2, "name": "Active-Alarms", "units": "no-units", "behavior": "random_walk", "behavior_params": '{"value":2,"step":1,"min":0,"max":8}', "point_type": "Alarm"},
+            {"object_type": "analog-input", "object_instance": 3, "name": "Energy-Today-kWh", "units": "kilowatt-hours", "behavior": "random_walk", "behavior_params": '{"value":430,"step":12,"min":0,"max":2000}', "point_type": "Energy_Sensor"},
+            {"object_type": "analog-input", "object_instance": 4, "name": "Peak-Demand-kW", "units": "kilowatts", "behavior": "random_walk", "behavior_params": '{"value":182,"step":4,"min":50,"max":320}', "point_type": "Peak_Demand_Sensor"},
+            {"object_type": "analog-input", "object_instance": 5, "name": "Outside-Air-Temp", "units": "degrees-celsius", "behavior": "sine", "behavior_params": '{"base":12,"amplitude":8,"period_hours":24}', "point_type": "Outside_Air_Temperature_Sensor"},
+            {"object_type": "analog-input", "object_instance": 6, "name": "Outside-Air-Humidity", "units": "percent", "behavior": "sine", "behavior_params": '{"base":55,"amplitude":15,"period_hours":24}', "point_type": "Outside_Air_Humidity_Sensor"},
+        ],
+    },
+    {
+        "key": "meter",
+        "label": "Electric Meter",
+        "description": "Active power, energy, voltage L1/L2, current, power factor",
+        "equipment_types": ["Meter"],
+        "objects": [
+            {"object_type": "analog-input", "object_instance": 1, "name": "Active-Power-kW", "units": "kilowatts", "behavior": "noise", "behavior_params": '{"base":45,"noise":3}', "point_type": "Power_Sensor"},
+            {"object_type": "analog-input", "object_instance": 2, "name": "Energy-kWh", "units": "kilowatt-hours", "behavior": "random_walk", "behavior_params": '{"value":1000,"step":0.05,"min":0,"max":999999}', "point_type": "Energy_Sensor"},
+            {"object_type": "analog-input", "object_instance": 3, "name": "Voltage-L1", "units": "volts", "behavior": "noise", "behavior_params": '{"base":230,"noise":2}'},
+            {"object_type": "analog-input", "object_instance": 4, "name": "Voltage-L2", "units": "volts", "behavior": "noise", "behavior_params": '{"base":230,"noise":2}'},
+            {"object_type": "analog-input", "object_instance": 5, "name": "Current-L1", "units": "amperes", "behavior": "noise", "behavior_params": '{"base":65,"noise":4}'},
+            {"object_type": "analog-input", "object_instance": 6, "name": "Power-Factor", "units": "no-units", "behavior": "noise", "behavior_params": '{"base":0.92,"noise":0.03}'},
+        ],
+    },
+    {
+        "key": "lighting",
+        "label": "Lighting Controller",
+        "description": "3-zone dimming levels, overrides, occupancy, setpoints",
+        "equipment_types": ["Lighting_Equipment"],
+        "objects": [
+            {"object_type": "analog-output", "object_instance": 1, "name": "Zone-1-Level", "units": "percent", "behavior": "manual", "behavior_params": '{"value":100}', "point_type": "Lighting_Level_Command"},
+            {"object_type": "analog-output", "object_instance": 2, "name": "Zone-2-Level", "units": "percent", "behavior": "manual", "behavior_params": '{"value":80}', "point_type": "Lighting_Level_Command"},
+            {"object_type": "analog-output", "object_instance": 3, "name": "Zone-3-Level", "units": "percent", "behavior": "manual", "behavior_params": '{"value":60}', "point_type": "Lighting_Level_Command"},
+            {"object_type": "binary-output", "object_instance": 4, "name": "Zone-1-Override", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":false}', "point_type": "On_Off_Command"},
+            {"object_type": "binary-output", "object_instance": 5, "name": "Zone-2-Override", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":false}', "point_type": "On_Off_Command"},
+            {"object_type": "binary-value", "object_instance": 6, "name": "Occupancy-Status", "units": "no-units", "behavior": "manual", "behavior_params": '{"value":true}', "point_type": "Occupancy_Status"},
+            {"object_type": "analog-value", "object_instance": 7, "name": "Occupancy-Setpoint", "units": "percent", "behavior": "constant", "behavior_params": '{"value":100}'},
+            {"object_type": "analog-value", "object_instance": 8, "name": "Standby-Setpoint", "units": "percent", "behavior": "constant", "behavior_params": '{"value":30}'},
+        ],
+    },
+]
+
+
+def _migration_022_templates(conn: sqlite3.Connection) -> None:
+    """Moves the object-template feature (previously 8 hardcoded built-ins +
+    localStorage user templates, entirely client-only -- see
+    admin/src/templates.ts before this migration) into the database, so a
+    saved template is no longer invisible to other browsers/machines and
+    survives clearing site data. Built-ins become real rows here
+    (is_builtin=1), matched/skipped by `key` so re-running this migration
+    never duplicates them -- deleting one is refused at the API layer
+    (src/api/routers/templates.py), never enforced here."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL UNIQUE,
+            label TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            objects_json TEXT NOT NULL,
+            equipment_types_json TEXT,
+            is_builtin INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+    for tpl in _BUILTIN_TEMPLATES:
+        conn.execute(
+            "INSERT OR IGNORE INTO templates (key, label, description, objects_json, equipment_types_json, is_builtin) "
+            "VALUES (?,?,?,?,?,1)",
+            (
+                tpl["key"],
+                tpl["label"],
+                tpl["description"],
+                json.dumps(tpl["objects"]),
+                json.dumps(tpl["equipment_types"]) if tpl["equipment_types"] is not None else None,
+            ),
+        )
+
+
 class Migration(NamedTuple):
     version: int
     name: str
@@ -873,4 +1097,7 @@ MIGRATIONS: list[Migration] = [
     # have recorded it applied, even if the original migration's function
     # no longer exists in the current codebase.
     Migration(19, "replay_recording_tables", _migration_019_replay_recording_tables),
+    Migration(20, "equipment_manufacturer_model", _migration_020_equipment_manufacturer_model),
+    Migration(21, "ai_suggestion_acceptances", _migration_021_ai_suggestion_acceptances),
+    Migration(22, "templates", _migration_022_templates),
 ]

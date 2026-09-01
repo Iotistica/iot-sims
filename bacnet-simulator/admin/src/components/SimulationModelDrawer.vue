@@ -477,7 +477,7 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
   const aggregateOperation: Record<string, 'max' | 'min' | 'weighted_average'> = {}
   const aggregatePairs: Record<string, Array<{ value?: number; weight?: number }>> = {}
   for (const m of saved.mappings) {
-    // Same "point_ids" (plural) vs "point_id" discriminator model_runtime.
+    // Same "point_ids" (plural) vs "point_id" discriminator models.runtime.
     // _is_aggregate_row uses server-side -- keeps both ends of the contract
     // lexically matched.
     if ('point_ids' in m) {
@@ -601,6 +601,13 @@ async function load() {
     resetForProvider('builtin')
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Failed to load simulation model catalog')
+    // providers.value/catalog.value are already [] here (the failed Promise.all
+    // never assigned them), so the Provider select has zero options to pick a
+    // label from -- left at its literal 'fmu' default, Ant's Select renders
+    // that raw string instead of a blank field. Clear it explicitly so a
+    // failed/unreachable catalog load reads as empty, not as a phantom
+    // "fmu" selection nothing backs.
+    form.provider_type = '' as SimulationProviderType
   } finally {
     loading.value = false
   }

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.simulation.mapping_ai_suggestions import AiMappingSuggestion
+from src.simulation.mapping.ai_suggestions import AiMappingSuggestion
 
 # Real catalog GUID for the remote runtime's SimpleVAVZone model -- these
 # tests reach the actual FMU runtime (see get_runtime_settings's
@@ -128,7 +128,7 @@ def test_mapping_suggestion_ai_success_uses_relationship_aware_shortlist(client,
         captured["relationship_context"] = kwargs["relationship_context"]
         return AiMappingSuggestion(point_id=ahu_sat["id"], confidence="high", reason="Matches upstream AHU SAT.")
 
-    with patch("src.api.routers.simulation.AzureStructuredClient") as mock_client_cls, \
+    with patch("src.api.routers.simulation.build_llm_client") as mock_client_cls, \
          patch("src.api.routers.simulation.suggest_point_for_variable_via_ai", side_effect=_fake_suggest):
         mock_client_cls.return_value = object()
         resp = client.post("/simulation/models/mapping-suggestions/ai", json={
@@ -150,7 +150,7 @@ def test_mapping_suggestion_ai_rejects_out_of_shortlist_point(client, database):
     def _fake_suggest(client_arg, **kwargs):
         return AiMappingSuggestion(point_id=999999, confidence="high", reason="Hallucinated point.")
 
-    with patch("src.api.routers.simulation.AzureStructuredClient") as mock_client_cls, \
+    with patch("src.api.routers.simulation.build_llm_client") as mock_client_cls, \
          patch("src.api.routers.simulation.suggest_point_for_variable_via_ai", side_effect=_fake_suggest):
         mock_client_cls.return_value = object()
         resp = client.post("/simulation/models/mapping-suggestions/ai", json={
@@ -166,7 +166,7 @@ def test_mapping_suggestion_ai_rejects_out_of_shortlist_point(client, database):
 def test_mapping_suggestion_ai_azure_failure_returns_502(client, database):
     ahu, ahu_sat, vav = _make_ahu_vav_topology(client, database)
 
-    with patch("src.api.routers.simulation.AzureStructuredClient", side_effect=RuntimeError("no config")):
+    with patch("src.api.routers.simulation.build_llm_client", side_effect=RuntimeError("no config")):
         resp = client.post("/simulation/models/mapping-suggestions/ai", json={
             "model_type": "simple_vav_zone_fmu", "variable": "supply_air_temp_c", "created_from_device_id": vav["id"],
         })
@@ -187,7 +187,7 @@ def test_mapping_suggestion_ai_without_topology_still_returns_valid_shortlist(cl
         captured["candidates"] = kwargs["candidates"]
         return AiMappingSuggestion(point_id=local_sat["id"], confidence="medium", reason="Only point available.")
 
-    with patch("src.api.routers.simulation.AzureStructuredClient") as mock_client_cls, \
+    with patch("src.api.routers.simulation.build_llm_client") as mock_client_cls, \
          patch("src.api.routers.simulation.suggest_point_for_variable_via_ai", side_effect=_fake_suggest):
         mock_client_cls.return_value = object()
         resp = client.post("/simulation/models/mapping-suggestions/ai", json={

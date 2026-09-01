@@ -21,8 +21,8 @@ from __future__ import annotations
 import pytest
 
 from src.api.routers import simulation as simulation_router
-from src.simulation import model_runtime
-from src.simulation.model_store import get_simulation_model
+from src.simulation.models import runtime as model_runtime
+from src.simulation.models.store import get_simulation_model
 from src.simulation.models.remote_catalog import normalize_remote_model_id
 from src.simulation.models.registry import ModelDefinition, VariableDefinition
 from src.simulation.providers import (
@@ -704,7 +704,7 @@ def test_list_objects_reports_exposure_owner_for_exposure_point(client, database
     # than the literal "RTU": ensure_simulation_model_schema's backfill
     # migration rewrites any legacy/pre-GUID model_type to the catalog's
     # current id the moment it's next touched (see
-    # model_store.py::_backfill_legacy_model_type_ids), so the persisted
+    # models/store.py::_backfill_legacy_model_type_ids), so the persisted
     # row genuinely holds the current catalog id, not the string this
     # test's payload happened to submit.
     current_model_type = normalize_remote_model_id("RTU")

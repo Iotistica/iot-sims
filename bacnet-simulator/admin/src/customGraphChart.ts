@@ -56,7 +56,10 @@ export function buildChartOptionsBase(isDark: boolean) {
     scales: {
       x: {
         type: 'linear' as const,
-        ticks: { color: textColor, callback: (v: number) => new Date(v).toLocaleTimeString() },
+        // chart.js types this callback's tick value as string | number regardless of scale
+        // type -- our x axis is always numeric (epoch ms, `type: 'linear'` above), so the
+        // string case is defensive only, never actually hit.
+        ticks: { color: textColor, callback: (v: string | number) => new Date(typeof v === 'string' ? Number(v) : v).toLocaleTimeString() },
         grid: { color: gridColor },
       },
       y: { ticks: { color: textColor }, grid: { color: gridColor } },

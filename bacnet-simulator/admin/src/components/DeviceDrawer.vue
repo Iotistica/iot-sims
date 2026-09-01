@@ -6,7 +6,7 @@ import { api } from '../api'
 import type { SimulationProviderCatalogEntry, SimulationProviderType } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
 import { nextFreeInstance } from '../deviceInstance'
-import type { Device, Meta, Location, Equipment } from '../types'
+import type { Device, Meta, Location, Equipment, Template } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -21,13 +21,30 @@ const props = defineProps<{
    * location row's contextual "+" action) -- ignored when editing an
    * existing device. */
   defaultLocationId?: number | null
+  /** Set when opened from an Equipment panel's "Assign Controller" action
+   * with no controller yet available to assign -- both Location and
+   * Controls are already fully determined in that case (this equipment's
+   * own location; controls this equipment), so the form hides those two
+   * fields entirely and wires them up silently on save, rather than asking
+   * the user to re-state facts the flow already knows. Ignored when editing
+   * an existing device. */
+  lockedEquipmentId?: number | null
 }>()
 const emit = defineEmits<{
   'update:open': [v: boolean]
-  saved: []
+  /** deviceId is the created/updated device's id -- omitted after a delete
+   * (nothing left to focus). Lets a caller like App.vue's
+   * openAddControllerForEquipment flow switch focus to the device that was
+   * actually just created, instead of leaving selection wherever it was. */
+  saved: [deviceId?: number]
   'draft-saved': [data: Record<string, any>]
   'simulation-model': [device: Device]
 }>()
+
+// Single source of truth for a new device's default Vendor/Model -- also
+// reused in the fresh-add reset below, so there's one place to change them.
+const DEFAULT_VENDOR_NAME = 'Vendor'
+const DEFAULT_MODEL_NAME = 'Model'
 
 const loading = ref(false)
 const deleting = ref(false)
@@ -35,8 +52,8 @@ const form = reactive({
   device_instance: 1001,
   name: '',
   description: '',
-  vendor_name: 'Iotistica',
-  model_name: 'BACnet Simulator',
+  vendor_name: DEFAULT_VENDOR_NAME,
+  model_name: DEFAULT_MODEL_NAME,
   enabled: true,
   firmware_revision: 'N/A',
   protocol_revision: 22,
@@ -217,6 +234,40 @@ const edeFile = ref<File | null>(null)
 const edeFileName = ref('')
 const edeFileInput = ref<HTMLInputElement>()
 
+// ── From Template (only offered when adding a new, non-draft device) ──────────
+// Populating a fresh controller's starting objects from a template, folded
+// into creation itself instead of a separate step afterward (previously
+// only reachable from ObjectsPanel.vue's own "From Template", which needs a
+// real deviceId to apply against -- doesn't exist yet here, so the chosen
+// template's objects are only actually created in save()'s create branch,
+// once deviceId is known).
+const allTemplates = ref<Template[]>([])
+const chosenTemplateId = ref<number | null>(null)
+
+// Known only when opened from an Equipment panel's "Add Controller" action
+// (see lockedEquipmentId doc above) -- narrows the picker to templates
+// tagged for this equipment's own type; falls back to every template
+// (built-in + user, tagged or not) when the type isn't known, matching
+// ObjectsPanel's own From Template picker's default (nothing filtered).
+const lockedEquipmentType = computed(() => {
+  if (props.lockedEquipmentId == null) return null
+  return props.equipment?.find(e => e.id === props.lockedEquipmentId)?.equipment_type ?? null
+})
+
+const templateOptions = computed(() => {
+  const type = lockedEquipmentType.value
+  const matching = type ? allTemplates.value.filter(t => t.equipment_types?.includes(type)) : allTemplates.value
+  return matching.map(t => ({ value: t.id, label: t.label }))
+})
+
+async function loadTemplates() {
+  try {
+    allTemplates.value = await api.templates.list()
+  } catch {
+    allTemplates.value = []
+  }
+}
+
 function onEdeFileChange(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   ;(e.target as HTMLInputElement).value = ''
@@ -366,6 +417,8 @@ watch(() => props.open, (v) => {
   loadSimulationProviderState()
   edeFile.value = null
   edeFileName.value = ''
+  chosenTemplateId.value = null
+  loadTemplates()
   const src = props.draftMode ? props.draftDevice : props.device
   if (src) {
     Object.assign(form, {
@@ -384,13 +437,36 @@ watch(() => props.open, (v) => {
       can_receive_event_notifications: src.can_receive_event_notifications ?? null,
     })
   } else {
+    // Opened pre-wired to an equipment (see lockedEquipmentId doc above) -- both the
+    // equipment's own name and its location are already known facts at this point, so
+    // suggest a real Name/Description instead of making the user restate them from the
+    // generic placeholder examples.
+    const lockedEquipment = props.lockedEquipmentId != null
+      ? props.equipment?.find(e => e.id === props.lockedEquipmentId)
+      : null
+    const lockedLocationName = lockedEquipment?.location_id != null
+      ? props.locations?.find(l => l.id === lockedEquipment.location_id)?.name
+      : null
     Object.assign(form, {
-      device_instance: nextFreeInstance(props.existingInstances ?? []), name: '', description: '', vendor_name: 'Iotistica', model_name: 'BACnet Simulator', enabled: true,
+      device_instance: nextFreeInstance(props.existingInstances ?? []),
+      name: lockedEquipment ? `${lockedEquipment.name} Controller` : '',
+      description: lockedLocationName ? `${lockedLocationName} BACnet router` : '',
+      vendor_name: DEFAULT_VENDOR_NAME, model_name: DEFAULT_MODEL_NAME, enabled: true,
       firmware_revision: 'N/A', protocol_revision: 22, max_apdu_length_accepted: 1024, segmentation_supported: 'segmented-both',
       location_id: props.defaultLocationId ?? null,
       equipment_type: null,
       can_receive_event_notifications: null,
     })
+    // loadControls() (called above) already reset controlsEquipmentIds/
+    // initialControlsEquipmentIds to [] synchronously for a fresh Add (it
+    // returns before its first await when !props.device) -- safe to set the
+    // locked target here without it getting clobbered afterward. Keeping
+    // initialControlsEquipmentIds at [] means save()'s syncControlsRelationships
+    // sees this as a genuinely new relationship to create, same as if the
+    // user had picked it in the (now-hidden) Controls field themselves.
+    if (props.lockedEquipmentId != null) {
+      controlsEquipmentIds.value = [props.lockedEquipmentId]
+    }
   }
 })
 
@@ -479,6 +555,28 @@ async function save() {
           message.error(`Device created, but EDE import failed: ${(e as Error).message}`)
         }
       }
+      if (chosenTemplateId.value) {
+        const tpl = allTemplates.value.find(t => t.id === chosenTemplateId.value)
+        if (tpl) {
+          let createdCount = 0
+          for (const obj of tpl.objects) {
+            try {
+              await api.objects.create(deviceId, { ...obj, enabled: 1 })
+              createdCount++
+            } catch {
+              // Skip genuine per-object failures (e.g. a stray conflict with
+              // an EDE-imported object at the same object_type+instance) --
+              // matches TemplatePickerModal.applyTemplate()'s own tolerance,
+              // reported in aggregate below rather than per-object.
+            }
+          }
+          if (createdCount === tpl.objects.length) {
+            message.success(`Applied "${tpl.label}" — ${createdCount} object${createdCount !== 1 ? 's' : ''} created`)
+          } else {
+            message.warning(`Applied "${tpl.label}" — ${createdCount}/${tpl.objects.length} objects created`)
+          }
+        }
+      }
     }
 
     try {
@@ -494,7 +592,7 @@ async function save() {
     }
 
     emit('update:open', false)
-    emit('saved')
+    emit('saved', deviceId)
   } catch (e: unknown) {
     message.error((e as Error).message)
   } finally {
@@ -555,55 +653,6 @@ function doDelete() {
         <a-input v-model:value="form.description" placeholder="3rd floor BACnet router" />
       </a-form-item>
 
-      <a-form-item label="Location">
-        <a-tree-select
-          v-model:value="form.location_id"
-          :tree-data="locationTreeOptions"
-          allow-clear
-          tree-default-expand-all
-          placeholder="Top level"
-          style="width: 100%"
-        />
-      </a-form-item>
-
-      <a-form-item label="Controls" help="Select equipment controlled by this controller.">
-        <a-select
-          v-model:value="controlsEquipmentIds"
-          mode="multiple"
-          show-search
-          allow-clear
-          placeholder="No equipment selected"
-          :options="equipmentOptionGroups"
-          :filter-option="filterOption"
-        />
-      </a-form-item>
-
-
-      <a-form-item v-if="!isExternal && device" label="Simulation Model">
-        <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--surface-alt)">
-          <ExperimentOutlined style="color:#52c41a" />
-          <div style="flex:1;min-width:0">
-            <div style="font-size:12px;font-weight:600">{{ simulationSummary }}</div>
-            <div style="font-size:11px;color:var(--text-muted)">Provider, model, parameters, defaults, and point mappings are configured in Simulation Model.</div>
-          </div>
-          <a-button size="small" @click="emit('simulation-model', device)">Configure</a-button>
-        </div>
-      </a-form-item>
-
-      <a-form-item label="Event Notification Reception">
-        <a-select
-          v-model:value="form.can_receive_event_notifications"
-          :options="[
-            { value: null, label: `Auto (${inferredCanReceiveEvents ? 'can' : 'cannot'} receive, based on Equipment Type)` },
-            { value: true, label: 'Yes — can receive Event Notifications' },
-            { value: false, label: 'No — cannot receive Event Notifications' },
-          ]"
-        />
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
-          Real BACnet devices vary here (e.g. field controllers often can't receive alarms the way an operator workstation can) — this decides whether this device shows up as a viable Notification Class recipient.
-        </div>
-      </a-form-item>
-
       <a-row :gutter="12">
         <a-col :span="12">
           <a-form-item label="Manufacturer">
@@ -642,6 +691,20 @@ function doDelete() {
         </a-col>
       </a-row>
 
+      <a-form-item
+        v-if="!device && !draftMode"
+        label="From Template"
+        :help="lockedEquipmentType && !templateOptions.length ? `No templates tagged for ${lockedEquipmentType} yet` : undefined"
+      >
+        <a-select
+          v-model:value="chosenTemplateId"
+          allow-clear
+          show-search
+          placeholder="No template"
+          :options="templateOptions"
+        />
+      </a-form-item>
+
       <div
         v-if="selectedModel && (selectedModel.typeLabel || selectedModel.pics_url || selectedModelObjectTypes.length)"
         style="background:var(--surface-alt);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:16px;font-size:12px"
@@ -663,6 +726,55 @@ function doDelete() {
           PICS parsing note: {{ selectedModel.pics_error }}
         </div>
       </div>
+
+      <a-form-item v-if="!lockedEquipmentId" label="Location">
+        <a-tree-select
+          v-model:value="form.location_id"
+          :tree-data="locationTreeOptions"
+          allow-clear
+          tree-default-expand-all
+          placeholder="Top level"
+          style="width: 100%"
+        />
+      </a-form-item>
+
+      <a-form-item v-if="!lockedEquipmentId" label="Controls" help="Select equipment controlled by this controller.">
+        <a-select
+          v-model:value="controlsEquipmentIds"
+          mode="multiple"
+          show-search
+          allow-clear
+          placeholder="No equipment selected"
+          :options="equipmentOptionGroups"
+          :filter-option="filterOption"
+        />
+      </a-form-item>
+
+
+      <a-form-item v-if="!isExternal && device" label="Simulation Model">
+        <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--surface-alt)">
+          <ExperimentOutlined style="color:#52c41a" />
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:600">{{ simulationSummary }}</div>
+            <div style="font-size:11px;color:var(--text-muted)">Provider, model, parameters, defaults, and point mappings are configured in Simulation Model.</div>
+          </div>
+          <a-button size="small" @click="emit('simulation-model', device)">Configure</a-button>
+        </div>
+      </a-form-item>
+
+      <a-form-item label="Event Notification Reception">
+        <a-select
+          v-model:value="form.can_receive_event_notifications"
+          :options="[
+            { value: null, label: `Auto (${inferredCanReceiveEvents ? 'can' : 'cannot'} receive, based on Equipment Type)` },
+            { value: true, label: 'Yes — can receive Event Notifications' },
+            { value: false, label: 'No — cannot receive Event Notifications' },
+          ]"
+        />
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+          Real BACnet devices vary here (e.g. field controllers often can't receive alarms the way an operator workstation can) — this decides whether this device shows up as a viable Notification Class recipient.
+        </div>
+      </a-form-item>
 
       <a-collapse v-if="!isExternal" ghost style="margin-top:16px">
         <a-collapse-panel key="device-info" header="BACnet Device Info (advanced)">
