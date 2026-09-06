@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-30",
+  "updated": "2026-09-06",
   "source": "BACnet International BTL Database",
   "url": "https://www.bacnetinternational.net/btl/",
   "vendors": [
@@ -1150,6 +1150,17 @@
           "pics_url": "https://www.bacnetinternational.net/catalog/manu/automated logic corporation/PICS.pdf",
           "listing_url": "https://www.bacnetinternational.net/btl/listings/automated logic corporation/BTL_Listing_31606_AutomatedLogic_TS8-WSPF.pdf",
           "certificate_url": "https://www.bacnetinternational.net/catalog/manu/automated logic corporation/BTL_Cert_31606_AutomatedLogic_TS8-WSPF.pdf",
+          "object_types": {
+            "Device": true
+          }
+        },
+        {
+          "name": "BACnet Router",
+          "type": "B-RTR",
+          "typeLabel": "Router",
+          "pics_url": "https://www.bacnetinternational.net/catalog/manu/automated logic corporation/PICS_ofrtr-e2-s2_pics.pdf",
+          "listing_url": "https://www.bacnetinternational.net/btl/listings/automated logic corporation/BTL_Listing_31537_AutomatedLogic_OFRTRE2S2.pdf",
+          "certificate_url": "https://www.bacnetinternational.net/catalog/manu/automated logic corporation/BTL_Cert_31537_AutomatedLogic_OFRTRE2S2.pdf",
           "object_types": {
             "Device": true
           }
