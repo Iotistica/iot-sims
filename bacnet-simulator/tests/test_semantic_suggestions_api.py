@@ -10,7 +10,7 @@ import pytest
 
 
 def _create_simulated_ahu(client):
-    device = client.post("/devices", json={"device_instance": 1003, "name": "AHU-1"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 1003, "name": "AHU-1"}).json()
     sat = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "SAT", "units": "degrees-celsius",
     }).json()
@@ -23,7 +23,7 @@ def _create_simulated_ahu(client):
 @pytest.fixture
 def external_ahu(database):
     devices = database.sync_external_devices([
-        {"device_instance": 1003, "name": "AHU_1_1003", "host": "172.22.0.21", "port": 47808,
+        {"protocol": "bacnet", "device_instance": 1003, "name": "AHU_1_1003", "host": "172.22.0.21", "port": 47808,
          "metadata": {"objectName": "AHU_1_1003"}},
     ])
     device_id = devices[0]["id"]
@@ -59,7 +59,7 @@ def test_suggest_causes_zero_db_mutation(client, database):
 def test_existing_classification_is_reported_not_overwritten(client, database):
     device, points = _create_simulated_ahu(client)
     client.put(f"/devices/{device['id']}", json={
-        "device_instance": 1003, "name": "AHU-1", "equipment_type": "Boiler",
+        "protocol": "bacnet", "device_instance": 1003, "name": "AHU-1", "equipment_type": "Boiler",
     })
 
     resp = client.post(f"/devices/{device['id']}/semantic-suggestions")
@@ -122,7 +122,7 @@ def test_external_device_equipment_type_apply_still_works(client, database, exte
     field."""
     existing = database.get_device(external_ahu["device_id"])
     resp = client.put(f"/devices/{external_ahu['device_id']}", json={
-        "device_instance": existing["device_instance"], "name": existing["name"],
+        "protocol": "bacnet", "device_instance": existing["device_instance"], "name": existing["name"],
         "description": existing["description"], "vendor_name": existing["vendor_name"],
         "model_name": existing["model_name"], "enabled": existing["enabled"],
         "firmware_revision": existing["firmware_revision"], "protocol_revision": existing["protocol_revision"],

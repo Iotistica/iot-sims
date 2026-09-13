@@ -14,7 +14,8 @@ from urllib.error import HTTPError
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ...core.config import BINARY_TYPES, MULTISTATE_TYPES
+from ...core.config import BACNET_UNITS, BINARY_TYPES, MULTISTATE_TYPES
+from ..guards import reject_external_device
 from ...integrations.llm import build_llm_client
 from ...simulation.mapping.ai_suggestions import suggest_point_for_variable_via_ai
 from ...simulation.mapping.conversions import CONVERSIONS
@@ -202,7 +203,7 @@ class SimulationModelInputExposurePayload(BaseModel):
 
 class SimulationModelPayload(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    provider_type: Literal["fmu", "ai"] = "fmu"
+    provider_type: Literal["fmu", "ai", "classifier"] = "fmu"
     model_type: str = Field(min_length=1)
     enabled: bool = True
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -273,7 +274,7 @@ def _runtime_definition(database: Any, model_type: str):
 
 class MappingSuggestionsRequest(BaseModel):
     model_type: str = Field(min_length=1)
-    provider_type: Literal["fmu", "ai"] = "fmu"
+    provider_type: Literal["fmu", "ai", "classifier"] = "fmu"
     created_from_device_id: int | None = None
     current_model_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -294,6 +295,18 @@ class VariableCandidatesRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=200)
 
 
+class ScaffoldPointsRequest(BaseModel):
+    """Create-the-missing-points request for the Simulation Model drawer's
+    'Create points for outputs' checkbox -- one BACnet object per declared
+    model variable in `directions` that has no same-named point yet."""
+
+    model_type: str = Field(min_length=1)
+    created_from_device_id: int
+    directions: list[Literal["input", "output"]] = Field(
+        default_factory=lambda: ["output"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
@@ -312,7 +325,7 @@ def _mapping_dicts(
         }
         for mapping in payload.mappings
         if not (
-            payload.provider_type == "fmu"
+            payload.provider_type in ("fmu", "ai", "classifier")
             and mapping.direction == "input"
             and input_sources.get(mapping.variable) in ("constant", "aggregate")
         )
@@ -326,7 +339,7 @@ def _aggregate_mapping_dicts(
     payload.aggregate_mappings, filtered to variables input_sources
     currently marks "aggregate" (same filter-at-serialization-boundary
     philosophy as the constant/point split above)."""
-    if payload.provider_type != "fmu":
+    if payload.provider_type not in ("fmu", "ai", "classifier"):
         return []
     parameters = payload.parameters if isinstance(payload.parameters, dict) else {}
     input_sources = parameters.get("input_sources") or {}
@@ -348,7 +361,7 @@ def _aggregate_mapping_dicts(
 def _input_exposure_dicts(
     payload: SimulationModelPayload,
 ) -> list[dict[str, Any]]:
-    if payload.provider_type != "fmu":
+    if payload.provider_type not in ("fmu", "ai", "classifier"):
         return []
     return [
         {"variable": exposure.variable, "point_id": exposure.point_id}
@@ -361,7 +374,7 @@ def _normalized_parameters(
     payload: SimulationModelPayload,
 ) -> dict[str, Any]:
     parameters = dict(payload.parameters or {})
-    if payload.provider_type != "fmu":
+    if payload.provider_type not in ("fmu", "ai", "classifier"):
         parameters.pop("input_sources", None)
         return parameters
 
@@ -376,7 +389,7 @@ def _normalized_parameters(
     if raw_sources is not None and not isinstance(raw_sources, dict):
         raise HTTPException(
             status_code=422,
-            detail="FMU input_sources parameter must be an object",
+            detail="input_sources parameter must be an object",
         )
 
     mapped_inputs = {
@@ -394,7 +407,7 @@ def _normalized_parameters(
             if explicit_source not in ("constant", "point", "aggregate"):
                 raise HTTPException(
                     status_code=422,
-                    detail=f"Invalid FMU input source for {name!r}: {explicit_source!r}",
+                    detail=f"Invalid input source for {name!r}: {explicit_source!r}",
                 )
             input_sources[name] = str(explicit_source)
         elif name in input_defaults and name not in mapped_inputs and name not in aggregate_mapped_inputs:
@@ -412,11 +425,24 @@ def _normalized_parameters(
 
     parameters["input_sources"] = input_sources
     parameters["input_defaults"] = {
-        name: value
+        name: _coerce_constant_default(value)
         for name, value in input_defaults.items()
         if input_sources.get(name) == "constant"
     }
     return parameters
+
+
+def _coerce_constant_default(value: Any) -> Any:
+    """A boolean FMI input (model.json unit "boolean") can arrive as a real
+    bool -- from the catalog `default` fallback above or a hand-crafted
+    payload. iot-models' /initialize + /step take dict[str, float], so map
+    True/False -> 1.0/0.0 here; anything else passes through untouched
+    (a null is handled downstream in the provider)."""
+    if value is True:
+        return 1.0
+    if value is False:
+        return 0.0
+    return value
 
 
 def _format_point_label(point: dict[str, Any], device: dict[str, Any]) -> str:
@@ -537,6 +563,65 @@ def _format_variable_label(variable: Any) -> str:
     return f"{direction}:{name}"
 
 
+# model.json unit spellings -> the closest name in BACNET_UNITS. Anything
+# absent here (or a None/"1"/"boolean"/"g/kWh"-style unit with no BACnet
+# equivalent) falls back to "no-units" -- the scaffolded point still shows
+# its live value, just without a unit label the user can refine later.
+_MODEL_UNIT_TO_BACNET: dict[str, str] = {
+    "degc": "degrees-celsius", "°c": "degrees-celsius",
+    "degf": "degrees-fahrenheit", "°f": "degrees-fahrenheit",
+    "k": "degrees-kelvin", "degk": "degrees-kelvin",
+    "%": "percent", "ppm": "parts-per-million",
+    "kw": "kilowatts", "w": "watts",
+    "kwh": "kilowatt-hours", "wh": "watt-hours", "w.h": "watt-hours",
+    "a": "amperes", "v": "volts", "hz": "hertz",
+    "rpm": "revolutions-per-minute",
+    "n.m": "newton-meters", "nm": "newton-meters",
+    "kg/s": "kilograms-per-second",
+    "l/h": "liters-per-hour", "l/s": "liters-per-second",
+    "m3/s": "cubic-meters-per-second", "m3/h": "cubic-meters-per-hour",
+    "cfm": "cubic-feet-per-minute",
+    "pa": "pascals", "kpa": "kilopascals", "bar": "bars",
+    "m/s": "meters-per-second", "lx": "luxes",
+    "kva": "kilovolt-amperes", "va": "volt-amperes",
+    "kvar": "kilovolt-amperes-reactive", "var": "volt-amperes-reactive",
+    "w/m2": "watts-per-square-meter",
+    "s": "seconds", "h": "hours", "j/k": "joules-per-degree-kelvin",
+}
+
+
+def _bacnet_unit_for(unit: str | None) -> str:
+    """Best-effort model-unit -> BACNET_UNITS name; 'no-units' when unknown."""
+    if not unit:
+        return "no-units"
+    raw = str(unit).strip()
+    if raw in BACNET_UNITS:
+        return raw
+    return _MODEL_UNIT_TO_BACNET.get(raw.lower(), "no-units")
+
+
+def _scaffold_object_type(variable: Any) -> str:
+    """binary-value for a boolean / status signal, analog-value otherwise
+    (multi-state class outputs are out of scope -- FMU regression/plain
+    models only)."""
+    unit = str(getattr(variable, "unit", None) or "").strip().lower()
+    role = getattr(getattr(variable, "semantic", None), "role", None)
+    if unit == "boolean" or role == "status":
+        return "binary-value"
+    return "analog-value"
+
+
+def _unique_object_name(base: str, taken: set[str]) -> str:
+    name = (base or "point").strip()[:100] or "point"
+    if name.lower() not in taken:
+        return name
+    for i in range(2, 1000):
+        cand = f"{name[:96]} {i}"
+        if cand.lower() not in taken:
+            return cand
+    return name
+
+
 def _validate_parameters(
     database: Any,
     payload: SimulationModelPayload,
@@ -553,6 +638,10 @@ def _validate_parameters(
         )
 
     if payload.provider_type == "fmu":
+        # ONNX/AI models have no "runtime_model" concept at all (they're
+        # addressed by onnx_path instead) -- this check stays FMU-only,
+        # deliberately not widened alongside the input_defaults/input_sources
+        # shape checks below.
         if not str(getattr(definition, "runtime_model", None) or "").strip():
             raise HTTPException(
                 status_code=422,
@@ -561,17 +650,33 @@ def _validate_parameters(
                     f"{payload.model_type!r}"
                 ),
             )
+
+    if payload.provider_type in ("fmu", "ai", "classifier"):
         input_defaults = payload.parameters.get("input_defaults", {})
         if input_defaults is not None and not isinstance(input_defaults, dict):
             raise HTTPException(
                 status_code=422,
-                detail="FMU input_defaults parameter must be an object",
+                detail="input_defaults parameter must be an object",
             )
         input_sources = payload.parameters.get("input_sources", {})
         if input_sources is not None and not isinstance(input_sources, dict):
             raise HTTPException(
                 status_code=422,
-                detail="FMU input_sources parameter must be an object",
+                detail="input_sources parameter must be an object",
+            )
+        # Applied calibration results (see CalibrationFlow.vue's "Apply to
+        # Model" button) -- FMI causality="parameter" Real overrides,
+        # forwarded to the FMU runtime as real_parameters (see
+        # _build_fmu_provider). Shape-only check, same as input_defaults/
+        # input_sources above: value-level validation (unknown tuner names)
+        # happens server-side in iot-models' _apply_real_parameters, which
+        # already silently ignores anything not a declared calibration
+        # tuner for this model.
+        parameter_overrides = payload.parameters.get("parameter_overrides", {})
+        if parameter_overrides is not None and not isinstance(parameter_overrides, dict):
+            raise HTTPException(
+                status_code=422,
+                detail="parameter_overrides parameter must be an object",
             )
 
 
@@ -581,12 +686,15 @@ def _validate_mapping_contract(
     *,
     model_id: int | None = None,
 ) -> None:
-    if payload.provider_type == "ai":
-        # AI-backed models use plain point mapping only (see the plan's v1
-        # scope decision) -- the validation below is specifically about
-        # FMU's aggregate/constant/point input-sourcing complexity, which
-        # doesn't apply here.
-        return
+    # AI-backed models now go through the exact same contract FMU-backed
+    # ones do -- self-loop prevention, output-ownership, aggregate-source
+    # validation, input-exposure validation, and the required-input check
+    # below (including its constant-sourcing discharge) all apply equally
+    # to both provider types; there is no AI-specific narrow path any more
+    # (see the plan this change accompanies for why the earlier narrow
+    # _validate_ai_required_inputs became redundant once AI adopted real
+    # constant/aggregate input sourcing through the same _normalized_
+    # parameters()/`_mapping_dicts()` path FMU already used).
 
     # A variable declared in BOTH raw lists is a structural conflict, not
     # the harmless single-list staleness the constant/point filters above
@@ -925,10 +1033,19 @@ def _validate_mapping_contract(
         for variable in definition.variables
         if variable.required
     }
-    if payload.provider_type == "fmu":
+    if payload.provider_type in ("fmu", "ai", "classifier"):
+        # A required input is only genuinely satisfied by a constant when
+        # there's a real, usable value -- not merely a key present in
+        # input_defaults. _normalized_parameters' own fallback (an
+        # unmapped input with no catalog default still gets recorded as
+        # "constant" sourced, backfilled from getattr(variable, "default",
+        # None)) can leave a `None` entry here for a variable that has no
+        # real default at all; discharging on key-membership alone would
+        # silently accept that as "satisfied" even though it would still
+        # fail at runtime the exact same way an unmapped one would.
         input_defaults = payload.parameters.get("input_defaults") or {}
         for variable in definition.variables:
-            if variable.direction == "input" and variable.name in input_defaults:
+            if variable.direction == "input" and input_defaults.get(variable.name) is not None:
                 required.discard((variable.name, variable.direction))
     missing = sorted(required - seen)
 
@@ -1141,7 +1258,7 @@ async def simulation_model_catalog(request: Request):
 # Resource upload - relays to the FMU runtime's generic /resources endpoint
 # (shared/runtime/resources/ in iot-models), for any catalog model's
 # "is_file" string parameter (see remote_catalog.py's
-# _string_parameter_definition). Not scoped to weather or any one model.
+# _parameter_definition). Not scoped to weather or any one model.
 #
 # One exception to "generic, no domain logic": a .epw upload is transparently
 # converted to .mos first (see weather/convert.py, LBNL's own converter,
@@ -1299,13 +1416,31 @@ async def _controller_topology_scope(
     /simulation/points/options, so the manual pickers and Auto Map are
     always constrained by the exact same one-hop Controller/`controls`/
     `feeds` scope (see Database.get_controller_topology_point_ids). None
-    (no device id, or the topology can't be resolved for it) means "don't
-    restrict" -- callers pass it straight through unchanged."""
+    (no device id at all) means "don't restrict" -- the caller has no
+    device context to scope by in the first place.
+
+    When a device id IS given but its Brick topology can't be resolved
+    (no Controller role, or it controls no Equipment -- the common case
+    for a device that's never been semantically classified), this used to
+    also return None, which every caller here treats as "don't restrict"
+    -- in practice, every point across the entire project, unrelated
+    equipment included. Confirmed live: an unclassified RTU's own output
+    mapping picker listed points from completely unrelated VAV equipment,
+    with no way to tell they weren't its own. Falls back instead to just
+    this device's own points -- a much smaller, still-useful default that
+    doesn't require Brick classification to be sensible, at the cost of
+    no longer being able to manually pick a point on ANOTHER device until
+    that classification exists (get_controller_topology_point_ids is the
+    intended way to unlock that, not an unscoped picker)."""
     if created_from_device_id is None:
         return None
-    return await asyncio.to_thread(
+    point_ids = await asyncio.to_thread(
         database.get_controller_topology_point_ids, created_from_device_id,
     )
+    if point_ids is not None:
+        return point_ids
+    own_objects = await asyncio.to_thread(database.get_objects, created_from_device_id)
+    return {obj["id"] for obj in own_objects}
 
 
 @router.post("/simulation/models/mapping-suggestions")
@@ -1542,12 +1677,137 @@ async def simulation_point_options(request: Request, device_id: Optional[int] = 
     controller topology around that device (see
     Database.get_controller_topology_point_ids) -- Controller -> controls ->
     Equipment, plus Equipment directly upstream/downstream via `feeds`, plus
-    points on Locations directly fed by that Equipment. Falls back to the
-    full unscoped list (today's behavior) whenever the topology can't be
-    resolved (no Controller role, or it controls no Equipment)."""
+    points on Locations directly fed by that Equipment. Falls back to just
+    this device's own points (see _controller_topology_scope's own
+    docstring) whenever the topology can't be resolved (no Controller
+    role, or it controls no Equipment) -- not the full unscoped project
+    list any more."""
     database = get_database(request)
     point_ids = await _controller_topology_scope(database, device_id)
     return await asyncio.to_thread(_list_simulation_point_options, database, point_ids)
+
+
+@router.post("/simulation/models/scaffold-points")
+async def scaffold_simulation_model_points(
+    payload: ScaffoldPointsRequest,
+    request: Request,
+):
+    """Create one BACnet object on the source controller for each model
+    variable in `directions` (default: outputs only) that has no same-named
+    point yet -- so a freshly-attached model can be mapped and run without
+    hand-adding every output point first.
+
+    Strictly additive: never edits or deletes an existing object, never
+    touches the simulation-model row or its mappings. The caller wires the
+    returned point ids into the drawer's output mappings and Applies.
+    Idempotent by object name -- re-running skips variables whose point
+    already exists."""
+    database = get_database(request)
+    engine = get_engine(request)
+
+    device = database.get_device(payload.created_from_device_id)
+    if device is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Controller/device {payload.created_from_device_id} does not exist",
+        )
+    reject_external_device(device)
+
+    definition = _runtime_definition(database, payload.model_type)
+
+    existing = await asyncio.to_thread(database.get_objects, device["id"])
+    taken_names = {str(obj["name"]).lower() for obj in existing}
+    max_instance: dict[str, int] = {}
+    for obj in existing:
+        otype = obj["object_type"]
+        max_instance[otype] = max(
+            max_instance.get(otype, 0), int(obj["object_instance"])
+        )
+
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for variable in definition.variables:
+        if variable.direction not in payload.directions:
+            continue
+        label = getattr(variable, "label", None) or variable.name
+        if str(label).lower() in taken_names:
+            skipped.append({
+                "variable": variable.name,
+                "direction": variable.direction,
+                "reason": "a point with this name already exists",
+            })
+            continue
+
+        object_type = _scaffold_object_type(variable)
+        name = _unique_object_name(str(label), taken_names)
+        max_instance[object_type] = max_instance.get(object_type, 0) + 1
+        row = {
+            "object_type": object_type,
+            "object_instance": max_instance[object_type],
+            "name": name,
+            "units": (
+                _bacnet_unit_for(getattr(variable, "unit", None))
+                if object_type == "analog-value"
+                else "no-units"
+            ),
+            # "constant" -- the same default every other object-creation path
+            # uses (ObjectCreate.behavior) -- not "raw": this point isn't
+            # actually mapped to a model output yet (that's a separate,
+            # skippable Auto Map + Apply step), and "raw" is only ever
+            # supposed to mean "genuinely provider-owned right now." Once
+            # mapped, reconcile_provider_owned_raw_behavior() (store.py)
+            # promotes it to "raw" automatically on the next boot -- see that
+            # function's own docstring and its mirror-image sibling
+            # reconcile_unowned_raw_behavior(), which is what fixes a point
+            # that never ends up mapped back to "constant" if it was ever
+            # left at "raw" for some other reason.
+            "behavior": "constant",
+            "behavior_params": '{"value":0}',
+            "enabled": 1,
+            "number_of_states": 2,
+            "reliability": "no-fault-detected",
+            "polarity": "normal",
+            "point_type": None,
+            "state_text": None,
+        }
+        try:
+            obj = await asyncio.to_thread(database.create_object, device["id"], row)
+        except sqlite3.IntegrityError:
+            max_instance[object_type] -= 1
+            skipped.append({
+                "variable": variable.name,
+                "direction": variable.direction,
+                "reason": "object identifier collision",
+            })
+            continue
+
+        taken_names.add(name.lower())
+        if device["enabled"] and obj["enabled"]:
+            asyncio.create_task(
+                engine.add_object_hot(device["device_instance"], obj)
+            )
+        log_event(
+            request,
+            device["id"],
+            "info",
+            (
+                f"Point scaffolded for model {payload.model_type}: "
+                f"{name} ({object_type}:{obj['object_instance']})"
+            ),
+        )
+        created.append({
+            "variable": variable.name,
+            "direction": variable.direction,
+            "point_id": int(obj["id"]),
+            "name": obj["name"],
+            "object_type": obj["object_type"],
+            "object_instance": obj["object_instance"],
+            "units": obj["units"],
+            "device_id": device["id"],
+            "device_name": device["name"],
+        })
+
+    return {"created": created, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------
@@ -1961,6 +2221,27 @@ async def remove_simulation_model(
     }
 
 
+@router.get("/simulation/models/{model_id}/runtime")
+async def get_simulation_model_runtime(model_id: int, request: Request):
+    """Read-only snapshot of this model's live provider status (including
+    locally_paused) -- unlike the actions below, this has no side effects,
+    so the Simulation Model drawer can poll/display current status without
+    accidentally reloading or resuming anything just by looking at it."""
+    database = get_database(request)
+    engine = get_engine(request)
+
+    model = await asyncio.to_thread(get_simulation_model, database, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Simulation model not found")
+
+    runtime_id = provider_runtime_id(model)
+    return {
+        "model_id": model_id,
+        "runtime_id": runtime_id,
+        "runtime": engine.get_simulation_providers().get(runtime_id),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Explicit runtime actions
 # ---------------------------------------------------------------------------
@@ -2002,6 +2283,89 @@ async def reload_simulation_model(
         "runtime_id": runtime_id,
         "runtime": engine.get_simulation_providers().get(runtime_id),
     }
+
+
+async def _per_provider_action(
+    model_id: int, request: Request, action: Callable[[Any, str], bool],
+) -> dict[str, Any]:
+    """Shared shape for the per-device pause/resume/reset routes below --
+    same 404-on-missing-model + provider_runtime_id lookup + response shape
+    as /reload above, just dispatching to one of SimEngine's own
+    pause_provider/resume_provider/reset_provider instead of a full
+    reload. 404s a second way too: `action` itself returns False when the
+    model exists in the DB but has no live provider registered right now
+    (e.g. currently disabled) -- there's nothing to pause/resume/reset."""
+    database = get_database(request)
+    engine = get_engine(request)
+
+    model = await asyncio.to_thread(get_simulation_model, database, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Simulation model not found")
+
+    runtime_id = provider_runtime_id(model)
+    ok = await asyncio.to_thread(action, engine, runtime_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail="Simulation model has no live provider registered (is it disabled?)",
+        )
+
+    return {
+        "ok": True,
+        "model_id": model_id,
+        "runtime_id": runtime_id,
+        "runtime": engine.get_simulation_providers().get(runtime_id),
+    }
+
+
+@router.post("/simulation/models/{model_id}/pause")
+async def pause_simulation_model(model_id: int, request: Request):
+    """Freeze just this one device's model in place -- everything else
+    (other devices' models, builtin, the global clock) keeps running
+    normally. Distinct from the global POST /sim/pause, and from
+    Enable/Disable (POST .../enabled), which fully unregisters/re-
+    registers the provider rather than freezing an already-registered one
+    in place."""
+    return await _per_provider_action(model_id, request, lambda e, rid: e.pause_provider(rid))
+
+
+@router.post("/simulation/models/{model_id}/resume")
+async def resume_simulation_model(model_id: int, request: Request):
+    """Explicitly resume a model paused via the route above. If the global
+    simulation clock isn't running, this still flips the provider's own
+    status, but nothing actually steps again until a global Start -- same
+    as everything else in this simulator (see SimEngine.tick's own
+    clock_state gate)."""
+    return await _per_provider_action(model_id, request, lambda e, rid: e.resume_provider(rid))
+
+
+@router.post("/simulation/models/{model_id}/reset")
+async def reset_simulation_model(model_id: int, request: Request):
+    """Reset just this one device's model (real FMU-session terminate +
+    re-initialize) -- also clears any local-pause state, since a reset
+    model comes back running."""
+    return await _per_provider_action(model_id, request, lambda e, rid: e.reset_provider(rid))
+
+
+class SetProviderRealTimeFactorPayload(BaseModel):
+    target: float
+
+
+@router.post("/simulation/models/{model_id}/rtf")
+async def set_simulation_model_real_time_factor(
+    model_id: int, payload: SetProviderRealTimeFactorPayload, request: Request,
+):
+    """How much simulated time this one device's model advances per shared
+    wall-clock tick, relative to every other model (>1 = faster, <1 =
+    slower) -- see SimEngine.set_provider_real_time_factor's own docstring
+    for why this is numerically safe for every catalog model except
+    EnergyPlusThermalZone (accepted, documented limitation, not enforced
+    here)."""
+    if payload.target <= 0:
+        raise HTTPException(status_code=400, detail="target must be greater than 0")
+    return await _per_provider_action(
+        model_id, request, lambda e, rid: e.set_provider_real_time_factor(rid, payload.target),
+    )
 
 
 @router.post("/simulation/models/reconcile")

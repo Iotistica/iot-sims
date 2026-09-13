@@ -18,6 +18,7 @@ import {
   PauseOutlined,
   ReloadOutlined,
 } from '@ant-design/icons-vue'
+import { protocolDetailRenderers } from './network/protocolDetailRenderers'
 import { api } from '../api'
 import { authToken } from '../auth'
 import type {
@@ -32,45 +33,9 @@ const props = defineProps<{
   initialDeviceId?: number | null
 }>()
 
-interface ProtocolSection {
-  [key: string]: unknown
-}
-
-interface ByteRange {
-  start: number
-  end: number
-}
-
-interface ProtocolPacket extends CapturedPacket {
-  summary?: {
-    operation?: string | null
-    object_identifier?: string | null
-    object_type?: string | null
-    object_instance?: number | null
-    property?: string | null
-    property_identifier?: string | number | null
-    array_index?: number | null
-    invoke_id?: number | null
-    priority?: number | null
-    value?: unknown
-  } | null
-  bvlc?: ProtocolSection | null
-  npdu?: ProtocolSection | null
-  apdu?: ProtocolSection | null
-  service?: ProtocolSection | null
-}
-
-interface ProtocolTreeNode {
-  key: string
-  title: string
-  value?: string
-  byteRange?: ByteRange
-  children?: ProtocolTreeNode[]
-}
-
 const status = ref<PacketCaptureStatus | null>(null)
-const packets = ref<ProtocolPacket[]>([])
-const selectedPacket = ref<ProtocolPacket | null>(null)
+const packets = ref<CapturedPacket[]>([])
+const selectedPacket = ref<CapturedPacket | null>(null)
 const devices = ref<Device[]>([])
 
 const loading = ref(false)
@@ -80,14 +45,11 @@ const actionLoading = ref<
 const detailLoading = ref(false)
 const drawerOpen = ref(false)
 const total = ref(0)
-const activeHexRange = ref<ByteRange | null>(null)
-const selectedProtocolKeys = ref<string[]>([])
 
 const filters = reactive<PacketCaptureFilters>({
   direction: undefined,
-  service: undefined,
-  sourceIp: undefined,
-  destinationIp: undefined,
+  operation: undefined,
+  protocol: undefined,
   deviceId: props.initialDeviceId ?? undefined,
   unassociated: undefined,
   offset: 0,
@@ -156,12 +118,14 @@ const droppedCount = computed(
   () => status.value?.packets_dropped ?? 0,
 )
 
-const availableServices = computed(() => {
+type PacketSection = Record<string, unknown> | null | undefined
+
+const availableOperations = computed(() => {
   const values = new Set<string>()
 
   for (const packet of packets.value) {
-    if (packet.service_name) {
-      values.add(packet.service_name)
+    if (packet.operation) {
+      values.add(packet.operation)
     }
   }
 
@@ -172,30 +136,6 @@ const availableServices = computed(() => {
       value,
     }))
 })
-
-function serviceColor(
-  service?: string | null,
-): string {
-  switch (service) {
-    case 'Error':
-      return 'error'
-    case 'Abort':
-      return 'volcano'
-    case 'Reject':
-      return 'orange'
-    case 'Simple-ACK':
-    case 'Complex-ACK':
-      return 'success'
-    case 'Confirmed-Request':
-      return 'cyan'
-    case 'Who-Is':
-      return 'blue'
-    case 'I-Am':
-      return 'geekblue'
-    default:
-      return 'default'
-  }
-}
 
 async function loadDevices(): Promise<void> {
   try {
@@ -220,7 +160,7 @@ async function loadPackets(): Promise<void> {
 
   try {
     const result = await api.packetCapture.list(filters)
-    packets.value = result.items as ProtocolPacket[]
+    packets.value = result.items as CapturedPacket[]
     total.value = result.total
   } catch (e: unknown) {
     message.error(
@@ -239,8 +179,8 @@ async function loadPackets(): Promise<void> {
 // the wrong moment could silently drop a just-arrived live packet (overwritten
 // by a REST snapshot taken before it existed) or duplicate one. Every packet
 // has a unique packet_id, so merging is always safe/idempotent.
-function mergePacketsById(incoming: ProtocolPacket[]): void {
-  const byId = new Map<string, ProtocolPacket>()
+function mergePacketsById(incoming: CapturedPacket[]): void {
+  const byId = new Map<string, CapturedPacket>()
   for (const p of packets.value) byId.set(p.packet_id, p)
   for (const p of incoming) byId.set(p.packet_id, p)
   const merged = Array.from(byId.values()).sort((a, b) => b.timestamp - a.timestamp)
@@ -256,7 +196,7 @@ function mergePacketsById(incoming: ProtocolPacket[]): void {
 async function reconcilePackets(): Promise<void> {
   try {
     const result = await api.packetCapture.list(filters)
-    mergePacketsById(result.items as ProtocolPacket[])
+    mergePacketsById(result.items as CapturedPacket[])
     total.value = result.total
   } catch (e: unknown) {
     message.error(
@@ -320,7 +260,7 @@ function wsConnect(): void {
   // has no replay, so this picks up anything captured between backend Start
   // and this handshake completing (see reconcilePackets()'s own comment).
   ws.onopen = () => { void reconcilePackets() }
-  ws.onmessage = (e) => handleLivePacket(JSON.parse(e.data) as ProtocolPacket)
+  ws.onmessage = (e) => handleLivePacket(JSON.parse(e.data) as CapturedPacket)
   ws.onclose = () => {
     ws = null
     if (authToken.value && isRunning.value) wsTimer = setTimeout(wsConnect, 3000)
@@ -337,19 +277,16 @@ function wsDisconnect(): void {
   ws = null
 }
 
-function handleLivePacket(packet: ProtocolPacket): void {
+function handleLivePacket(packet: CapturedPacket): void {
   if (suppressLivePackets.value) return
 
-  // Live packets can't be reliably matched against a device filter -- only
-  // I-Am/directed-Who-Is/device-object packets get simulator_device_*
-  // resolved at all. Skip appending while one is active rather than
-  // showing wrong rows; Refresh still works normally.
+  // Live enrichment may be incomplete. Device-filtered views use the
+  // authoritative REST result; Refresh remains available during capture.
   if (filters.deviceId !== undefined || filters.unassociated) return
 
+  if (filters.protocol && packet.protocol !== filters.protocol) return
   if (filters.direction && packet.direction !== filters.direction) return
-  if (filters.sourceIp && packet.source_ip !== filters.sourceIp) return
-  if (filters.destinationIp && packet.destination_ip !== filters.destinationIp) return
-  if (filters.service && packet.service_name !== filters.service) return
+  if (filters.operation && packet.operation !== filters.operation) return
 
   packets.value.unshift(packet)
   if (packets.value.length > LIVE_BUFFER_LIMIT) packets.value.length = LIVE_BUFFER_LIMIT
@@ -389,16 +326,14 @@ async function exportPcap(): Promise<void> {
   }
 }
 
-async function openPacket(packet: ProtocolPacket): Promise<void> {
+async function openPacket(packet: CapturedPacket): Promise<void> {
   drawerOpen.value = true
   detailLoading.value = true
   selectedPacket.value = packet
-  activeHexRange.value = null
-  selectedProtocolKeys.value = []
 
   try {
     selectedPacket.value =
-      await api.packetCapture.get(packet.packet_id) as ProtocolPacket
+      await api.packetCapture.get(packet.packet_id) as CapturedPacket
   } catch (e: unknown) {
     message.error(
       (e as Error).message ?? 'Failed to load packet details',
@@ -415,9 +350,8 @@ function applyFilters(): void {
 
 function clearFilters(): void {
   filters.direction = undefined
-  filters.service = undefined
-  filters.sourceIp = undefined
-  filters.destinationIp = undefined
+  filters.operation = undefined
+  filters.protocol = undefined
   filters.deviceId = undefined
   filters.unassociated = undefined
   filters.offset = 0
@@ -453,12 +387,44 @@ function timestampValue(packet: CapturedPacket): number {
   return Number.isNaN(value) ? 0 : value
 }
 
-function endpoint(ip: string, port: number): string {
-  return `${ip}:${port}`
+function endpoint(value: { address: string; port: number | null }): string {
+  return value.port === null ? value.address : `${value.address.includes(':') ? `[${value.address}]` : value.address}:${value.port}`
 }
 
 function directionColor(direction: PacketDirection): string {
   return direction === 'inbound' ? 'blue' : 'purple'
+}
+
+function statusColor(value: string): string {
+  switch (value.toLowerCase()) {
+    case 'success': case 'ok': return 'success'
+    case 'error': return 'error'
+    case 'rejected': return 'orange'
+    case 'aborted': return 'volcano'
+    default: return 'default'
+  }
+}
+
+function serviceColor(value?: string | null): string {
+  switch (value) {
+    case 'Error':
+      return 'error'
+    case 'Abort':
+      return 'volcano'
+    case 'Reject':
+      return 'orange'
+    case 'Simple-ACK':
+    case 'Complex-ACK':
+      return 'success'
+    case 'Confirmed-Request':
+      return 'cyan'
+    case 'Who-Is':
+      return 'blue'
+    case 'I-Am':
+      return 'geekblue'
+    default:
+      return 'default'
+  }
 }
 
 function decodeStatusColor(value: string): string {
@@ -466,6 +432,236 @@ function decodeStatusColor(value: string): string {
   if (value === 'warning' || value === 'partial') return 'warning'
   if (value === 'error') return 'error'
   return 'default'
+}
+
+function sectionValue(
+  section: PacketSection,
+  ...keys: string[]
+): unknown {
+  if (!section) return undefined
+
+  for (const key of keys) {
+    const value = section[key]
+
+    if (
+      value !== undefined &&
+      value !== null &&
+      value !== ''
+    ) {
+      return value
+    }
+  }
+
+  return undefined
+}
+
+function detailsSection(
+  packet: CapturedPacket,
+  key: string,
+): PacketSection {
+  const value = packet.details?.[key]
+  return value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function packetSummaryValue(
+  packet: CapturedPacket,
+  ...keys: string[]
+): unknown {
+  return sectionValue(packet.summary, ...keys)
+}
+
+function packetDetailsValue(
+  packet: CapturedPacket,
+  section: string,
+  ...keys: string[]
+): unknown {
+  return sectionValue(detailsSection(packet, section), ...keys)
+}
+
+function packetDisplayValue(
+  packet: CapturedPacket,
+  ...lookups: Array<[PacketSection, string[]]>
+): string | undefined {
+  for (const [section, keys] of lookups) {
+    const value = sectionValue(section, ...keys)
+    if (value !== undefined) return String(value)
+  }
+
+  return undefined
+}
+
+function packetBvlcFunction(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [
+      detailsSection(packet, 'bvlc'),
+      ['function_name', 'functionName', 'function'],
+    ],
+  )
+}
+
+function packetServiceName(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [detailsSection(packet, 'apdu'), ['service_name', 'serviceName']],
+    [detailsSection(packet, 'service'), ['service_name', 'serviceName']],
+  )
+}
+
+function packetInvokeId(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [packet.summary, ['invoke_id', 'invokeId']],
+    [detailsSection(packet, 'apdu'), ['invoke_id', 'invokeId']],
+  )
+}
+
+function packetObjectIdentifier(
+  packet: CapturedPacket,
+): string | undefined {
+  const direct = packetDisplayValue(
+    packet,
+    [
+      packet.summary,
+      ['object_identifier', 'objectIdentifier', 'object'],
+    ],
+    [
+      detailsSection(packet, 'service'),
+      ['object_identifier', 'objectIdentifier', 'object'],
+    ],
+  )
+
+  if (direct) return direct
+
+  const objectType = packetDisplayValue(
+    packet,
+    [packet.summary, ['object_type', 'objectType']],
+    [detailsSection(packet, 'service'), ['object_type', 'objectType']],
+  )
+  const objectInstance = packetDisplayValue(
+    packet,
+    [packet.summary, ['object_instance', 'objectInstance']],
+    [
+      detailsSection(packet, 'service'),
+      ['object_instance', 'objectInstance'],
+    ],
+  )
+
+  return objectType && objectInstance
+    ? `${objectType}:${objectInstance}`
+    : undefined
+}
+
+function packetProperty(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [
+      packet.summary,
+      [
+        'property',
+        'property_name',
+        'property_identifier_name',
+        'property_identifier',
+        'propertyIdentifier',
+      ],
+    ],
+    [
+      detailsSection(packet, 'service'),
+      [
+        'property',
+        'property_name',
+        'property_identifier_name',
+        'property_identifier',
+        'propertyIdentifier',
+      ],
+    ],
+  )
+}
+
+function packetArrayIndex(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [packet.summary, ['array_index', 'arrayIndex']],
+    [detailsSection(packet, 'service'), ['array_index', 'arrayIndex']],
+  )
+}
+
+function packetPriority(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [packet.summary, ['priority', 'write_priority', 'writePriority']],
+    [
+      detailsSection(packet, 'service'),
+      ['priority', 'write_priority', 'writePriority'],
+    ],
+  )
+}
+
+function packetValue(packet: CapturedPacket): unknown {
+  const summaryValue = packetSummaryValue(packet, 'value')
+  if (summaryValue !== undefined) return summaryValue
+
+  return packetDetailsValue(
+    packet,
+    'service',
+    'value',
+    'decoded_value',
+    'decodedValue',
+    'property_value',
+    'propertyValue',
+    'written_value',
+    'writtenValue',
+  )
+}
+
+function packetFailedService(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [packet.summary, ['failed_service', 'failedService']],
+    [detailsSection(packet, 'service'), ['failed_service', 'failedService']],
+  )
+}
+
+function packetErrorClass(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [packet.summary, ['error_class_name', 'error_class']],
+    [
+      detailsSection(packet, 'service'),
+      ['error_class_name', 'error_class'],
+    ],
+  )
+}
+
+function packetErrorCode(
+  packet: CapturedPacket,
+): string | undefined {
+  return packetDisplayValue(
+    packet,
+    [packet.summary, ['error_code_name', 'error_code']],
+    [
+      detailsSection(packet, 'service'),
+      ['error_code_name', 'error_code'],
+    ],
+  )
 }
 
 function compareText(
@@ -507,542 +703,12 @@ function formatHex(value?: string): string {
   return lines.join('\n')
 }
 
-function renderHexHtml(
-  value?: string,
-  highlight?: ByteRange | null,
-): string {
-  const bytes = rawBytes(value)
-  if (!bytes.length) return ''
-
-  const lines: string[] = []
-
-  for (let i = 0; i < bytes.length; i += 16) {
-    const offset = i.toString(16).padStart(4, '0')
-    const row: string[] = []
-
-    for (let j = 0; j < 16 && i + j < bytes.length; j += 1) {
-      const absolute = i + j
-      const hex = bytes[absolute].toString(16).padStart(2, '0')
-      const inRange = Boolean(
-        highlight &&
-        absolute >= highlight.start &&
-        absolute <= highlight.end,
-      )
-
-      row.push(
-        `<span class="hex-byte${inRange ? ' hex-byte--selected' : ''}">${hex}</span>`,
-      )
-    }
-
-    lines.push(`${offset}  ${row.join(' ')}`)
-  }
-
-  return lines.join('\n')
-}
-
-
-function rawBytes(value?: string): number[] {
-  if (!value) return []
-
-  const matches = value
-    .replace(/\s+/g, '')
-    .match(/.{1,2}/g)
-
-  if (!matches) return []
-
-  return matches
-    .map(value => Number.parseInt(value, 16))
-    .filter(value => !Number.isNaN(value))
-}
-
-function hexByte(value: number | undefined): string {
-  if (value === undefined) return '—'
-  return `0x${value.toString(16).padStart(2, '0')}`
-}
-
-function sectionNodes(
-  prefix: string,
-  section?: ProtocolSection | null,
-  byteRange?: ByteRange,
-): ProtocolTreeNode[] {
-  if (!section) return []
-
-  return Object.entries(section)
-    .filter(([, value]) =>
-      value !== null &&
-      value !== undefined &&
-      value !== '',
-    )
-    .map(([key, value]) => ({
-      key: `${prefix}.${key}`,
-      title: key
-        .replace(/_/g, ' ')
-        .replace(/\b\w/g, char => char.toUpperCase()),
-      byteRange,
-      value:
-        typeof value === 'object'
-          ? JSON.stringify(value)
-          : String(value),
-    }))
-}
-
-function apduTypeName(type: number): string {
-  const names: Record<number, string> = {
-    0: 'Confirmed Request',
-    1: 'Unconfirmed Request',
-    2: 'Simple ACK',
-    3: 'Complex ACK',
-    4: 'Segment ACK',
-    5: 'Error',
-    6: 'Reject',
-    7: 'Abort',
-  }
-
-  return names[type] ?? `Unknown APDU ${type}`
-}
-
-function sectionValue(
-  section: ProtocolSection | null | undefined,
-  ...keys: string[]
-): unknown {
-  if (!section) return undefined
-
-  for (const key of keys) {
-    const value = section[key]
-
-    if (
-      value !== undefined &&
-      value !== null &&
-      value !== ''
-    ) {
-      return value
-    }
-  }
-
-  return undefined
-}
-
-function packetOperation(
-  packet: ProtocolPacket,
-): string | undefined {
-  const value =
-    packet.summary?.operation ??
-    sectionValue(
-      packet.service,
-      'operation',
-      'service_name',
-      'service',
-    ) ??
-    packet.service_name
-
-  return value === undefined ? undefined : String(value)
-}
-
-function packetObjectIdentifier(
-  packet: ProtocolPacket,
-): string | undefined {
-  const direct =
-    packet.summary?.object_identifier ??
-    sectionValue(
-      packet.service,
-      'object_identifier',
-      'objectIdentifier',
-      'object',
-    )
-
-  if (direct !== undefined) return String(direct)
-
-  const objectType =
-    packet.summary?.object_type ??
-    sectionValue(
-      packet.service,
-      'object_type',
-      'objectType',
-    )
-
-  const objectInstance =
-    packet.summary?.object_instance ??
-    sectionValue(
-      packet.service,
-      'object_instance',
-      'objectInstance',
-    )
-
-  if (
-    objectType !== undefined &&
-    objectInstance !== undefined
-  ) {
-    return `${objectType}:${objectInstance}`
-  }
-
-  return undefined
-}
-
-function packetProperty(
-  packet: ProtocolPacket,
-): string | undefined {
-  const value =
-    packet.summary?.property ??
-    packet.summary?.property_identifier ??
-    sectionValue(
-      packet.service,
-      'property',
-      'property_name',
-      'property_identifier_name',
-      'property_identifier',
-      'propertyIdentifier',
-    )
-
-  return value === undefined ? undefined : String(value)
-}
-
-function packetArrayIndex(
-  packet: ProtocolPacket,
-): string | undefined {
-  const value =
-    packet.summary?.array_index ??
-    sectionValue(
-      packet.service,
-      'array_index',
-      'arrayIndex',
-    )
-
-  return value === undefined ? undefined : String(value)
-}
-
-function packetInvokeId(
-  packet: ProtocolPacket,
-): string | undefined {
-  const value =
-    packet.summary?.invoke_id ??
-    sectionValue(
-      packet.apdu,
-      'invoke_id',
-      'invokeId',
-    )
-
-  return value === undefined ? undefined : String(value)
-}
-
-function packetPriority(
-  packet: ProtocolPacket,
-): string | undefined {
-  const value =
-    packet.summary?.priority ??
-    sectionValue(
-      packet.service,
-      'priority',
-      'write_priority',
-      'writePriority',
-    )
-
-  return value === undefined ? undefined : String(value)
-}
-
-function packetValue(
-  packet: ProtocolPacket,
-): unknown {
-  if (
-    packet.summary?.value !== undefined &&
-    packet.summary?.value !== null
-  ) {
-    return packet.summary.value
-  }
-
-  return sectionValue(
-    packet.service,
-    'value',
-    'decoded_value',
-    'decodedValue',
-    'property_value',
-    'propertyValue',
-    'written_value',
-    'writtenValue',
-  )
-}
-
-function hasServiceDetails(
-  packet: ProtocolPacket,
-): boolean {
-  return Boolean(
-    packetOperation(packet) ||
-    packetObjectIdentifier(packet) ||
-    packetProperty(packet) ||
-    packetArrayIndex(packet) ||
-    packetInvokeId(packet) ||
-    packetPriority(packet) ||
-    packetValue(packet) !== undefined,
-  )
-}
-
-function protocolTree(
-  packet: ProtocolPacket,
-): ProtocolTreeNode[] {
-  const bytes = rawBytes(packet.raw_hex)
-  const lastByte = Math.max(0, bytes.length - 1)
-
-  const clampedRange = (
-    start: number,
-    end: number,
-  ): ByteRange | undefined => {
-    if (!bytes.length) return undefined
-    const s = Math.max(0, Math.min(start, lastByte))
-    const e = Math.max(s, Math.min(end, lastByte))
-    return { start: s, end: e }
-  }
-
-  const bvlcLength =
-    bytes.length >= 4
-      ? (bytes[2] << 8) | bytes[3]
-      : packet.length
-
-  const bvlcChildren: ProtocolTreeNode[] = [
-    {
-      key: 'bvlc.type',
-      title: 'Type',
-      byteRange: clampedRange(0, 0),
-      value:
-        bytes[0] === 0x81
-          ? `BACnet/IP (${hexByte(bytes[0])})`
-          : hexByte(bytes[0]),
-    },
-    {
-      key: 'bvlc.function',
-      title: 'Function',
-      byteRange: clampedRange(1, 1),
-      value:
-        packet.bvlc_function ??
-        hexByte(bytes[1]),
-    },
-    {
-      key: 'bvlc.length',
-      title: 'Declared Length',
-      byteRange: clampedRange(2, 3),
-      value: `${bvlcLength} bytes`,
-    },
-    ...sectionNodes('bvlc', packet.bvlc, clampedRange(0, 3)),
-  ]
-
-  let npduOffset = 4
-  if (bytes[1] === 0x04 && bytes.length >= 10) {
-    npduOffset = 10
-  }
-
-  const npduVersion = bytes[npduOffset]
-  const control = bytes[npduOffset + 1]
-  let apduOffset = npduOffset + 2
-
-  if (control !== undefined) {
-    if ((control & 0x20) !== 0 && bytes.length > apduOffset + 2) {
-      const destinationLength = bytes[apduOffset + 2] ?? 0
-      apduOffset += 3 + destinationLength + 1
-    }
-
-    if ((control & 0x08) !== 0 && bytes.length > apduOffset + 2) {
-      const sourceLength = bytes[apduOffset + 2] ?? 0
-      apduOffset += 3 + sourceLength
-    }
-  }
-
-  const npduChildren: ProtocolTreeNode[] = [
-    {
-      key: 'npdu.version',
-      title: 'Version',
-      byteRange: clampedRange(npduOffset, npduOffset),
-      value:
-        npduVersion === undefined
-          ? '—'
-          : String(npduVersion),
-    },
-    {
-      key: 'npdu.control',
-      title: 'Control',
-      byteRange: clampedRange(npduOffset + 1, npduOffset + 1),
-      value: hexByte(control),
-    },
-  ]
-
-  if (control !== undefined) {
-    npduChildren.push(
-      {
-        key: 'npdu.network_message',
-        title: 'Network Layer Message',
-        value:
-          (control & 0x80) !== 0 ? 'Yes' : 'No',
-      },
-      {
-        key: 'npdu.destination',
-        title: 'Destination Specified',
-        value:
-          (control & 0x20) !== 0 ? 'Yes' : 'No',
-      },
-      {
-        key: 'npdu.source',
-        title: 'Source Specified',
-        value:
-          (control & 0x08) !== 0 ? 'Yes' : 'No',
-      },
-      {
-        key: 'npdu.expecting_reply',
-        title: 'Expecting Reply',
-        value:
-          (control & 0x04) !== 0 ? 'Yes' : 'No',
-      },
-      {
-        key: 'npdu.priority',
-        title: 'Priority',
-        value: String(control & 0x03),
-      },
-    )
-  }
-
-  npduChildren.push(
-    ...sectionNodes(
-      'npdu',
-      packet.npdu,
-      clampedRange(npduOffset, Math.max(npduOffset, apduOffset - 1)),
-    ),
-  )
-
-  const apduFirst = bytes[apduOffset]
-  const apduType =
-    apduFirst === undefined ? undefined : apduFirst >> 4
-
-  const apduChildren: ProtocolTreeNode[] = [
-    {
-      key: 'apdu.type',
-      title: 'Type',
-      byteRange: clampedRange(apduOffset, apduOffset),
-      value:
-        apduType === undefined
-          ? packet.service_name ?? '—'
-          : `${apduTypeName(apduType)} (${hexByte(apduFirst)})`,
-    },
-    {
-      key: 'apdu.service',
-      title: 'Operation',
-      byteRange: clampedRange(apduOffset + 1, apduOffset + 1),
-      value:
-        packet.summary?.operation ??
-        packet.service_name ??
-        'Unknown',
-    },
-    ...sectionNodes('apdu', packet.apdu, clampedRange(apduOffset, lastByte)),
-  ]
-
-  const serviceChildren = [
-    ...(packet.summary?.object_identifier
-      ? [{
-          key: 'service.object_identifier',
-          title: 'Object Identifier',
-          byteRange: clampedRange(apduOffset + 1, lastByte),
-          value: packet.summary.object_identifier,
-        }]
-      : []),
-    ...(packet.summary?.property
-      ? [{
-          key: 'service.property',
-          title: 'Property',
-          byteRange: clampedRange(apduOffset + 1, lastByte),
-          value: packet.summary.property,
-        }]
-      : []),
-    ...(packet.summary?.value !== undefined &&
-    packet.summary?.value !== null
-      ? [{
-          key: 'service.value',
-          title: 'Value',
-          byteRange: clampedRange(apduOffset + 1, lastByte),
-          value: String(packet.summary.value),
-        }]
-      : []),
-    ...sectionNodes('service', packet.service, clampedRange(apduOffset + 1, lastByte)),
-  ]
-
-  const tree: ProtocolTreeNode[] = [
-    {
-      key: 'bvlc',
-      title: 'BACnet Virtual Link Control',
-      byteRange: clampedRange(0, 3),
-      value: `${bvlcLength} bytes`,
-      children: bvlcChildren,
-    },
-    {
-      key: 'npdu',
-      title:
-        'Building Automation and Control Network NPDU',
-      byteRange: clampedRange(npduOffset, Math.max(npduOffset, apduOffset - 1)),
-      children: npduChildren,
-    },
-    {
-      key: 'apdu',
-      title:
-        'Building Automation and Control Network APDU',
-      byteRange: clampedRange(apduOffset, lastByte),
-      children: apduChildren,
-    },
-  ]
-
-  if (serviceChildren.length) {
-    tree.push({
-      key: 'service',
-      title:
-        packet.summary?.operation ??
-        packet.service_name ??
-        'BACnet Service',
-      byteRange: clampedRange(apduOffset + 1, lastByte),
-      children: serviceChildren,
-    })
-  }
-
-  return tree
-}
-
-const selectedProtocolTree = computed<
-  ProtocolTreeNode[]
->(() => {
-  if (!selectedPacket.value) return []
-  return protocolTree(selectedPacket.value)
+const availableProtocols = computed(() => [...new Set(packets.value.map(p => p.protocol))].map(value => ({value, label: value})))
+const selectedRenderer = computed(() => {
+  const protocol = selectedPacket.value?.protocol
+  return protocol && Object.prototype.hasOwnProperty.call(protocolDetailRenderers, protocol) ? protocolDetailRenderers[protocol] : undefined
 })
-
-const selectedPacketFullFrameHexHtml = computed<string>(() => {
-  const payloadRange = activeHexRange.value
-  const fullFrameRange = payloadRange
-    ? {
-        // Ethernet(14) + IPv4(20) + UDP(8) = 42 bytes before BACnet payload.
-        start: payloadRange.start + 42,
-        end: payloadRange.end + 42,
-      }
-    : null
-
-  return renderHexHtml(
-    selectedPacket.value?.full_frame_hex,
-    fullFrameRange,
-  )
-})
-
-function onProtocolNodeSelect(
-  selectedKeys: Array<string | number>,
-  info: unknown,
-): void {
-  selectedProtocolKeys.value = selectedKeys.map(String)
-
-  const maybeInfo = info as {
-    node?: {
-      byteRange?: ByteRange
-      dataRef?: {
-        byteRange?: ByteRange
-      }
-    }
-  } | undefined
-
-  activeHexRange.value =
-    maybeInfo?.node?.byteRange ??
-    maybeInfo?.node?.dataRef?.byteRange ??
-    null
-}
-
-const columns: TableColumnsType<ProtocolPacket> = [
+const columns: TableColumnsType<CapturedPacket> = [
   {
     title: 'Time',
     key: 'time',
@@ -1052,12 +718,19 @@ const columns: TableColumnsType<ProtocolPacket> = [
     sortDirections: ['descend', 'ascend'],
   },
   {
+    title: 'Protocol',
+    dataIndex: 'protocol',
+    key: 'protocol',
+    width: 100,
+    sorter: (a, b) => compareText(a.protocol, b.protocol),
+    sortDirections: ['ascend', 'descend'],
+  },
+  {
     title: 'Direction',
     dataIndex: 'direction',
     key: 'direction',
     width: 100,
-    sorter: (a, b) =>
-      compareText(a.direction, b.direction),
+    sorter: (a, b) => compareText(a.direction, b.direction),
     sortDirections: ['ascend', 'descend'],
   },
   {
@@ -1065,10 +738,7 @@ const columns: TableColumnsType<ProtocolPacket> = [
     key: 'source',
     width: 190,
     sorter: (a, b) =>
-      compareText(
-        endpoint(a.source_ip, a.source_port),
-        endpoint(b.source_ip, b.source_port),
-      ),
+      compareText(endpoint(a.source), endpoint(b.source)),
     sortDirections: ['ascend', 'descend'],
   },
   {
@@ -1076,10 +746,7 @@ const columns: TableColumnsType<ProtocolPacket> = [
     key: 'destination',
     width: 190,
     sorter: (a, b) =>
-      compareText(
-        endpoint(a.destination_ip, a.destination_port),
-        endpoint(b.destination_ip, b.destination_port),
-      ),
+      compareText(endpoint(a.destination), endpoint(b.destination)),
     sortDirections: ['ascend', 'descend'],
   },
   {
@@ -1087,37 +754,33 @@ const columns: TableColumnsType<ProtocolPacket> = [
     key: 'device',
     width: 170,
     sorter: (a, b) =>
-      compareText(a.simulator_device_name, b.simulator_device_name),
+      compareText(a.simulator.device_name, b.simulator.device_name),
     sortDirections: ['ascend', 'descend'],
   },
   {
-    title: 'BVLC',
-    dataIndex: 'bvlc_function',
-    key: 'bvlc',
+    title: 'Operation',
+    dataIndex: 'operation',
+    key: 'operation',
     width: 190,
-    sorter: (a, b) =>
-      compareText(a.bvlc_function, b.bvlc_function),
+    sorter: (a, b) => compareText(a.operation, b.operation),
     sortDirections: ['ascend', 'descend'],
   },
   {
-    title: 'Service',
-    dataIndex: 'service_name',
-    key: 'service',
-    width: 190,
-    sorter: (a, b) =>
-      compareText(a.service_name, b.service_name),
+    title: 'Status',
+    dataIndex: 'status',
+    key: 'status',
+    width: 110,
+    sorter: (a, b) => compareText(a.status, b.status),
     sortDirections: ['ascend', 'descend'],
   },
   {
-    title: 'Length',
-    dataIndex: 'length',
+    title: 'Size',
     key: 'length',
     width: 90,
     sorter: (a, b) => a.length - b.length,
     sortDirections: ['ascend', 'descend'],
-  }
+  },
 ]
-
 watch(isRunning, (running, wasRunning) => {
   if (running) {
     suppressLivePackets.value = false
@@ -1149,7 +812,6 @@ onUnmounted(() => {
   }
 })
 </script>
-
 <template>
   <div class="packet-capture-page">
     <div class="page-header">
@@ -1182,30 +844,16 @@ onUnmounted(() => {
       </a-select>
 
       <a-select
-        v-model:value="filters.service"
+        v-model:value="filters.operation"
         allow-clear
         show-search
-        placeholder="BACnet service"
+        placeholder="Operation"
         style="width:220px"
-        :options="availableServices"
+        :options="availableOperations"
         @change="applyFilters"
       />
 
-      <a-input
-        v-model:value="filters.sourceIp"
-        allow-clear
-        placeholder="Source IP"
-        style="width:170px"
-        @press-enter="applyFilters"
-      />
-
-      <a-input
-        v-model:value="filters.destinationIp"
-        allow-clear
-        placeholder="Destination IP"
-        style="width:170px"
-        @press-enter="applyFilters"
-      />
+      <a-select v-model:value="filters.protocol" allow-clear show-search placeholder="Protocol" style="width:150px" :options="availableProtocols" @change="applyFilters" />
 
       <a-select
         v-model:value="deviceFilterValue"
@@ -1287,7 +935,7 @@ onUnmounted(() => {
         <template #icon>
           <DownloadOutlined />
         </template>
-        Export PCAP
+        Export BACnet PCAP
       </a-button>
 
       <a-button
@@ -1300,345 +948,66 @@ onUnmounted(() => {
       </a-button>
     </div>
 
-    <a-table
-      :columns="columns"
-      :data-source="packets"
-      :loading="loading"
-      :show-sorter-tooltip="false"
-      row-key="packet_id"
-      size="small"
-      :scroll="{ x: 1250 }"
-      :pagination="{
-        pageSize: 50,
-        showSizeChanger: true,
-        pageSizeOptions: ['25', '50', '100', '200'],
-        showTotal: (value: number) => `${value} packets`,
-      }"
-      :custom-row="(record: ProtocolPacket) => ({
-        onClick: () => openPacket(record),
-        style: {
-          cursor: 'pointer',
-        },
-      })"
-    >
+    <a-table :columns="columns" :data-source="packets" :loading="loading" :show-sorter-tooltip="false" row-key="packet_id" size="small" :scroll="{ x: 1350 }"
+      :pagination="{ pageSize: 50, showSizeChanger: true, pageSizeOptions: ['25', '50', '100', '200'], showTotal: (value: number) => `${value} packets` }"
+      :custom-row="(record: CapturedPacket) => ({ onClick: () => openPacket(record), style: { cursor: 'pointer' } })">
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'time'">
-          {{ formatTimestamp(record as CapturedPacket) }}
-        </template>
-
-        <template v-else-if="column.key === 'direction'">
-          <a-tag
-            :color="
-              directionColor(
-                (record as CapturedPacket).direction,
-              )
-            "
-          >
-            {{ (record as CapturedPacket).direction }}
-          </a-tag>
-        </template>
-
-        <template v-else-if="column.key === 'source'">
-          <span class="monospace">
-            {{
-              endpoint(
-                (record as CapturedPacket).source_ip,
-                (record as CapturedPacket).source_port,
-              )
-            }}
-          </span>
-        </template>
-
-        <template v-else-if="column.key === 'destination'">
-          <span class="monospace">
-            {{
-              endpoint(
-                (record as CapturedPacket).destination_ip,
-                (record as CapturedPacket).destination_port,
-              )
-            }}
-          </span>
-        </template>
-
-        <template v-else-if="column.key === 'device'">
-          <span v-if="(record as CapturedPacket).simulator_device_name">
-            {{ (record as CapturedPacket).simulator_device_name }}
-            <template v-if="(record as CapturedPacket).simulator_object_name">
-              / {{ (record as CapturedPacket).simulator_object_name }}
-            </template>
-          </span>
-          <span v-else class="placeholder">—</span>
-        </template>
-
-        <template v-else-if="column.key === 'bvlc'">
-          {{
-            (record as CapturedPacket).bvlc_function ?? '—'
-          }}
-        </template>
-
-        <template v-else-if="column.key === 'service'">
-        <a-tag
-          v-if="(record as CapturedPacket).service_name"
-          :color="serviceColor((record as CapturedPacket).service_name)"
-        >
-          {{ (record as CapturedPacket).service_name }}
-        </a-tag>
-
-        <span v-else class="placeholder">—</span>
-      </template>
-
-        <template v-else-if="column.key === 'length'">
-          {{ (record as CapturedPacket).length }} B
-        </template>
-
-       
-      </template>
-
-      <template #emptyText>
-        <div class="empty-state">
-          <div>No packets captured yet</div>
-          
-        </div>
+        <template v-if="column.key === 'time'">{{ formatTimestamp(record) }}</template>
+        <template v-else-if="column.key === 'protocol'"><a-tag color="geekblue">{{ record.protocol }}</a-tag></template>
+        <template v-else-if="column.key === 'direction'"><a-tag :color="directionColor(record.direction)">{{ record.direction }}</a-tag></template>
+        <template v-else-if="column.key === 'operation'"><a-tag v-if="record.operation" color="cyan">{{ record.operation }}</a-tag><span v-else class="placeholder">—</span></template>
+        <template v-else-if="column.key === 'status'"><a-tag v-if="record.status" :color="statusColor(record.status)">{{ record.status }}</a-tag><span v-else class="placeholder">—</span></template>
+        <template v-else-if="column.key === 'source'"><span class="monospace">{{ endpoint(record.source) }}</span></template>
+        <template v-else-if="column.key === 'destination'"><span class="monospace">{{ endpoint(record.destination) }}</span></template>
+        <template v-else-if="column.key === 'device'">{{ record.simulator.device_name ?? '—' }}<span v-if="record.simulator.point_name"> / {{ record.simulator.point_name }}</span></template>
+        <template v-else-if="column.key === 'length'">{{ record.length }} B</template>
       </template>
     </a-table>
-
-    <a-drawer
-      v-model:open="drawerOpen"
-      title="Packet Details"
-      placement="right"
-      width="620"
-    >
+    <a-drawer v-model:open="drawerOpen" title="Packet Details" placement="right" width="620">
       <a-spin :spinning="detailLoading">
         <template v-if="selectedPacket">
-          <a-descriptions
-            bordered
-            size="small"
-            :column="1"
-          >
-            <a-descriptions-item label="Packet ID">
-              <span class="monospace">
-                {{ selectedPacket.packet_id }}
-              </span>
-            </a-descriptions-item>
-
-            <a-descriptions-item label="Timestamp">
-              {{ formatTimestamp(selectedPacket) }}
-            </a-descriptions-item>
-
-            <a-descriptions-item label="Direction">
-              <a-tag
-                :color="
-                  directionColor(selectedPacket.direction)
-                "
-              >
-                {{ selectedPacket.direction }}
-              </a-tag>
-            </a-descriptions-item>
-
-            <a-descriptions-item label="Source">
-              <span class="monospace">
-                {{
-                  endpoint(
-                    selectedPacket.source_ip,
-                    selectedPacket.source_port,
-                  )
-                }}
-              </span>
-            </a-descriptions-item>
-
-            <a-descriptions-item label="Destination">
-              <span class="monospace">
-                {{
-                  endpoint(
-                    selectedPacket.destination_ip,
-                    selectedPacket.destination_port,
-                  )
-                }}
-              </span>
-            </a-descriptions-item>
-
-            <a-descriptions-item label="Length">
-              {{ selectedPacket.length }} bytes
-            </a-descriptions-item>
-
-            <a-descriptions-item label="BVLC Function">
-              {{ selectedPacket.bvlc_function ?? '—' }}
-            </a-descriptions-item>
-
-            <a-descriptions-item label="BACnet Service">
-             <a-tag
-                v-if="selectedPacket.service_name"
-                :color="serviceColor(selectedPacket.service_name)"
-              >
-                {{ selectedPacket.service_name }}
-              </a-tag>
-              <span v-else>—</span>
-            </a-descriptions-item>
-
-
-            <a-descriptions-item
-              v-if="
-                packetOperation(selectedPacket) &&
-                packetOperation(selectedPacket) !== selectedPacket.service_name
-              "
-              label="Operation"
-            >
-              <a-tag color="cyan">
-                {{ packetOperation(selectedPacket) }}
-              </a-tag>
-            </a-descriptions-item>
-
-            <a-descriptions-item
-              v-if="packetInvokeId(selectedPacket)"
-              label="Invoke ID"
-            >
-              <span class="monospace">
-                {{ packetInvokeId(selectedPacket) }}
-              </span>
-            </a-descriptions-item>
-
-            <a-descriptions-item
-              v-if="packetObjectIdentifier(selectedPacket)"
-              label="Object Identifier"
-            >
-              <span class="monospace">
-                {{ packetObjectIdentifier(selectedPacket) }}
-              </span>
-            </a-descriptions-item>
-
-            <a-descriptions-item
-              v-if="packetProperty(selectedPacket)"
-              label="Property"
-            >
-              {{ packetProperty(selectedPacket) }}
-            </a-descriptions-item>
-
-            <a-descriptions-item
-              v-if="packetArrayIndex(selectedPacket)"
-              label="Array Index"
-            >
-              {{ packetArrayIndex(selectedPacket) }}
-            </a-descriptions-item>
-
-            <a-descriptions-item
-              v-if="packetPriority(selectedPacket)"
-              label="Write Priority"
-            >
-              {{ packetPriority(selectedPacket) }}
-            </a-descriptions-item>
-
-            <a-descriptions-item
-              v-if="packetValue(selectedPacket) !== undefined"
-              label="Value"
-            >
-              <span class="packet-detail-value">
-                {{ String(packetValue(selectedPacket)) }}
-              </span>
-            </a-descriptions-item>
-
-            <a-descriptions-item label="Decode Status">
-              <a-tag
-                :color="
-                  decodeStatusColor(
-                    selectedPacket.decode_status,
-                  )
-                "
-              >
-                {{ selectedPacket.decode_status }}
-              </a-tag>
-            </a-descriptions-item>
-
-            <a-descriptions-item
-              v-if="selectedPacket.decode_error"
-              label="Decode Error"
-            >
-              <span class="decode-error">
-                {{ selectedPacket.decode_error }}
-              </span>
-            </a-descriptions-item>
-            <a-descriptions-item
-  v-if="selectedPacket.service?.failed_service"
-  label="Failed Service"
->
-  {{ selectedPacket.service.failed_service }}
-</a-descriptions-item>
-
-      <a-descriptions-item
-        v-if="selectedPacket.service?.error_class_name"
-        label="Error Class"
-      >
-        {{ selectedPacket.service.error_class_name }}
-      </a-descriptions-item>
-
-      <a-descriptions-item
-        v-if="selectedPacket.service?.error_code_name"
-        label="Error Code"
-      >
-        <a-tag color="red">
-          {{ selectedPacket.service.error_code_name }}
-        </a-tag>
-      </a-descriptions-item>
+          <a-descriptions bordered size="small" :column="1">
+            <a-descriptions-item label="Packet ID"><span class="monospace">{{ selectedPacket.packet_id }}</span></a-descriptions-item>
+            <a-descriptions-item label="Timestamp">{{ formatTimestamp(selectedPacket) }}</a-descriptions-item>
+            <a-descriptions-item label="Protocol"><a-tag color="geekblue">{{ selectedPacket.protocol }}</a-tag></a-descriptions-item>
+            <a-descriptions-item label="Transport">{{ selectedPacket.transport }}</a-descriptions-item>
+            <a-descriptions-item label="Direction"><a-tag :color="directionColor(selectedPacket.direction)">{{ selectedPacket.direction }}</a-tag></a-descriptions-item>
+            <a-descriptions-item label="Source"><span class="monospace">{{ endpoint(selectedPacket.source) }}</span></a-descriptions-item>
+            <a-descriptions-item label="Destination"><span class="monospace">{{ endpoint(selectedPacket.destination) }}</span></a-descriptions-item>
+            <a-descriptions-item label="Length">{{ selectedPacket.length }} bytes</a-descriptions-item>
+            <a-descriptions-item v-if="packetBvlcFunction(selectedPacket)" label="BVLC Function">{{ packetBvlcFunction(selectedPacket) }}</a-descriptions-item>
+            <a-descriptions-item v-if="packetServiceName(selectedPacket)" label="BACnet Service"><a-tag :color="serviceColor(packetServiceName(selectedPacket))">{{ packetServiceName(selectedPacket) }}</a-tag></a-descriptions-item>
+            <a-descriptions-item label="Operation"><a-tag v-if="selectedPacket.operation" color="cyan">{{ selectedPacket.operation }}</a-tag><span v-else class="placeholder">—</span></a-descriptions-item>
+            <a-descriptions-item v-if="selectedPacket.status" label="Status"><a-tag :color="statusColor(selectedPacket.status)">{{ selectedPacket.status }}</a-tag></a-descriptions-item>
+            <a-descriptions-item v-if="packetInvokeId(selectedPacket)" label="Invoke ID"><span class="monospace">{{ packetInvokeId(selectedPacket) }}</span></a-descriptions-item>
+            <a-descriptions-item v-if="packetObjectIdentifier(selectedPacket)" label="Object Identifier"><span class="monospace">{{ packetObjectIdentifier(selectedPacket) }}</span></a-descriptions-item>
+            <a-descriptions-item v-if="packetProperty(selectedPacket)" label="Property">{{ packetProperty(selectedPacket) }}</a-descriptions-item>
+            <a-descriptions-item v-if="packetArrayIndex(selectedPacket)" label="Array Index">{{ packetArrayIndex(selectedPacket) }}</a-descriptions-item>
+            <a-descriptions-item v-if="packetPriority(selectedPacket)" label="Write Priority">{{ packetPriority(selectedPacket) }}</a-descriptions-item>
+            <a-descriptions-item v-if="packetValue(selectedPacket) !== undefined" label="Value"><span class="packet-detail-value">{{ String(packetValue(selectedPacket)) }}</span></a-descriptions-item>
+            <a-descriptions-item v-if="packetFailedService(selectedPacket)" label="Failed Service">{{ packetFailedService(selectedPacket) }}</a-descriptions-item>
+            <a-descriptions-item v-if="packetErrorClass(selectedPacket)" label="Error Class">{{ packetErrorClass(selectedPacket) }}</a-descriptions-item>
+            <a-descriptions-item v-if="packetErrorCode(selectedPacket)" label="Error Code"><a-tag color="red">{{ packetErrorCode(selectedPacket) }}</a-tag></a-descriptions-item>
+            <a-descriptions-item label="Decode Status"><a-tag :color="decodeStatusColor(selectedPacket.decode_status)">{{ selectedPacket.decode_status }}</a-tag></a-descriptions-item>
+            <a-descriptions-item v-if="selectedPacket.decode_error" label="Decode Error"><span class="decode-error">{{ selectedPacket.decode_error }}</span></a-descriptions-item>
           </a-descriptions>
-
-          <template v-if="selectedPacket.simulator_device_id != null">
-            <div class="protocol-tree-header">
-              Simulator
-            </div>
-
+          <template v-if="selectedPacket.simulator.device_id != null">
+            <div class="protocol-tree-header">Simulator</div>
             <a-descriptions bordered size="small" :column="1">
-              <a-descriptions-item label="Device">
-                {{ selectedPacket.simulator_device_name }}
-              </a-descriptions-item>
-
-              <a-descriptions-item
-                v-if="selectedPacket.simulator_object_name"
-                label="Object"
-              >
-                {{ selectedPacket.simulator_object_name }}
-              </a-descriptions-item>
+              <a-descriptions-item label="Device">{{ selectedPacket.simulator.device_name }}</a-descriptions-item>
+              <a-descriptions-item v-if="selectedPacket.simulator.point_name" label="Point">{{ selectedPacket.simulator.point_name }}</a-descriptions-item>
             </a-descriptions>
           </template>
-
-          <div class="hex-header">
-            Full Frame (Ethernet + IPv4 + UDP + BACnet)
-          </div>
-
-          <pre class="packet-hex" v-html="selectedPacketFullFrameHexHtml"></pre>
-
-
-          <div class="protocol-tree-header">
-            Protocol Details
-          </div>
-
-          <div class="protocol-tree-panel">
-            <a-tree
-              :tree-data="selectedProtocolTree"
-              :selected-keys="selectedProtocolKeys"
-              default-expand-all
-              block-node
-              @select="onProtocolNodeSelect"
-            >
-              <template #title="{ title, value }">
-                <div class="protocol-tree-row">
-                  <span class="protocol-tree-label">
-                    {{ title }}
-                  </span>
-                  <span
-                    v-if="value !== undefined"
-                    class="protocol-tree-value"
-                  >
-                    {{ value }}
-                  </span>
-                </div>
-              </template>
-            </a-tree>
-          </div>
+          <component :is="selectedRenderer" v-if="selectedRenderer" :key="selectedPacket.packet_id" :packet="selectedPacket" />
+          <template v-else>
+            <h4 class="protocol-tree-header">Protocol Details</h4>
+            <a-alert type="error" :message="`Unsupported protocol detail renderer: ${selectedPacket.protocol}`" />
+          </template>
         </template>
       </a-spin>
     </a-drawer>
   </div>
 </template>
-
 <style scoped>
 .packet-capture-page {
   height: 100%;

@@ -26,15 +26,16 @@ import SavedGraphsView from './components/SavedGraphsView.vue'
 import NotificationClassDrawer from './components/NotificationClassDrawer.vue'
 import EventEnrollmentDrawer from './components/EventEnrollmentDrawer.vue'
 import TrendLogDrawer from './components/TrendLogDrawer.vue'
-import ReplayRecordingDrawer from './components/ReplayRecordingDrawer.vue'
+import RecordingsDrawer from './components/RecordingsDrawer.vue'
 import ReplayPlaybackDrawer from './components/ReplayPlaybackDrawer.vue'
 import CalibrationDrawer from './components/calibration/CalibrationDrawer.vue'
+import TrainingDrawer from './components/training/TrainingDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import CalendarDrawer from './components/CalendarDrawer.vue'
 import EnergyModelDrawer from './components/EnergyModelDrawer.vue'
 import SimulationModelModal from './components/SimulationModelDrawer.vue'
 
-import type { Device, Meta, Health, Location, Equipment, Project, BACnetConnectionConfig, BACnetDiscoveryConnection, ReplayRecording } from './types'
+import type { Device, Meta, Health, Location, Equipment, Project, BACnetConnectionConfig, BACnetDiscoveryConnection, Recording } from './types'
 import { api, projectDirty } from './api'
 import { buildLocationTreeOptions, flattenLocationTree } from './locationTree'
 import { authToken, currentUser, logout } from './auth'
@@ -266,8 +267,36 @@ const sidebarFilteredCount = computed(() =>
 )
 const hasExternalDevices = computed(() => devices.value.some(d => d.source_type === 'external-bacnet'))
 
-const expandedKeys = ref<string[]>([])
-watch(locations, () => { expandedKeys.value = [...locations.value.map(l => `location-${l.id}`), 'discovered-group'] }, { immediate: true })
+// Sidebar tree expand/collapse state -- persisted so a restart/reload
+// doesn't force everything back open (confirmed live: previously this was
+// unconditionally recomputed to "every location + Discovered expanded" on
+// every `locations` change, including the initial load, so a manually
+// collapsed node like Discovered/"Unassigned" never stayed collapsed).
+// Same localStorage convention as SIDEBAR_WIDTH_KEY/ACTIVE_PROJECT_KEY above.
+const EXPANDED_KEYS_KEY = 'bacnet-sim-sidebar-expanded-keys'
+function loadPersistedExpandedKeys(): string[] | null {
+  try {
+    const raw = localStorage.getItem(EXPANDED_KEYS_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === 'string') : null
+  } catch {
+    return null // Malformed/stale storage -- fall back to the default-expanded behavior below.
+  }
+}
+const persistedExpandedKeys = loadPersistedExpandedKeys()
+const expandedKeys = ref<string[]>(persistedExpandedKeys ?? [])
+// Only on a first-ever visit (nothing persisted yet) does this keep
+// recomputing "everything expanded" as locations load in -- exactly
+// today's behavior. Once anything has been persisted (including that very
+// first computed value, via the watcher below), later loads restore
+// whatever the user last had, full stop -- never auto-re-expanded again.
+if (persistedExpandedKeys === null) {
+  watch(locations, () => { expandedKeys.value = [...locations.value.map(l => `location-${l.id}`), 'discovered-group'] }, { immediate: true })
+}
+watch(expandedKeys, (keys) => {
+  localStorage.setItem(EXPANDED_KEYS_KEY, JSON.stringify(keys))
+})
 
 const moveToOptions = computed(() => flattenLocationTree(buildLocationTreeOptions(locations.value)))
 const duplicateLocationOptions = computed(() => buildLocationTreeOptions(locations.value))
@@ -641,17 +670,17 @@ function openCreateSimulatedCopy(d: Device) {
   createCopyModalOpen.value = true
 }
 
-// "Create Replay" action on a recording row (ReplayRecordingDrawer.vue) --
+// "Create Replay" action on a recording row (RecordingsDrawer.vue) --
 // reuses the exact same Create Simulation modal/flow as the ordinary
 // device-context-menu entry point above, just preselecting Replay mode
 // and this recording (see CreateSimulatedCopyModal.vue's
 // preselectedRecordingId prop). Closes the Recordings drawer first so the
 // two don't stack.
-function openCreateReplayFromRecording(recording: ReplayRecording) {
-  if (!replayRecordingDevice.value) return
-  createCopySource.value = replayRecordingDevice.value
+function openCreateReplayFromRecording(recording: Recording) {
+  if (!recordingsDevice.value) return
+  createCopySource.value = recordingsDevice.value
   createCopyPreselectedRecordingId.value = recording.id
-  replayRecordingDrawerOpen.value = false
+  recordingsDrawerOpen.value = false
   createCopyModalOpen.value = true
 }
 async function onSimulatedCopyCreated(created: Device) {
@@ -725,11 +754,11 @@ function openTrendLogs(d: Device) {
   trendLogDrawerOpen.value = true
 }
 
-const replayRecordingDrawerOpen = ref(false)
-const replayRecordingDevice = ref<Device | null>(null)
-function openReplayRecordings(d: Device) {
-  replayRecordingDevice.value = d
-  replayRecordingDrawerOpen.value = true
+const recordingsDrawerOpen = ref(false)
+const recordingsDevice = ref<Device | null>(null)
+function openRecordingsDrawer(d: Device) {
+  recordingsDevice.value = d
+  recordingsDrawerOpen.value = true
 }
 
 const calibrationDrawerOpen = ref(false)
@@ -737,6 +766,13 @@ const calibrationDevice = ref<Device | null>(null)
 function openCalibration(d: Device) {
   calibrationDevice.value = d
   calibrationDrawerOpen.value = true
+}
+
+const trainingDrawerOpen = ref(false)
+const trainingDevice = ref<Device | null>(null)
+function openTraining(d: Device) {
+  trainingDevice.value = d
+  trainingDrawerOpen.value = true
 }
 
 const replayPlaybackDrawerOpen = ref(false)
@@ -1059,7 +1095,7 @@ onUnmounted(() => {
       <a-layout-header style="display:flex;align-items:center;gap:12px;padding:0 20px;height:48px;line-height:48px;background:#0a0a0a;border-bottom:1px solid rgba(255,255,255,0.08)">
         <IotisticaLogo :size="24" />
         <span style="color:rgba(255,255,255,0.85);font-size:15px;font-weight:600;letter-spacing:.3px">Iotistica</span>
-        <span style="color:rgba(255,255,255,0.25);font-size:13px;font-weight:400">BACnet Simulator</span>
+        <span style="color:rgba(255,255,255,0.25);font-size:13px;font-weight:400">Sims+</span>
 
         <div style="display:flex;align-items:center;gap:2px;margin-left:12px;padding-left:12px;padding-right:12px; border-left:1px solid rgba(255,255,255,0.08);border-right:1px solid rgba(255,255,255,0.08)">
           <a-tooltip title="Start simulation clock">
@@ -1097,10 +1133,11 @@ onUnmounted(() => {
           <a-radio-button value="alarms"><AlertOutlined /> Alarms{{ unackedAlarmCount ? ` (${unackedAlarmCount})` : '' }}</a-radio-button>
           <a-radio-button value="settings"><SettingOutlined /> Settings</a-radio-button>
           <a-radio-button value="packet-capture"><ClusterOutlined /> Network</a-radio-button>
-          <!-- Utilities, Tests, Graph, and Data Graphs hidden for now -- see
+          <a-radio-button value="graphs"><LineChartOutlined /> Data Graphs</a-radio-button>
+          <!-- Utilities, Tests, and Graph (semantic) still hidden -- see
                App.vue's activeView v-else-if render blocks + component
                imports above, all left in place, unreferenced, so restoring
-               is just re-adding these four lines. -->
+               either is just re-adding its one line here. -->
         </a-radio-group>
 
         <div style="flex:1"></div>
@@ -1204,8 +1241,9 @@ onUnmounted(() => {
             @external-device-seen="markExternalDeviceSeen"
             @edit-device="openEditDevice"
             @simulation-model="openSimulationModel"
-            @replay-recordings="openReplayRecordings"
+            @recordings="openRecordingsDrawer"
             @calibration="openCalibration"
+            @training="openTraining"
             @create-simulated-copy="openCreateSimulatedCopy"
             @assign-device-location="assignDeviceToLocation"
             @remove-external-device="removeExternalDevice"
@@ -1221,6 +1259,7 @@ onUnmounted(() => {
             @calendars="openCalendars"
             @energy-model="openEnergyModel"
             @view-traffic="viewTraffic"
+            @select-controller="onSelectController"
           />
 
           <div v-else style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px">
@@ -1245,7 +1284,6 @@ onUnmounted(() => {
       :default-location-id="addContextLocationId"
       :locked-equipment-id="lockedEquipmentIdForNewController"
       @saved="onDeviceSaved"
-      @simulation-model="openSimulationModel"
     />
 
     <!-- Location drawer -->
@@ -1348,9 +1386,9 @@ onUnmounted(() => {
     <TrendLogDrawer v-model:open="trendLogDrawerOpen" :device="trendLogDevice" />
 
     <!-- Replay recordings drawer -->
-    <ReplayRecordingDrawer
-      v-model:open="replayRecordingDrawerOpen"
-      :device="replayRecordingDevice"
+    <RecordingsDrawer
+      v-model:open="recordingsDrawerOpen"
+      :device="recordingsDevice"
       @create-replay="openCreateReplayFromRecording"
     />
 
@@ -1359,6 +1397,9 @@ onUnmounted(() => {
 
     <!-- Calibration drawer -->
     <CalibrationDrawer v-model:open="calibrationDrawerOpen" :device="calibrationDevice" />
+
+    <!-- Training drawer -->
+    <TrainingDrawer v-model:open="trainingDrawerOpen" :device="trainingDevice" />
 
     <!-- Schedules drawer -->
     <ScheduleDrawer v-model:open="scheduleDrawerOpen" :device="scheduleDevice" />

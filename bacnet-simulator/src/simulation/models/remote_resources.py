@@ -3,7 +3,7 @@ endpoint (shared/runtime/resources/ in iot-models) -- lets a user upload a
 file (e.g. a converted .mos weather file) that any catalog model's
 "is_file" string parameter can then reference by its resolved server-side
 path. Deliberately not scoped to weather or any one model, matching that
-endpoint's own genericity -- see StringParameterMetadata.is_file in
+endpoint's own genericity -- see ParameterMetadata.is_file in
 iot-models' catalog.py for the flag that tells the Simulation Model
 drawer's Parameters UI to render an upload control at all.
 

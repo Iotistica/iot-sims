@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from ...bacnet.schemas import (
     ObjectCreate,
+    ObjectLinkCreate,
     ObjectUpdate,
     PriorityWrite,
     SetValueRequest,
@@ -251,6 +252,21 @@ async def list_objects(
         obj["raw_provider_value"] = (
             raw_provider_values.get(pid) if owner and raw_provider_values else None
         )
+        # Resolved display info for a linked object (source_object_id set,
+        # see POST .../objects/link) -- N+1 is deliberate here, same as the
+        # aggregate-membership delete check elsewhere in this file: object
+        # counts per device are small, this isn't a hot path.
+        obj["link_source"] = None
+        source_id = obj.get("source_object_id")
+        if source_id is not None:
+            source_obj = await asyncio.to_thread(database.get_object, source_id)
+            if source_obj is not None:
+                source_dev = await asyncio.to_thread(database.get_device, source_obj["device_id"])
+                obj["link_source"] = {
+                    "device_id": source_obj["device_id"],
+                    "device_name": source_dev["name"] if source_dev else "",
+                    "name": source_obj["name"],
+                }
     return objects
 
 
@@ -305,6 +321,77 @@ async def create_object(
     # Preserve the current hot-add behavior. A full engine reload is
     # unnecessary when both the device and object are enabled.
     if device["enabled"] and body.enabled:
+        asyncio.create_task(
+            engine.add_object_hot(
+                device["device_instance"],
+                obj,
+            )
+        )
+
+    return obj
+
+
+@router.post(
+    "/link",
+    status_code=201,
+)
+async def link_object(
+    device_id: int,
+    body: ObjectLinkCreate,
+    request: Request,
+):
+    """Creates a new object on device_id that's a live-value link to an
+    existing object elsewhere (same device, another simulated device, or a
+    live external one) -- see database.create_linked_object. Kept as its
+    own endpoint rather than widening ObjectCreate/ObjectUpdate: linking has
+    a fundamentally different identity source (copied from the source
+    object, not submitted by the caller) and its own pair of guards below,
+    neither of which make sense on the plain create/edit path."""
+    database = get_database(request)
+    engine = get_engine(request)
+
+    device = await require_device(
+        database,
+        device_id,
+    )
+    reject_external_device(device)
+    if device.get("simulation_mode", "simulation") != "simulation":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Device {device['name']!r} is in "
+                f"{device.get('simulation_mode')!r} mode -- convert a Mirror/"
+                "Replay device's own points by re-copying the device, not by "
+                "linking individual points onto it."
+            ),
+        )
+
+    source = await asyncio.to_thread(database.get_object, body.source_object_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source object not found")
+    if source.get("source_object_id") is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Point {source['name']!r} is itself linked from another point -- "
+                "link directly to its own source instead."
+            ),
+        )
+
+    obj = await asyncio.to_thread(
+        database.create_linked_object,
+        device_id,
+        body.source_object_id,
+    )
+
+    log_event(
+        request,
+        device_id,
+        "info",
+        f"Object linked: {obj['name']} ({obj['object_type']}:{obj['object_instance']})",
+    )
+
+    if device["enabled"] and obj["enabled"]:
         asyncio.create_task(
             engine.add_object_hot(
                 device["device_instance"],
@@ -421,6 +508,43 @@ async def update_object(
     return updated
 
 
+@router.post("/{object_id}/unlink")
+async def unlink_object(
+    device_id: int,
+    object_id: int,
+    request: Request,
+):
+    """Clears source_object_id -- see database.unlink_object. Kept as its
+    own endpoint rather than folded into ObjectUpdate for the same reason
+    link_object() is its own endpoint (see that route's docstring)."""
+    database = get_database(request)
+
+    device = await require_device(
+        database,
+        device_id,
+    )
+    reject_external_device(device)
+
+    obj = await require_object(
+        database,
+        device_id,
+        object_id,
+    )
+    if obj.get("source_object_id") is None:
+        raise HTTPException(status_code=400, detail="Object is not linked")
+
+    updated = await asyncio.to_thread(database.unlink_object, object_id)
+
+    log_event(
+        request,
+        device_id,
+        "info",
+        f"Object unlinked: {obj['name']}",
+    )
+
+    return updated
+
+
 @router.delete(
     "/{object_id}",
     status_code=204,
@@ -456,6 +580,20 @@ async def delete_object(
                     "Remove it from the aggregate first."
                 ),
                 "owner": aggregate_owner,
+            },
+        )
+
+    link_consumers = await asyncio.to_thread(database.get_link_consumers, object_id)
+    if link_consumers:
+        names = ", ".join(f"{c['name']!r} on {c['device_name']!r}" for c in link_consumers)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Point {obj['name']!r} is still linked from: {names}. "
+                    "Unlink it first."
+                ),
+                "consumers": link_consumers,
             },
         )
 

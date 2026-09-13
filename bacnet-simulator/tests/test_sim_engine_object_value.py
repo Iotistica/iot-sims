@@ -15,6 +15,8 @@ prove get_object_value() no longer depends on it at all."""
 from __future__ import annotations
 
 from src.simulation.engine import SimEngine
+from src.simulation.protocol_runtime import PointRuntimeConfig, RuntimePoint
+from src.simulation.protocols.bacnet import BacnetProtocolAdapter
 
 
 def test_get_object_value_reads_prev_values_not_current_values(database):
@@ -51,6 +53,9 @@ def test_resolve_wire_object_current_value_uses_prev_values(database):
         conn.commit()
 
     engine = SimEngine(database)
+    # SimEngine no longer constructs BacnetProtocolAdapter itself -- register one explicitly,
+    # the same as composition-layer code (src/simulation/runtime.py's lifespan()) would.
+    engine.register_protocol_adapter("bacnet", BacnetProtocolAdapter(engine))
     engine._current_values = {"devices": [], "tick": 0.0}
     engine._prev_values[object_id] = 42.5
 
@@ -60,7 +65,15 @@ def test_resolve_wire_object_current_value_uses_prev_values(database):
     class _FakeBehavior:
         pass
 
-    engine._objects[object_id] = (_FakeBacnetObj(), _FakeBehavior())
+    engine._runtime_points[object_id] = RuntimePoint(
+        config=PointRuntimeConfig(
+            point_id=object_id, device_id=device_id, name="Wire-Point",
+            units=None, protocol_config={},
+        ),
+        adapter=engine._protocol_adapters["bacnet"],
+        handle=_FakeBacnetObj(),
+        behavior=_FakeBehavior(),
+    )
 
     resolved = engine.resolve_wire_object("analog-input", 1)
     assert resolved is not None

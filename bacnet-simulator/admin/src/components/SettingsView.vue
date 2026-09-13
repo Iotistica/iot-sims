@@ -37,6 +37,8 @@ const form = reactive<Settings>({
   openai_compatible_base_url: '',
   openai_compatible_api_key: '',
   openai_compatible_model: '',
+  recording_retention_enabled: false,
+  recording_retention_days: 30,
 })
 
 async function load() {
@@ -178,6 +180,27 @@ onMounted(load)
               </a-form-item>
               <a-form-item label="Live traffic feed (analytics)" style="margin-bottom:0">
                 <a-input-number v-model:value="form.metrics_traffic_feed_maxlen" :min="10" :max="10000" style="width:100%" />
+              </a-form-item>
+            </a-form>
+          </div>
+
+          <div style="font-size:12px;color:var(--text-muted);margin:20px 0 12px">
+            Recordings -- unlike the in-memory buffers above, this deletes completed
+            recordings (and all their samples) from the database once they're older than the
+            configured age. A recording a Replay device is currently driving from is never deleted
+            automatically, regardless of age.
+          </div>
+          <div style="background:var(--panel-bg);border:1px solid var(--border);border-radius:6px;padding:16px;max-width:480px">
+            <a-form layout="vertical">
+              <a-form-item label="Auto-delete old recordings" style="margin-bottom:16px">
+                <a-switch v-model:checked="form.recording_retention_enabled" />
+              </a-form-item>
+              <a-form-item label="Keep recordings for (days)" style="margin-bottom:0">
+                <a-input-number
+                  v-model:value="form.recording_retention_days"
+                  :disabled="!form.recording_retention_enabled"
+                  :min="1" :max="3650" style="width:100%"
+                />
               </a-form-item>
             </a-form>
           </div>

@@ -11,7 +11,7 @@ import json
 from typing import Any, Literal, Optional
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import calendar as bacnet_calendar
 from ..core.config import (
@@ -30,6 +30,7 @@ from ..semantics.validation import validate_semantic_entity
 
 
 class DeviceCreate(BaseModel):
+    protocol: str = Field(..., min_length=1, max_length=50)
     device_instance: int = Field(..., ge=1, le=4194302)
     name: str = Field(..., min_length=1, max_length=100)
     description: str = ""
@@ -45,9 +46,11 @@ class DeviceCreate(BaseModel):
     can_receive_event_notifications: Optional[bool] = None
     simulation_mode: str = Field("simulation")
     source_device_id: Optional[int] = None
-    replay_recording_id: Optional[int] = None
+    active_recording_id: Optional[int] = None
 
     def validate_device_info(self) -> None:
+        if not self.protocol.strip():
+            raise HTTPException(400, "protocol is required")
         if self.segmentation_supported not in VALID_SEGMENTATION:
             raise HTTPException(400, f"segmentation_supported must be one of: {sorted(VALID_SEGMENTATION)}")
 
@@ -133,6 +136,16 @@ class ObjectCreate(BaseModel):
     behavior_params: str = '{"value":0}'
     enabled: int = 1
     number_of_states: int = Field(2, ge=1, le=254)
+    # Optional BACnet State_Text list, one entry per state (index 0 = state
+    # 1, ..., index number_of_states-1 = state number_of_states) -- only
+    # meaningful for a multi-state object type. None means "no state text
+    # configured" (a real client just sees the raw 1-based integer), the
+    # same as every multi-state object before this field existed. Primary
+    # producer today is the classifier attach flow (see
+    # ClassifierTrainingFlow.vue), auto-populated from a promoted
+    # classifier model's class_labels -- not yet editable via a manual
+    # picker in ObjectDrawer.vue.
+    state_text: Optional[list[str]] = None
     reliability: str = "no-fault-detected"
     polarity: str = "normal"
     point_type: Optional[str] = None
@@ -150,6 +163,12 @@ class ObjectCreate(BaseModel):
             json.loads(self.behavior_params)
         except Exception:
             raise HTTPException(400, "behavior_params must be valid JSON")
+        if self.state_text is not None and len(self.state_text) != self.number_of_states:
+            raise HTTPException(
+                400,
+                f"state_text must have exactly number_of_states ({self.number_of_states}) "
+                f"entries, got {len(self.state_text)}",
+            )
 
     def validate_semantic(self) -> None:
         if self.point_type is not None and self.point_type not in POINT_TYPES:
@@ -205,6 +224,14 @@ class SemanticRelationshipCreate(BaseModel):
 
 class SetValueRequest(BaseModel):
     value: Any
+
+
+class ObjectLinkCreate(BaseModel):
+    """Creates a new object that's a live-value link to an existing one --
+    see database.create_linked_object and the plan this accompanies (the
+    per-object sibling of whole-device Mirror). One source per call, same
+    as the plain ObjectCreate flow being one object at a time."""
+    source_object_id: int = Field(..., gt=0)
 
 
 class EnergyModelConfigCreate(BaseModel):
@@ -288,26 +315,116 @@ class TrendLogUpdate(TrendLogCreate):
     buffer_size: int = Field(..., ge=1, le=100000)
 
 
-class ReplayRecordingCreate(BaseModel):
+def _clean_tags(value: list[str]) -> list[str]:
+    """Trim, drop empties, de-duplicate (case-sensitive, first occurrence
+    wins) -- server-side enforcement of exactly what the UI's own tag-chip
+    input already does, since this replaces a free-text field with a real
+    list. Order preserved otherwise (not sorted here -- callers that need a
+    canonical order sort it themselves)."""
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for raw in value:
+        tag = raw.strip()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        cleaned.append(tag)
+    return cleaned
+
+
+_RECORDING_FAULT_TYPES = (
+    # General -- any equipment with sensors/actuators/setpoints.
+    "sensor_bias", "sensor_stuck", "actuator_stuck", "actuator_leak",
+    "control_unstable", "incorrect_setpoint",
+    # Air-side -- AHU/RTU/VAV.
+    "simultaneous_heat_cool", "filter_fouling",
+    # Refrigeration cycle -- RTU/Chiller/heat-pump DX equipment. Grounded
+    # against the real LBNL/ORNL RTU FDD benchmark dataset (field +
+    # experimental-testbed + simulated refrigeration-cycle data), which
+    # treats condenser/evaporator fouling and over/undercharge as distinct,
+    # differently-signatured faults, not one value each.
+    "compressor_staging", "condenser_fouling", "evaporator_fouling",
+    "refrigerant_overcharge", "refrigerant_undercharge", "refrigerant_line_restriction",
+    # Hydronic/water-side -- Boiler/Chiller/Cooling Tower/Pump.
+    "heat_exchanger_fouling", "water_flow_restriction", "cavitation",
+    # Combustion -- Boiler-specific.
+    "ignition_failure", "low_water_cutoff_fault",
+    # Mechanical/rotating equipment -- Fan/Pump/Cooling Tower.
+    "belt_or_drive_fault",
+)
+# Broadened from an RTU-only cut to cover every equipment family this
+# simulator models (src/core/config.py's EQUIPMENT_TYPES), each grounded
+# against that family's own established real-world fault set (ASHRAE
+# RP-1312 for AHUs, the ORNL/LBNL VAV terminal-unit fault dataset, boiler
+# combustion troubleshooting references, chiller-plant water-side fault
+# references, cooling tower/pump mechanical fault references) -- not
+# guessed. Deliberately excludes a flame-sensor-specific value (folds into
+# sensor_stuck/sensor_bias, no meaningful difference in use) and a VAV
+# controller-communication-fault value (a networking issue, not a physical
+# fault the recorded sensor data would actually show). Stays one flat enum,
+# not a type+equipment-family pair -- equipment family is already known
+# per-device (device.equipment_type); the admin UI narrows the picker to
+# the applicable subset client-side (see RecordingsDrawer.vue's own
+# EQUIPMENT_FAULT_TYPES), this list itself stays equipment-agnostic and
+# unvalidated against the device, same as condition/tags today.
+
+
+class RecordingCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
+    # Structured ground-truth classification, separate from the free-text
+    # `tags` scenario labels below -- None means unclassified/legacy (never
+    # guessed/backfilled, see migration 025's own docstring). Kept a flat,
+    # stable 3-value enum on purpose -- severity. `fault_type` (below) is
+    # the second axis, what KIND of problem, added later per migration
+    # 030's own docstring as its own additive column exactly as this
+    # comment originally anticipated.
+    condition: Optional[Literal["normal", "degraded", "fault"]] = None
+    # What kind of problem, independent of condition's severity -- real-
+    # world HVAC FDD practice's own second classification axis. Fixed enum,
+    # not free text (see migration 030's own docstring for why an open
+    # field can't work as a classification target). No cross-field
+    # validation against condition here -- editable independently, same
+    # flexibility condition/tags already have.
+    fault_type: Optional[Literal[_RECORDING_FAULT_TYPES]] = None  # type: ignore[valid-type]
+    # Independent scenario/tag labels (e.g. "hot-day", "fan-test") -- never
+    # read by the BACnet protocol/simulation engine or replay playback,
+    # purely descriptive metadata. See migration 026's own docstring for
+    # why this is a real list (recording_tags), not a single string, and
+    # why it's deliberately NOT fed into any training feature.
+    tags: list[str] = Field(default_factory=list)
     # None/omitted -> "all of this device's current points" (resolved
-    # server-side in Database.create_replay_recording).
+    # server-side in Database.create_recording).
     point_ids: Optional[list[int]] = None
     sample_interval_seconds: float = Field(..., gt=0)
     maximum_samples: int = Field(..., ge=1, le=100000)
     buffer_mode: str = "stop"
 
+    @field_validator("tags")
+    @classmethod
+    def _clean_tags_field(cls, value: list[str]) -> list[str]:
+        return _clean_tags(value)
 
-class ReplayRecordingUpdate(BaseModel):
+
+class RecordingUpdate(BaseModel):
     # No point_ids -- the points list is fixed at create time (every stored
     # sample references one of those rows); only operational config is
-    # editable after the fact.
+    # editable after the fact. condition/fault_type/tags ARE editable here
+    # (unlike point_ids) -- all three are just labels, safe to correct
+    # after a recording has started or completed.
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field("", max_length=500)
+    condition: Optional[Literal["normal", "degraded", "fault"]] = None
+    fault_type: Optional[Literal[_RECORDING_FAULT_TYPES]] = None  # type: ignore[valid-type]
+    tags: list[str] = Field(default_factory=list)
     sample_interval_seconds: float = Field(..., gt=0)
     maximum_samples: int = Field(..., ge=1, le=100000)
     buffer_mode: str = "stop"
+
+    @field_validator("tags")
+    @classmethod
+    def _clean_tags_field(cls, value: list[str]) -> list[str]:
+        return _clean_tags(value)
 
 
 class ScheduleTargetSpec(BaseModel):
@@ -439,6 +556,13 @@ class SettingsPayload(BaseModel):
     openai_compatible_base_url: str = Field("", max_length=500)
     openai_compatible_api_key: str = Field("", max_length=500)
     openai_compatible_model: str = Field("", max_length=200)
+    # Off by default -- see database._default_settings' own comment for why.
+    recording_retention_enabled: bool = False
+    recording_retention_days: int = Field(30, ge=1, le=3650)
+    # Which semantic representation the resolver translates model-signal meaning through
+    # (see src/semantics/providers/). "brick" is the only implementation today; a
+    # dataset/device may still override per-resolution via ResolutionContext.
+    semantic_provider: str = Field("brick", min_length=1, max_length=50)
 
 
 class PriorityWrite(BaseModel):
@@ -467,6 +591,10 @@ class FunctionalTestUpdate(FunctionalTestCreate):
 
 
 _CUSTOM_GRAPH_AXES = {"left", "right"}
+_CUSTOM_GRAPH_SERIES_ROLES = {"pv", "setpoint"}
+_CUSTOM_GRAPH_TABLE_COLUMNS = {"time", "value", "min", "max", "avg"}
+# widget_type itself is enforced by CustomGraphCreate's own Literal["chart",
+# "kpi", "table"] field -- no separate set constant needed for that one.
 # Only legal value this iteration -- see CustomGraphModal's plan/comments
 # for why there's no real range selector yet (the /history endpoint has no
 # server-side range query behind it, only a ~1h ring buffer; a preset
@@ -476,9 +604,53 @@ _CUSTOM_GRAPH_AXES = {"left", "right"}
 _CUSTOM_GRAPH_TIME_RANGES = {"live"}
 
 
-def validate_custom_graph_definition(definition: dict) -> None:
+def validate_custom_graph_definition(definition: dict, widget_type: str = "chart") -> None:
+    """`widget_type` branches this entirely (see migration 28's docstring
+    for why a widget's `definition` shape depends on its type): 'kpi' and
+    'table' are both a single point, no series/chart concept at all; 'chart'
+    is today's original multi-series shape, now also accepting an optional
+    per-series `role` ('pv', the default, or 'setpoint' -- rendered dashed,
+    see customGraphChart.ts's buildChartData) for a real-controller-style
+    trend."""
     if not isinstance(definition, dict):
         raise ValueError("definition must be an object")
+
+    if widget_type == "kpi":
+        device_id = definition.get("device_id")
+        object_id = definition.get("object_id")
+        if not isinstance(device_id, int) or isinstance(device_id, bool):
+            raise ValueError("definition.device_id must be an integer")
+        if not isinstance(object_id, int) or isinstance(object_id, bool):
+            raise ValueError("definition.object_id must be an integer")
+        decimals = definition.get("decimals")
+        if decimals is not None and (not isinstance(decimals, int) or isinstance(decimals, bool)):
+            raise ValueError("definition.decimals must be an integer")
+        return
+
+    if widget_type == "table":
+        # One point's raw history, shown as a table -- Time/Value always on,
+        # Min/Max/Avg computed client-side (no server-side aggregation
+        # exists, see this plan's own Context) and toggled via `columns`.
+        # No "quality" column -- nothing in this app maps to it.
+        device_id = definition.get("device_id")
+        object_id = definition.get("object_id")
+        if not isinstance(device_id, int) or isinstance(device_id, bool):
+            raise ValueError("definition.device_id must be an integer")
+        if not isinstance(object_id, int) or isinstance(object_id, bool):
+            raise ValueError("definition.object_id must be an integer")
+        columns = definition.get("columns")
+        if columns is not None:
+            if not isinstance(columns, dict):
+                raise ValueError("definition.columns must be an object")
+            for key, value in columns.items():
+                if key not in _CUSTOM_GRAPH_TABLE_COLUMNS:
+                    raise ValueError(f"definition.columns has an unknown key: {key!r}")
+                if not isinstance(value, bool):
+                    raise ValueError(f"definition.columns.{key} must be a boolean")
+        page_size = definition.get("page_size")
+        if page_size is not None and (not isinstance(page_size, int) or isinstance(page_size, bool) or page_size < 1):
+            raise ValueError("definition.page_size must be a positive integer")
+        return
 
     series = definition.get("series")
     if not isinstance(series, list) or not series:
@@ -504,6 +676,9 @@ def validate_custom_graph_definition(definition: dict) -> None:
             raise ValueError(f"definition.series[{i}].axis must be one of: {sorted(_CUSTOM_GRAPH_AXES)}")
         if not isinstance(entry.get("visible"), bool):
             raise ValueError(f"definition.series[{i}].visible must be a boolean")
+        role = entry.get("role", "pv")
+        if role not in _CUSTOM_GRAPH_SERIES_ROLES:
+            raise ValueError(f"definition.series[{i}].role must be one of: {sorted(_CUSTOM_GRAPH_SERIES_ROLES)}")
 
     if definition.get("time_range") not in _CUSTOM_GRAPH_TIME_RANGES:
         raise ValueError(f"definition.time_range must be one of: {sorted(_CUSTOM_GRAPH_TIME_RANGES)}")
@@ -512,13 +687,55 @@ def validate_custom_graph_definition(definition: dict) -> None:
 class CustomGraphCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     definition: dict
+    # Every widget belongs to exactly one dashboard, but this is left
+    # optional here (not Field(...)) so callers with no dashboard context
+    # of their own (e.g. ObjectsPanel.vue's quick single-point graph icon)
+    # can omit it -- Database._resolve_dashboard_id then puts it on the
+    # first dashboard there is, auto-creating one if there really isn't one
+    # yet. See migration 28's docstring for why this can't just be a DB-level
+    # NOT NULL default instead.
+    dashboard_id: Optional[int] = None
+    widget_type: Literal["chart", "kpi", "table"] = "chart"
+    grid_x: int = Field(0, ge=0)
+    grid_y: int = Field(0, ge=0)
+    grid_w: int = Field(6, gt=0)
+    grid_h: int = Field(4, gt=0)
 
     def validate_definition(self) -> None:
         try:
-            validate_custom_graph_definition(self.definition)
+            validate_custom_graph_definition(self.definition, self.widget_type)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
 
-class CustomGraphUpdate(CustomGraphCreate):
+class CustomGraphUpdate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    definition: dict
+    dashboard_id: Optional[int] = None
+    # None on update means "leave unchanged" -- unlike Create, where a
+    # concrete default makes sense for a brand-new row, a PUT that only
+    # means to rename/re-point a widget (e.g. SavedGraphCard.vue's
+    # persist(), or a chart-content edit in CustomGraphModal.vue) must not
+    # silently reset its type/position back to defaults just because that
+    # particular save didn't happen to touch them. See
+    # Database.update_custom_graph for the merge-with-existing-row logic
+    # this enables.
+    widget_type: Optional[Literal["chart", "kpi", "table"]] = None
+    grid_x: Optional[int] = Field(None, ge=0)
+    grid_y: Optional[int] = Field(None, ge=0)
+    grid_w: Optional[int] = Field(None, gt=0)
+    grid_h: Optional[int] = Field(None, gt=0)
+
+    # No validate_definition() here, unlike CustomGraphCreate -- validating
+    # `definition` requires knowing the EFFECTIVE widget_type (this row's
+    # existing one, when this PUT doesn't specify a new one), which only
+    # the router knows after fetching the existing row. See
+    # src/api/routers/custom_graphs.py's update_custom_graph.
+
+
+class DashboardCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class DashboardUpdate(DashboardCreate):
     pass

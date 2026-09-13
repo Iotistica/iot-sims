@@ -111,10 +111,7 @@ EQUIPMENT_TYPES = {
     # Brick Core (verified against bricksrc/equipment.py at v1.4.4):
     # Rooftop_Unit is a real subclass of Air_Handling_Unit, aliased "RTU"
     # there -- added so a device backing a packaged rooftop unit can be
-    # tagged distinctly from a plain AHU (iot-models' RTU/RTU-Heat-Pump
-    # model.json files already declare mapping_hints.preferred_equipment_types:
-    # ["Rooftop_Unit"], which had no matching equipment_type to compare
-    # against here until now).
+    # tagged distinctly from a plain AHU.
     "Rooftop_Unit": "RTU",
 }
 
@@ -337,9 +334,14 @@ POINT_TYPES = {
 BACNET_UNITS = [
     "no-units", "degrees-celsius", "degrees-fahrenheit", "degrees-kelvin",
     "percent", "parts-per-million", "kilowatts", "watts", "kilowatt-hours",
-    "amperes", "volts", "cubic-feet-per-minute", "liters-per-second",
+    "watt-hours", "amperes", "volts", "cubic-feet-per-minute",
+    "liters-per-second", "liters-per-hour", "cubic-meters-per-second",
     "pascals", "kilopascals", "bars", "cubic-meters-per-hour",
     "revolutions-per-minute", "meters-per-second", "luxes",
+    "hertz", "newton-meters", "kilograms-per-second", "power-factor",
+    "volt-amperes", "kilovolt-amperes",
+    "volt-amperes-reactive", "kilovolt-amperes-reactive",
+    "watts-per-square-meter", "seconds", "hours", "joules-per-degree-kelvin",
 ]
 
 JWT_ALGORITHM = "HS256"

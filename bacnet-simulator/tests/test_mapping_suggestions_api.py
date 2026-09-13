@@ -25,7 +25,7 @@ SIMPLE_VAV_ZONE_MODEL_TYPE = "b76aae8c-ecfe-44f2-b053-8b005c8ae2ed"
 
 def _set_equipment_type(client, device: dict, equipment_type: str) -> dict:
     resp = client.put(f"/devices/{device['id']}", json={
-        "device_instance": device["device_instance"], "name": device["name"],
+        "protocol": "bacnet", "device_instance": device["device_instance"], "name": device["name"],
         "description": device.get("description", ""), "vendor_name": device.get("vendor_name", "Iotistica"),
         "model_name": device.get("model_name", "BACnet Simulator"), "enabled": device.get("enabled", True),
         "firmware_revision": device.get("firmware_revision", "N/A"),
@@ -46,7 +46,7 @@ def _equipment_entity_id(database, device_id: int) -> int:
 
 
 def _make_ahu_vav_topology(client, database):
-    ahu = client.post("/devices", json={"device_instance": 3001, "name": "AHU-API"}).json()
+    ahu = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3001, "name": "AHU-API"}).json()
     ahu = _set_equipment_type(client, ahu, "Air_Handling_Unit")
     ahu_sat = client.post(f"/devices/{ahu['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "SAT", "units": "degrees-celsius",
@@ -56,7 +56,7 @@ def _make_ahu_vav_topology(client, database):
         "point_type": "Supply_Air_Temperature_Sensor",
     })
 
-    vav = client.post("/devices", json={"device_instance": 3002, "name": "VAV-API"}).json()
+    vav = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3002, "name": "VAV-API"}).json()
     vav = _set_equipment_type(client, vav, "Variable_Air_Volume_Box")
 
     client.post("/semantic-relationships", json={
@@ -68,7 +68,7 @@ def _make_ahu_vav_topology(client, database):
 
 
 def test_mapping_suggestions_returns_entry_per_variable(client):
-    device = client.post("/devices", json={"device_instance": 3003, "name": "VAV-Plain"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3003, "name": "VAV-Plain"}).json()
 
     resp = client.post("/simulation/models/mapping-suggestions", json={
         "model_type": SIMPLE_VAV_ZONE_MODEL_TYPE, "provider_type": "fmu",
@@ -83,7 +83,7 @@ def test_mapping_suggestions_returns_entry_per_variable(client):
 
 
 def test_mapping_suggestions_causes_zero_db_mutation(client, database):
-    device = client.post("/devices", json={"device_instance": 3004, "name": "VAV-ReadOnly"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3004, "name": "VAV-ReadOnly"}).json()
     before_device = database.get_device(device["id"])
     before_objects = database.get_objects(device["id"])
 
@@ -175,7 +175,7 @@ def test_mapping_suggestion_ai_azure_failure_returns_502(client, database):
 
 
 def test_mapping_suggestion_ai_without_topology_still_returns_valid_shortlist(client, database):
-    vav = client.post("/devices", json={"device_instance": 3005, "name": "VAV-NoTopology"}).json()
+    vav = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3005, "name": "VAV-NoTopology"}).json()
     vav = _set_equipment_type(client, vav, "Variable_Air_Volume_Box")
     local_sat = client.post(f"/devices/{vav['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "SAT", "units": "degrees-celsius",
@@ -202,7 +202,7 @@ def test_mapping_suggestion_ai_without_topology_still_returns_valid_shortlist(cl
 
 
 def test_mapping_suggestion_ai_unknown_variable_400(client):
-    device = client.post("/devices", json={"device_instance": 3006, "name": "VAV-BadVar"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3006, "name": "VAV-BadVar"}).json()
     resp = client.post("/simulation/models/mapping-suggestions/ai", json={
         "model_type": SIMPLE_VAV_ZONE_MODEL_TYPE, "variable": "not_a_real_variable", "created_from_device_id": device["id"],
     })

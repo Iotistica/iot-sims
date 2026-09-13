@@ -1,13 +1,13 @@
-"""Database.get_replay_recording_all_samples -- the long-format bulk read
+"""Database.get_recording_all_samples -- the long-format bulk read
 used by the calibration dataset builder (see calibration_export.py).
-Covers grouping/ordering/decoding only; get_replay_recording_samples
-(per-index) and the write path (add_replay_sample) are already covered
+Covers grouping/ordering/decoding only; get_recording_samples
+(per-index) and the write path (add_recording_sample) are already covered
 elsewhere."""
 from __future__ import annotations
 
 
 def _make_device(client, *, instance: int, name: str) -> dict:
-    return client.post("/devices", json={"device_instance": instance, "name": name}).json()
+    return client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name}).json()
 
 
 def _make_point(database, device_id: int, *, instance: int, name: str) -> dict:
@@ -31,7 +31,7 @@ def test_all_samples_grouped_ordered_and_decoded(client, database):
     p1 = _make_point(database, device["id"], instance=0, name="Zone Temp")
     p2 = _make_point(database, device["id"], instance=1, name="Airflow")
 
-    recording = database.create_replay_recording(device["id"], {
+    recording = database.create_recording(device["id"], {
         "name": "All Samples Test",
         "point_ids": [p1["id"], p2["id"]],
         "sample_interval_seconds": 5.0,
@@ -40,16 +40,16 @@ def test_all_samples_grouped_ordered_and_decoded(client, database):
     })
     point_ids = {p["object_name"]: p["id"] for p in recording["points"]}
 
-    database.add_replay_sample(recording["id"], {
+    database.add_recording_sample(recording["id"], {
         point_ids["Zone Temp"]: {"value": 21.0},
         point_ids["Airflow"]: {"value": 1.5},
     })
-    database.add_replay_sample(recording["id"], {
+    database.add_recording_sample(recording["id"], {
         point_ids["Zone Temp"]: {"value": 21.5},
         point_ids["Airflow"]: {"value": 1.6},
     })
 
-    rows = database.get_replay_recording_all_samples(recording["id"])
+    rows = database.get_recording_all_samples(recording["id"])
 
     assert len(rows) == 4
     assert [r["sample_index"] for r in rows] == [0, 0, 1, 1]

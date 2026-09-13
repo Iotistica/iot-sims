@@ -40,6 +40,9 @@ from .base import FaultRule
 # object name) to these semantic keys belongs in FaultContext / the semantic
 # mapping layer, not in the rule logic itself.
 
+# FOLLOW-UP (not this phase): superseded in concept by
+# src/semantics/providers/brick.py::CANONICAL_TO_BRICK (snake_case canonical ids). See the
+# matching note in rtu.py; brick.py ships FDD_ROLE_TO_CANONICAL_ID as the bridge.
 CANONICAL_SEMANTICS: dict[str, dict[str, object]] = {
     "Supply_Fan_Command": {
         "brick": "Supply_Fan_Command",

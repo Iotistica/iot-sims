@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import json
 
+from src.bacnet import object_factory
 from src.simulation.models.store import ensure_simulation_model_schema
 from src.simulation.engine import SimEngine
 
 
 def _make_device_and_point(client, *, instance: int, behavior: str, behavior_params: dict, object_type: str = "analog-value"):
-    device = client.post("/devices", json={"device_instance": instance, "name": f"Device-{instance}"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": f"Device-{instance}"}).json()
     obj = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": object_type, "object_instance": 1, "name": "Test-Point", "units": "percent",
         "behavior": behavior, "behavior_params": json.dumps(behavior_params),
@@ -261,7 +262,7 @@ async def test_restore_to_raw_does_not_reset_provider_owned_point_to_zero(databa
         "behavior": "raw", "behavior_params": "{}",
         "manual_value": None, "reliability": "no-fault-detected",
     }
-    bacnet_obj, _ = engine._create_object(obj_row, slot=0, device_name="RTU")
+    bacnet_obj, _ = object_factory.create_object(engine, obj_row, slot=0, device_name="RTU")
 
     assert float(bacnet_obj.presentValue) == 64.0
     assert float(bacnet_obj.presentValue) != 0.0

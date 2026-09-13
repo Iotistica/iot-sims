@@ -27,6 +27,7 @@ from __future__ import annotations
 import pytest
 
 from src.api.routers import simulation as simulation_router
+from src.bacnet import object_factory
 from src.simulation.models import runtime as model_runtime
 from src.simulation.engine import SimEngine
 from src.simulation.models.registry import ModelDefinition, VariableDefinition
@@ -112,7 +113,7 @@ def test_build_fmu_provider_allows_distinct_input_and_output_points(monkeypatch)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _make_device_and_two_points(client, *, instance: int):
-    device = client.post("/devices", json={"device_instance": instance, "name": "RTU-Test"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": "RTU-Test"}).json()
     fan_command = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-value", "object_instance": 1, "name": "Supply-Fan-Command", "units": "percent",
     }).json()
@@ -199,7 +200,7 @@ async def test_create_object_restores_preserved_value_for_provider_owned_raw_poi
     engine._reload_preserved_values[obj_id] = 64.0
 
     obj_row = _analog_value_row(obj_id, behavior="raw", behavior_params="{}")
-    bacnet_obj, _ = engine._create_object(obj_row, slot=0, device_name="RTU")
+    bacnet_obj, _ = object_factory.create_object(engine, obj_row, slot=0, device_name="RTU")
 
     assert float(bacnet_obj.presentValue) == pytest.approx(64.0)
 
@@ -214,7 +215,7 @@ async def test_create_object_falls_back_to_params_when_no_preserved_value(databa
     # engine._reload_preserved_values intentionally left empty.
 
     obj_row = _analog_value_row(obj_id, behavior="raw", behavior_params="{}")
-    bacnet_obj, _ = engine._create_object(obj_row, slot=0, device_name="RTU")
+    bacnet_obj, _ = object_factory.create_object(engine, obj_row, slot=0, device_name="RTU")
 
     assert float(bacnet_obj.presentValue) == 0.0
 
@@ -229,7 +230,7 @@ async def test_create_object_does_not_restore_for_builtin_owned_point(database):
     engine._reload_preserved_values[obj_id] = 64.0  # not consulted: owner is "builtin"
 
     obj_row = _analog_value_row(obj_id, behavior="constant", behavior_params='{"value": 12.0}')
-    bacnet_obj, _ = engine._create_object(obj_row, slot=0, device_name="Test")
+    bacnet_obj, _ = object_factory.create_object(engine, obj_row, slot=0, device_name="Test")
 
     assert float(bacnet_obj.presentValue) == pytest.approx(12.0)
 
@@ -245,7 +246,7 @@ async def test_create_object_does_not_restore_for_non_passthrough_behavior(datab
     engine._reload_preserved_values[obj_id] = 64.0
 
     obj_row = _analog_value_row(obj_id, behavior="sine", behavior_params='{"base": 20.0, "amplitude": 5.0}')
-    bacnet_obj, _ = engine._create_object(obj_row, slot=0, device_name="RTU")
+    bacnet_obj, _ = object_factory.create_object(engine, obj_row, slot=0, device_name="RTU")
 
     assert float(bacnet_obj.presentValue) != pytest.approx(64.0)
 
@@ -293,7 +294,7 @@ async def test_rtu_recovers_from_stuck_low_fault_without_reseed_to_zero(database
     # What the object edit (fault -> raw) actually leaves in the DB row:
     # behavior='raw', empty params -- this is what used to collapse to 0.
     obj_row = _analog_value_row(obj_id, behavior="raw", behavior_params="{}", name="RTU-1-Supply-Fan-Command")
-    bacnet_obj, _ = engine._create_object(obj_row, slot=0, device_name="RTU")
+    bacnet_obj, _ = object_factory.create_object(engine, obj_row, slot=0, device_name="RTU")
 
     recovered_value = float(bacnet_obj.presentValue)
     assert recovered_value == pytest.approx(30.0)

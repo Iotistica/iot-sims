@@ -10,7 +10,7 @@ from src.simulation.calibration_export import build_calibration_dataset
 
 
 def _make_device(client, *, instance: int, name: str) -> dict:
-    return client.post("/devices", json={"device_instance": instance, "name": name}).json()
+    return client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name}).json()
 
 
 def _make_point(database, device_id: int, *, instance: int, name: str) -> dict:
@@ -34,7 +34,7 @@ def _seeded_recording(client, database, *, instance: int):
     p1 = _make_point(database, device["id"], instance=0, name="Outdoor Air Temp")
     p2 = _make_point(database, device["id"], instance=1, name="Supply Air Temp")
 
-    recording = database.create_replay_recording(device["id"], {
+    recording = database.create_recording(device["id"], {
         "name": "Export Test",
         "point_ids": [p1["id"], p2["id"]],
         "sample_interval_seconds": 5.0,
@@ -43,11 +43,11 @@ def _seeded_recording(client, database, *, instance: int):
     })
     point_ids = {p["object_name"]: p["id"] for p in recording["points"]}
 
-    database.add_replay_sample(recording["id"], {
+    database.add_recording_sample(recording["id"], {
         point_ids["Outdoor Air Temp"]: {"value": 10.0},
         point_ids["Supply Air Temp"]: {"value": 18.0},
     })
-    database.add_replay_sample(recording["id"], {
+    database.add_recording_sample(recording["id"], {
         point_ids["Outdoor Air Temp"]: {"value": 11.0},
         point_ids["Supply Air Temp"]: {"value": 18.5},
     })

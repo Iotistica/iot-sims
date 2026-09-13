@@ -71,19 +71,14 @@ def _build_user_prompt(
     relationship_context: str | None,
     candidates: list[PointCandidate],
 ) -> str:
-    hints = variable.mapping_hints
+    semantic = variable.semantic
     lines: list[str] = []
     lines.append(f"Simulation model: {model_definition.label} ({model_definition.model_type})")
     lines.append(f"Variable: {variable.label} ({variable.direction}:{variable.name})")
     lines.append(f"Expected unit: {variable.unit or '(none)'}")
-    if variable.suggested_point_types:
-        lines.append(f"Expected Brick point class(es): {', '.join(variable.suggested_point_types)}")
-    if hints:
-        lines.append(f"Expected equipment scope: {hints.equipment_scope}")
-        if hints.preferred_equipment_types:
-            lines.append(f"Preferred equipment type(s): {', '.join(hints.preferred_equipment_types)}")
-        if hints.signal_role:
-            lines.append(f"Signal role: {hints.signal_role}")
+    if semantic is not None and semantic.id:
+        lines.append(f"Canonical signal meaning: {semantic.id} (role: {semantic.role})")
+        lines.append(f"Expected equipment scope: {semantic.scope}")
     lines.append(f"Source equipment context: {equipment_context or '(unclassified)'}")
     if relationship_context:
         lines.append(f"Relationship/topology context: {relationship_context}")

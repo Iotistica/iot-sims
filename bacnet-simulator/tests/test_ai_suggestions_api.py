@@ -15,7 +15,7 @@ from src.semantics.ai_suggestions import AiPointSuggestion
 
 
 def _create_simulated_ahu(client):
-    device = client.post("/devices", json={"device_instance": 1003, "name": "AHU-1"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 1003, "name": "AHU-1"}).json()
     sat = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "SAT", "units": "degrees-celsius",
     }).json()
@@ -98,7 +98,7 @@ def test_out_of_vocabulary_class_is_rejected_server_side(client, no_real_azure_c
 
 
 def test_ai_endpoint_404s_for_unknown_object(client, no_real_azure_client):
-    device = client.post("/devices", json={"device_instance": 1004, "name": "AHU-2"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 1004, "name": "AHU-2"}).json()
     resp = client.post(f"/devices/{device['id']}/semantic-suggestions/points/999999/ai")
     assert resp.status_code == 404
 
@@ -141,7 +141,7 @@ def test_ai_accept_records_override_distinctly(client, database):
 
 
 def test_ai_accept_404s_for_unknown_object(client):
-    device = client.post("/devices", json={"device_instance": 1005, "name": "AHU-3"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 1005, "name": "AHU-3"}).json()
     resp = client.post(
         f"/devices/{device['id']}/semantic-suggestions/points/999999/ai-accept",
         json={"suggested_class": "Temperature_Sensor", "accepted_class": "Temperature_Sensor", "confidence": "medium", "reason": ""},

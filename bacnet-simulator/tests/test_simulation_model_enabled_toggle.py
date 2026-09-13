@@ -116,7 +116,7 @@ def _patch_definition(monkeypatch) -> ModelDefinition:
 
 
 def _make_device_and_point(client, *, instance: int, name: str = "AHU-Test"):
-    device = client.post("/devices", json={"device_instance": instance, "name": name}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name}).json()
     point = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-value",
         "object_instance": 1,

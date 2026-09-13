@@ -1,4 +1,4 @@
-"""engine.py's _update_value() now returns the exact value it wrote to
+"""BacnetProtocolAdapter._update_value() now returns the exact value it wrote to
 the live BACnet presentValue (post type-coercion/clamping), and every
 caller that separately tracks a "current value" (the tick loop's
 _prev_values / Admin UI payload, inject_mirror_values, set_manual_value)
@@ -12,7 +12,7 @@ outside [1, numberOfStates] -- e.g. a zero-based FMU state feeding a
 multi-state point directly showed 0 in /sim/state while a real BACnet
 client reading Present_Value got 1 (the clamped floor). These tests
 construct a real bacpypes3 multi-state object directly (mirroring
-engine.py's own _create_object) and drive it through set_manual_value(),
+object_factory.create_object()) and drive it through set_manual_value(),
 which needs no HTTP object-creation route -- see test_sim_engine_
 object_value.py for the same raw-DB-insert convention, used here because
 the objects HTTP route can't be exercised on this dev machine (discovery
@@ -24,6 +24,8 @@ from __future__ import annotations
 from bacpypes3.local.multistate import MultiStateInputObject
 
 from src.simulation.engine import SimEngine
+from src.simulation.protocol_runtime import PointRuntimeConfig, RuntimePoint
+from src.simulation.protocols.bacnet import BacnetProtocolAdapter
 
 
 def _insert_multistate_object(database, *, device_instance: int, number_of_states: int) -> tuple[int, int]:
@@ -52,7 +54,7 @@ def _insert_multistate_object(database, *, device_instance: int, number_of_state
 def _bind_live_multistate_object(engine: SimEngine, object_id: int, number_of_states: int) -> MultiStateInputObject:
     """Mirrors engine.py's own _create_object for MULTISTATE_TYPES --
     constructs the same real bacpypes3 object class it would, and
-    registers it into engine._objects the same way, without needing a
+    registers it into engine._runtime_points the same way, without needing a
     running BACnet application."""
     bacnet_obj = MultiStateInputObject(
         objectIdentifier=f"multi-state-input,{object_id}",
@@ -64,7 +66,27 @@ def _bind_live_multistate_object(engine: SimEngine, object_id: int, number_of_st
     class _NoOpBehavior:
         pass
 
-    engine._objects[object_id] = (bacnet_obj, _NoOpBehavior())
+    # BacnetProtocolAdapter.write_point() (src/simulation/protocols/bacnet.py) reads
+    # object_type/configured reliability off attributes _create_object() stashes onto every
+    # real object it builds -- mirrored here too, since this helper builds its object directly
+    # rather than through _create_object().
+    bacnet_obj._sim_object_type = "multi-state-input"
+    bacnet_obj._sim_configured_reliability = "no-fault-detected"
+
+    # SimEngine no longer constructs BacnetProtocolAdapter itself -- register one explicitly,
+    # the same as composition-layer code (src/simulation/runtime.py's lifespan()) would.
+    if "bacnet" not in engine._protocol_adapters:
+        engine.register_protocol_adapter("bacnet", BacnetProtocolAdapter(engine))
+
+    engine._runtime_points[object_id] = RuntimePoint(
+        config=PointRuntimeConfig(
+            point_id=object_id, device_id=0, name="Compressor-Stage",
+            units=None, protocol_config={},
+        ),
+        adapter=engine._protocol_adapters["bacnet"],
+        handle=bacnet_obj,
+        behavior=_NoOpBehavior(),
+    )
     return bacnet_obj
 
 
@@ -76,7 +98,7 @@ def test_update_value_clamps_and_returns_the_written_multistate_value(database):
     # A pre-converted value (as FMUSimulationProvider._convert_output_value
     # would already have produced via zero_based_to_multistate) lands
     # exactly on the wire, unchanged.
-    written = engine._update_value(bacnet_obj, "multi-state-input", 2)
+    written = BacnetProtocolAdapter._update_value(bacnet_obj, "multi-state-input", 2)
     assert written == 2
     assert int(bacnet_obj.presentValue) == 2
 
@@ -84,11 +106,11 @@ def test_update_value_clamps_and_returns_the_written_multistate_value(database):
     # given a conversion) is still floored to 1, same as before this fix
     # -- _update_value's own clamp is unchanged, only its return value is
     # new.
-    written_floor = engine._update_value(bacnet_obj, "multi-state-input", 0)
+    written_floor = BacnetProtocolAdapter._update_value(bacnet_obj, "multi-state-input", 0)
     assert written_floor == 1
     assert int(bacnet_obj.presentValue) == 1
 
-    written_ceiling = engine._update_value(bacnet_obj, "multi-state-input", 99)
+    written_ceiling = BacnetProtocolAdapter._update_value(bacnet_obj, "multi-state-input", 99)
     assert written_ceiling == 3
     assert int(bacnet_obj.presentValue) == 3
 

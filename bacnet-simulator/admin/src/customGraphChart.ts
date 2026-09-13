@@ -27,6 +27,9 @@ export interface ChartSeriesLike {
   device_name: string
   name: string
   data: HistoryPoint[]
+  /** 'setpoint' renders dashed instead of solid -- a real-controller-style
+   * trend, PV vs. its Setpoint. Absent/'pv' is today's plain solid line. */
+  role?: 'pv' | 'setpoint'
 }
 
 export function buildChartData(series: ChartSeriesLike[]) {
@@ -34,10 +37,11 @@ export function buildChartData(series: ChartSeriesLike[]) {
     datasets: series
       .filter(s => s.visible)
       .map(s => ({
-        label: `${s.device_name} / ${s.name}`,
+        label: `${s.device_name} / ${s.name}${s.role === 'setpoint' ? ' (Setpoint)' : ''}`,
         data: s.data.map(p => ({ x: p.ts * 1000, y: p.value })),
         borderColor: s.color,
         backgroundColor: s.color,
+        borderDash: s.role === 'setpoint' ? [6, 4] : undefined,
         yAxisID: s.axis === 'right' ? 'y1' : 'y',
         pointRadius: 0,
         tension: 0.3,

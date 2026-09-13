@@ -23,7 +23,7 @@ from src.simulation.models.store import (
 
 
 def _make_device(client, *, instance: int, name: str) -> dict:
-    return client.post("/devices", json={"device_instance": instance, "name": name}).json()
+    return client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name}).json()
 
 
 def test_purge_removes_unsupported_provider_config(client, database):

@@ -74,6 +74,36 @@ def test_clear_live_state_removes_custom_graphs(seeded_database):
     assert seeded_database.get_custom_graphs() == []
 
 
+def test_dashboard_grouping_and_grid_position_survive_project_reload(database):
+    """A widget's dashboard_id is a real FK and DOES need id-remapping on
+    reload (unlike the rest of a custom_graphs row) -- confirm a widget
+    ends up back on a dashboard with the SAME NAME (the id itself is
+    expected to change) and its grid position is preserved."""
+    dash_a = database.create_dashboard("Ops View")
+    dash_b = database.create_dashboard("Energy View")
+    database.create_custom_graph({
+        "name": "On Ops", "definition": _definition(), "dashboard_id": dash_a["id"],
+        "grid_x": 2, "grid_y": 4,
+    })
+    database.create_custom_graph({
+        "name": "On Energy", "definition": _definition(), "dashboard_id": dash_b["id"],
+    })
+
+    project = database.save_project("Round-trip Test", "")
+    database.clear_live_state()
+    assert database.get_dashboards() == []
+
+    database.load_project(project["id"])
+
+    dashboards_by_name = {d["name"]: d for d in database.get_dashboards()}
+    assert set(dashboards_by_name) == {"Ops View", "Energy View"}
+
+    reloaded = {g["name"]: g for g in database.get_custom_graphs()}
+    assert reloaded["On Ops"]["dashboard_id"] == dashboards_by_name["Ops View"]["id"]
+    assert (reloaded["On Ops"]["grid_x"], reloaded["On Ops"]["grid_y"]) == (2, 4)
+    assert reloaded["On Energy"]["dashboard_id"] == dashboards_by_name["Energy View"]["id"]
+
+
 def test_no_duplicate_custom_graphs_on_repeated_reload(database):
     database.create_custom_graph({
         "name": "RTU vs. Zone Temps",

@@ -18,7 +18,7 @@ def _make_device(database, *, name="Mirror-Test-Device", equipment_type=None):
     what the Device drawer's save action does in production."""
     _DEVICE_INSTANCE_COUNTER[0] += 1
     device = database.create_device({
-        "device_instance": _DEVICE_INSTANCE_COUNTER[0], "name": name, "description": "",
+        "protocol": "bacnet", "device_instance": _DEVICE_INSTANCE_COUNTER[0], "name": name, "description": "",
         "vendor_name": "x", "model_name": "y", "enabled": 1, "firmware_revision": "N/A",
         "protocol_revision": 22, "max_apdu_length_accepted": 1024, "segmentation_supported": "segmented-both",
         "location_id": None, "equipment_type": equipment_type, "can_receive_event_notifications": None,

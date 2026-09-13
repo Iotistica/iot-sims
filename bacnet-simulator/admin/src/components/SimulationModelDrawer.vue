@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { UploadOutlined } from '@ant-design/icons-vue'
+import { PauseCircleOutlined, PlayCircleOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type {
   SimulationModelCatalogEntry,
   SimulationModelConfig,
-  SimulationModelMappingHints,
   SimulationModelPayload,
   SimulationModelPointOption,
   SimulationProviderCatalogEntry,
+  SimulationProviderRuntime,
   SimulationProviderType,
   WeatherProvenance,
 } from '../api'
 import type { Device } from '../types'
 import MappingSuggestionsModal from './MappingSuggestionsModal.vue'
+import BooleanToggle from './BooleanToggle.vue'
 
 interface CatalogParameter {
   name: string
@@ -26,6 +27,9 @@ interface CatalogParameter {
   advanced?: boolean
   minimum?: number | null
   maximum?: number | null
+  /** A fixed enumerated set of legal values (e.g. a genset's fuelType) -- when
+   * present, renders a select instead of a free-entry box, regardless of `type`. */
+  allowed_values?: { value: unknown; label: string }[] | null
 }
 interface CatalogVariable {
   name: string
@@ -34,7 +38,6 @@ interface CatalogVariable {
   unit?: string | null
   default?: unknown
   required?: boolean
-  mapping_hints?: SimulationModelMappingHints | null
 }
 
 // Mirrors src/core/config.py's BINARY_TYPES | MULTISTATE_TYPES -- a small,
@@ -180,6 +183,90 @@ async function refreshWeatherProvenance() {
   }
 }
 const savedModelId = ref<number | null>(null)
+
+// Per-device runtime controls (Start/Pause/Reset) -- freeze/resume/reset
+// just THIS model's own provider while everything else keeps running.
+// Distinct from the Enabled switch in the footer below (that fully
+// unregisters/re-registers the provider; this freezes an already-
+// registered one in place) -- null/hidden entirely when nothing's actually
+// registered (a disabled or never-applied model has no live provider).
+const runtimeStatus = ref<SimulationProviderRuntime | null>(null)
+const runtimeActionLoading = ref(false)
+
+async function loadRuntimeStatus() {
+  if (savedModelId.value == null) { runtimeStatus.value = null; return }
+  try {
+    const r = await api.simulationModels.getRuntime(savedModelId.value)
+    runtimeStatus.value = r.runtime
+  } catch {
+    runtimeStatus.value = null
+  }
+}
+
+async function pauseRuntime() {
+  if (savedModelId.value == null) return
+  runtimeActionLoading.value = true
+  try {
+    const r = await api.simulationModels.pause(savedModelId.value)
+    runtimeStatus.value = r.runtime
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to pause')
+  } finally {
+    runtimeActionLoading.value = false
+  }
+}
+
+async function resumeRuntime() {
+  if (savedModelId.value == null) return
+  runtimeActionLoading.value = true
+  try {
+    const r = await api.simulationModels.resume(savedModelId.value)
+    runtimeStatus.value = r.runtime
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to resume')
+  } finally {
+    runtimeActionLoading.value = false
+  }
+}
+
+async function resetRuntime() {
+  if (savedModelId.value == null) return
+  runtimeActionLoading.value = true
+  try {
+    const r = await api.simulationModels.resetRuntime(savedModelId.value)
+    runtimeStatus.value = r.runtime
+    message.success('Model runtime reset')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to reset')
+  } finally {
+    runtimeActionLoading.value = false
+  }
+}
+
+const RUNTIME_STATUS_COLOR: Record<string, string> = {
+  running: '#52c41a', paused: '#faad14', stopped: '#8c8c8c',
+  not_configured: '#8c8c8c', ready: '#8c8c8c', error: '#ff4d4f',
+}
+
+// Kept as its own editable ref (not read straight off runtimeStatus.value)
+// so typing a new value doesn't fight the field mid-edit while a poll/
+// reload could otherwise overwrite it -- committed via @change, then
+// re-synced from the server's own echoed value once that resolves.
+const rtfTargetInput = ref(1)
+watch(runtimeStatus, (r) => { if (r) rtfTargetInput.value = r.real_time_factor })
+
+async function setRtf() {
+  if (savedModelId.value == null || rtfTargetInput.value <= 0) return
+  runtimeActionLoading.value = true
+  try {
+    const r = await api.simulationModels.setRtf(savedModelId.value, rtfTargetInput.value)
+    runtimeStatus.value = r.runtime
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to set real-time factor')
+  } finally {
+    runtimeActionLoading.value = false
+  }
+}
 const mappingModalOpen = ref(false)
 // Set by the Inputs/Outputs section's own "Auto Map" button (inline with
 // that section's own divider, not a single combined button above both) --
@@ -190,6 +277,59 @@ function openMappingModal(direction: 'input' | 'output') {
   mappingModalOpen.value = true
 }
 const savingDraft = ref(false)
+
+// Footer "Create points for outputs" checkbox: on check, POST
+// /simulation/models/scaffold-points to create one BACnet object on this
+// controller per model output that has no same-named point, then wire the
+// new point ids into the (still-unsaved) output mappings so the user can
+// review and hit Apply. Additive only -- unchecking never deletes the
+// points, so the box latches (disabled) once it has run.
+const scaffoldOutputs = ref(false)
+const scaffoldingPoints = ref(false)
+const scaffoldedCount = ref(0)
+
+async function onScaffoldOutputsToggle(e: { target: { checked: boolean } }) {
+  if (!e.target.checked || !props.device || !selectedModel.value) return
+  scaffoldingPoints.value = true
+  try {
+    const res = await api.simulationModels.scaffoldPoints({
+      model_type: form.model_type,
+      created_from_device_id: props.device.id,
+      directions: ['output'],
+    })
+    for (const p of res.created) {
+      if (!points.value.some(existing => existing.id === p.point_id)) {
+        points.value = [...points.value, {
+          id: p.point_id, name: p.name, device_id: p.device_id,
+          device_name: p.device_name, object_type: p.object_type,
+          object_instance: p.object_instance, units: p.units,
+        }]
+      }
+      // Never clobber a mapping the user already set by hand.
+      const key = `output:${p.variable}`
+      if (form.mappings[key] == null) form.mappings[key] = p.point_id
+    }
+    scaffoldedCount.value = res.created.length
+    if (res.created.length) {
+      message.success(`Created ${res.created.length} point${res.created.length === 1 ? '' : 's'} — review the Outputs and Apply`)
+    } else {
+      message.info('Every output already has a point')
+    }
+  } catch (err: unknown) {
+    scaffoldOutputs.value = false
+    message.error((err as Error).message ?? 'Failed to create points')
+  } finally {
+    scaffoldingPoints.value = false
+  }
+}
+
+// FMU and AI both get the full Constant/Point/Aggregate input-sourcing UI
+// (backend: simulation.py's _normalized_parameters/_mapping_dicts/
+// _aggregate_mapping_dicts/_input_exposure_dicts all widened the same way)
+// -- only 'builtin' stays the plain point-only path.
+function supportsInputSourcing(providerType: string): boolean {
+  return providerType === 'fmu' || providerType === 'ai'
+}
 
 const form = reactive({
   provider_type: 'fmu' as SimulationProviderType,
@@ -241,6 +381,16 @@ const selectedModel = computed(() => filteredCatalog.value.find(m => m.model_typ
 // onResourceFileChange's sibling-autofill) are resolved and submitted like
 // any other parameter, just never shown their own control here.
 const commonParameters = computed(() => selectedModel.value?.parameters.filter(p => !p.advanced) ?? [])
+// FMI parameter overrides a calibration run applied (see CalibrationFlow.vue's
+// "Apply to Model" button) -- lives under parameters.parameter_overrides,
+// passed through form.parameters untouched by populateForm/buildPayload
+// (neither one deletes or reconstructs this key, unlike input_defaults/
+// input_sources above), so this is display-only: editing happens by running
+// a new calibration, not here.
+const appliedParameterOverrides = computed(() => {
+  const overrides = form.parameters.parameter_overrides as Record<string, number> | undefined
+  return Object.entries(overrides ?? {}).map(([name, value]) => ({ name, value }))
+})
 const inputs = computed(() => selectedModel.value?.inputs ?? [])
 const outputs = computed(() => selectedModel.value?.outputs ?? [])
 const variables = computed(() => [...inputs.value, ...outputs.value])
@@ -312,7 +462,7 @@ function onAggregateOperationChange(variableName: string, operation: 'max' | 'mi
 }
 
 /** Ranks candidates for one variable via the same discovery/scoring path
- * Auto Map already uses server-side (mapping_hints/suggested_point_types),
+ * Auto Map already uses server-side (the semantic contract),
  * so the Aggregate picker can sort by relevance without duplicating any
  * scoring logic client-side. Advisory only -- failure just leaves the
  * picker in its default (unranked) order, never blocks selection. */
@@ -366,7 +516,7 @@ function configuredPointValue(point: PointOption | null): unknown {
 }
 
 function inputMismatch(v: CatalogVariable): { point: PointOption; pointValue: number; inputValue: number } | null {
-  if (form.provider_type !== 'fmu' || form.inputSources[v.name] === 'point' || form.inputSources[v.name] === 'aggregate') return null
+  if (!supportsInputSourcing(form.provider_type) || form.inputSources[v.name] === 'point' || form.inputSources[v.name] === 'aggregate') return null
   const point = matchingDevicePoint(v.name)
   const pointValue = numericValue(configuredPointValue(point))
   const inputValue = numericValue(form.inputDefaults[v.name])
@@ -391,6 +541,11 @@ function needsInputDefault(value: unknown): boolean {
 }
 
 function defaultForInput(v: CatalogVariable): unknown {
+  // A "boolean" FMI input (e.g. a genset start/breaker command) is driven
+  // as 0/1 in the Constant field -- an <a-input-number> can't hold a real
+  // `false`, which is what the catalog `default` carries, so it would blank
+  // out on blur. Normalise to a number here.
+  if (v.unit === 'boolean') return v.default === true || v.default === 1 ? 1 : 0
   if (v.default !== undefined) return v.default
   if (v.name === 'heating_setpoint_c') return 20
   if (v.name === 'cooling_setpoint_c') return 23
@@ -404,6 +559,8 @@ function defaultForInput(v: CatalogVariable): unknown {
 
 function resetForModel(modelType: string) {
   const model = filteredCatalog.value.find(m => m.model_type === modelType)
+  scaffoldOutputs.value = false
+  scaffoldedCount.value = 0
   form.model_type = modelType
   form.provider_type = model?.provider_type ?? 'fmu'
   form.parameters = {}
@@ -419,8 +576,8 @@ function resetForModel(modelType: string) {
     if (p.default !== undefined) form.parameters[p.name] = p.default
   }
   for (const v of model?.inputs ?? []) {
-    const matchingPoint = form.provider_type === 'fmu' ? matchingDevicePoint(v.name) : null
-    form.inputSources[v.name] = matchingPoint ? 'point' : (form.provider_type === 'fmu' ? 'constant' : 'point')
+    const matchingPoint = supportsInputSourcing(form.provider_type) ? matchingDevicePoint(v.name) : null
+    form.inputSources[v.name] = matchingPoint ? 'point' : (supportsInputSourcing(form.provider_type) ? 'constant' : 'point')
     form.mappings[mappingKey(v)] = matchingPoint?.id
     form.inputDefaults[v.name] = configuredPointValue(matchingPoint) ?? defaultForInput(v)
     form.aggregatePoints[v.name] = []
@@ -444,6 +601,8 @@ function resetForProvider(providerType: SimulationProviderType) {
     form.aggregatePairs = {}
     form.inputExposures = {}
     weatherProvenance.value = null
+    scaffoldOutputs.value = false
+    scaffoldedCount.value = 0
     return
   }
   form.provider_type = providerType
@@ -453,6 +612,9 @@ function resetForProvider(providerType: SimulationProviderType) {
 
 function hydrateFromSavedModel(saved: SimulationModelConfig) {
   savedModelId.value = saved.id
+  scaffoldOutputs.value = false
+  scaffoldedCount.value = 0
+  loadRuntimeStatus()
   form.model_type = saved.model_type
   form.provider_type = saved.provider_type
   form.name = saved.name
@@ -510,6 +672,11 @@ function hydrateFromSavedModel(saved: SimulationModelConfig) {
       ? savedSource
       : (mappings[mappingKey(v)] != null ? 'point' : (aggregatePoints[v.name]?.length ? 'aggregate' : 'constant'))
     if (needsInputDefault(form.inputDefaults[v.name])) form.inputDefaults[v.name] = defaultForInput(v)
+    // A "boolean"-unit input persisted as a real true/false (pre-numeric
+    // configs) -> 0/1 so the Constant <a-input-number> can render it.
+    if (v.unit === 'boolean' && typeof form.inputDefaults[v.name] === 'boolean') {
+      form.inputDefaults[v.name] = form.inputDefaults[v.name] ? 1 : 0
+    }
     if (form.aggregatePoints[v.name] === undefined) form.aggregatePoints[v.name] = []
     if (form.aggregateOperation[v.name] === undefined) form.aggregateOperation[v.name] = 'max'
     if (form.aggregatePairs[v.name] === undefined) form.aggregatePairs[v.name] = []
@@ -573,6 +740,7 @@ async function load() {
       api.simulationModels.pointOptions(props.device.id),
     ])
     savedModelId.value = null
+    runtimeStatus.value = null
 
     // Per-controller state: if a model was saved for this source
     // controller, hydrate from DB. Existing/legacy FMU configs may only be
@@ -630,13 +798,13 @@ function validateMappings(requireComplete: boolean): boolean {
     }
   }
   for (const v of inputs.value) {
-    if (form.provider_type !== 'fmu' || form.inputSources[v.name] === 'point') {
+    if (!supportsInputSourcing(form.provider_type) || form.inputSources[v.name] === 'point') {
       if (v.required !== false && !form.mappings[mappingKey(v)]) {
         message.error(`${v.label} mapping is required`)
         return false
       }
     }
-    if (form.provider_type === 'fmu' && form.inputSources[v.name] === 'aggregate') {
+    if (supportsInputSourcing(form.provider_type) && form.inputSources[v.name] === 'aggregate') {
       const operation = form.aggregateOperation[v.name] ?? 'max'
       if (operation === 'weighted_average') {
         const pairs = form.aggregatePairs[v.name] ?? []
@@ -676,14 +844,19 @@ function buildPayload(apply: boolean): SimulationModelPayload | null {
   delete parameters.model
   delete parameters.runtime_url
   delete parameters.timeout_s
-  if (form.provider_type === 'fmu') {
+  if (supportsInputSourcing(form.provider_type)) {
     parameters.input_sources = Object.fromEntries(
       inputs.value.map(v => [v.name, form.inputSources[v.name] ?? 'constant']),
     )
     parameters.input_defaults = Object.fromEntries(
       inputs.value
         .filter(v => form.inputSources[v.name] !== 'point')
-        .map(v => [v.name, form.inputDefaults[v.name]]),
+        // "boolean"-unit inputs are sent as 0/1 (the runtime takes floats) --
+        // also coerces a legacy true/false saved before this field was numeric.
+        .map(v => {
+          const raw = form.inputDefaults[v.name]
+          return [v.name, v.unit === 'boolean' ? (raw ? 1 : 0) : raw]
+        }),
     )
   }
   if (!apply) {
@@ -703,11 +876,11 @@ function buildPayload(apply: boolean): SimulationModelPayload | null {
     parameters,
     mappings: variables.value
       .filter(v => apply || v.direction !== 'output')
-      .filter(v => v.direction === 'output' || form.inputSources[v.name] === 'point' || form.provider_type !== 'fmu')
+      .filter(v => v.direction === 'output' || form.inputSources[v.name] === 'point')
       .filter(v => form.mappings[mappingKey(v)] != null)
       .map(v => ({ variable: v.name, direction: v.direction, point_id: form.mappings[mappingKey(v)]! })),
     aggregate_mappings: inputs.value
-      .filter(v => form.provider_type === 'fmu' && form.inputSources[v.name] === 'aggregate')
+      .filter(v => supportsInputSourcing(form.provider_type) && form.inputSources[v.name] === 'aggregate')
       // Only complete (value+weight) pairs are ever sent for
       // weighted_average -- an in-progress/incomplete row is silently
       // omitted here (mirroring how a zero-point Maximum aggregate is
@@ -812,6 +985,7 @@ async function toggleEnabled(checked: boolean) {
     const updated = await api.simulationModels.setEnabled(savedModelId.value, checked)
     form.enabled = updated.enabled
     message.success(updated.enabled ? 'Simulation model enabled' : 'Simulation model disabled')
+    await loadRuntimeStatus()
     emit('saved')
   } catch (e: unknown) {
     message.error((e as Error).message ?? 'Failed to update enabled state')
@@ -845,6 +1019,56 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
   >
     <a-spin :spinning="loading">
       <a-form layout="vertical" :colon="false">
+        <!-- Per-device runtime controls (Start/Pause/Reset) -- freezes/
+             resumes/resets just THIS model's own provider, independent of
+             the global simulation clock and separate from the Enabled
+             switch in the footer (that fully unregisters/re-registers the
+             provider; this freezes an already-registered one in place).
+             Hidden entirely when nothing's actually registered (a disabled
+             or never-applied model has no live provider to control). -->
+        <a-form-item v-if="runtimeStatus" label="Runtime">
+          <div style="display:flex;align-items:center;gap:8px">
+            <a-tag :color="RUNTIME_STATUS_COLOR[runtimeStatus.status] ?? 'default'" style="text-transform:capitalize">
+              {{ runtimeStatus.status.replace('_', ' ') }}
+            </a-tag>
+            <a-tooltip title="Resume">
+              <a-button
+                size="small" type="text" :disabled="runtimeStatus.status !== 'paused'" :loading="runtimeActionLoading"
+                @click="resumeRuntime"
+              >
+                <template #icon><PlayCircleOutlined :style="{ color: runtimeStatus.status !== 'paused' ? '#555' : '#52c41a' }" /></template>
+              </a-button>
+            </a-tooltip>
+            <a-tooltip title="Pause -- freezes this model's own outputs in place; everything else keeps running">
+              <a-button
+                size="small" type="text" :disabled="runtimeStatus.status !== 'running'" :loading="runtimeActionLoading"
+                @click="pauseRuntime"
+              >
+                <template #icon><PauseCircleOutlined :style="{ color: runtimeStatus.status !== 'running' ? '#555' : '#faad14' }" /></template>
+              </a-button>
+            </a-tooltip>
+            <a-tooltip title="Reset -- reinitializes this model's own runtime session fresh">
+              <a-popconfirm title="Reset this model's runtime session?" @confirm="resetRuntime">
+                <a-button size="small" type="text" :loading="runtimeActionLoading">
+                  <template #icon><ReloadOutlined /></template>
+                </a-button>
+              </a-popconfirm>
+            </a-tooltip>
+            <span style="border-left:1px solid var(--border-color, #e0e0e0);height:16px;margin:0 2px" />
+            <span style="font-size:12px;color:var(--text-muted)">RTF</span>
+            <a-input-number
+              v-model:value="rtfTargetInput"
+              size="small" :min="0.01" :step="0.5" style="width:80px"
+              :disabled="runtimeActionLoading"
+              @change="setRtf"
+            />
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+            How much simulated time this model advances per shared tick, relative to every other
+            model -- 1 = normal speed, 2 = twice as fast, 0.5 = half speed.
+          </div>
+        </a-form-item>
+
         <a-form-item label="Provider" required>
           <a-select
             v-model:value="form.provider_type"
@@ -877,7 +1101,13 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
             @change="onResourceFileChange"
           />
           <a-form-item v-for="p in commonParameters" :key="p.name" :label="p.label" :required="p.required">
-            <a-switch v-if="p.type === 'boolean'" v-model:checked="(form.parameters[p.name] as boolean)" />
+            <a-select
+              v-if="p.allowed_values?.length"
+              v-model:value="(form.parameters[p.name] as unknown)"
+              style="width:220px"
+              :options="(p.allowed_values ?? []).map(v => ({ value: v.value as string | number, label: v.label }))"
+            />
+            <a-switch v-else-if="p.type === 'boolean'" v-model:checked="(form.parameters[p.name] as boolean)" />
             <div v-else-if="p.type === 'file'" style="display:flex;gap:10px;align-items:center">
               <a-button size="small" :loading="resourceUploading === p.name" @click="pickResourceFile(p.name)">
                 <template #icon><UploadOutlined /></template>
@@ -910,7 +1140,20 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
           </a-form-item>
         </template>
 
-        <template v-if="form.provider_type === 'fmu'">
+        <template v-if="appliedParameterOverrides.length">
+          <a-divider orientation="left">Applied Calibration</a-divider>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">
+            Parameter overrides from a calibration run (see Calibration). Read-only here --
+            run a new calibration and apply it to change these.
+          </div>
+          <a-descriptions bordered size="small" :column="1" style="margin-bottom:16px">
+            <a-descriptions-item v-for="o in appliedParameterOverrides" :key="o.name" :label="o.name">
+              {{ o.value }}
+            </a-descriptions-item>
+          </a-descriptions>
+        </template>
+
+        <template v-if="supportsInputSourcing(form.provider_type)">
           <div v-if="inputs.length" style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);margin:16px 0 12px;padding-bottom:8px">
             <span style="font-size:14px;font-weight:600;color:var(--text-primary)">Inputs</span>
             <a-button size="small" :disabled="!selectedModel" @click="openMappingModal('input')">
@@ -932,18 +1175,25 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
               style="margin-bottom:8px"
               @change="(value: string | number) => setInputSource(v, value as 'constant' | 'point' | 'aggregate')"
             />
-            <a-input-number
-              v-if="form.inputSources[v.name] !== 'point' && form.inputSources[v.name] !== 'aggregate'"
-              v-model:value="(form.inputDefaults[v.name] as number)"
-              :addon-after="v.unit ?? undefined"
-              style="width:100%"
-            />
+            <template v-if="form.inputSources[v.name] !== 'point' && form.inputSources[v.name] !== 'aggregate'">
+              <BooleanToggle
+                v-if="v.unit === 'boolean'"
+                :value="form.inputDefaults[v.name] === 1"
+                @update:value="(val: boolean) => { form.inputDefaults[v.name] = val ? 1 : 0 }"
+              />
+              <a-input-number
+                v-else
+                v-model:value="(form.inputDefaults[v.name] as number)"
+                :addon-after="v.unit ?? undefined"
+                style="width:100%"
+              />
+            </template>
             <a-alert
               v-if="inputMismatch(v)"
               type="warning"
               show-icon
               style="margin-top:8px"
-              :message="`${inputMismatch(v)!.point.name} is ${inputMismatch(v)!.pointValue}${v.unit ? ` ${v.unit}` : ''}; this FMU input is using constant ${inputMismatch(v)!.inputValue}${v.unit ? ` ${v.unit}` : ''}. Switch to Point if the FMU should use the BACnet setpoint.`"
+              :message="`${inputMismatch(v)!.point.name} is ${inputMismatch(v)!.pointValue}${v.unit ? ` ${v.unit}` : ''}; this input is using constant ${inputMismatch(v)!.inputValue}${v.unit ? ` ${v.unit}` : ''}. Switch to Point if the model should use the BACnet setpoint.`"
             />
             <a-select
               v-if="form.inputSources[v.name] === 'point'"
@@ -1066,7 +1316,7 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
         </template>
 
         <a-form-item
-          v-for="v in (form.provider_type === 'fmu' ? outputs : variables)"
+          v-for="v in (supportsInputSourcing(form.provider_type) ? outputs : variables)"
           :key="`${v.direction}:${v.name}`"
           :label="`${v.label} (${v.direction})`"
           :required="v.required !== false"
@@ -1087,6 +1337,22 @@ function setInputSource(v: CatalogVariable, source: 'constant' | 'point' | 'aggr
     </a-spin>
 
     <template #footer>
+      <div
+        v-if="form.provider_type !== 'builtin' && selectedModel && outputs.length"
+        style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border-color, #303030)"
+      >
+        <a-checkbox
+          v-model:checked="scaffoldOutputs"
+          :disabled="scaffoldingPoints || scaffoldedCount > 0 || loading"
+          @change="onScaffoldOutputsToggle"
+        >
+          Create a point on this controller for each output
+        </a-checkbox>
+        <a-spin v-if="scaffoldingPoints" size="small" />
+        <span v-else-if="scaffoldedCount > 0" style="font-size:12px;color:var(--text-muted)">
+          {{ scaffoldedCount }} created — review below and Apply
+        </span>
+      </div>
       <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
         <div style="display:flex;align-items:center;gap:8px">
           <a-switch

@@ -183,7 +183,11 @@ function apply() {
     // name-only key would collide, silently dropping one of the two
     // suggestions or applying it to the wrong direction's row.
     mappings[`${row.variable.direction}:${row.variable.name}`] = row.chosenPointId
-    if (props.providerType === 'fmu' && row.variable.direction === 'input') {
+    // FMU and AI both have a Constant/Point/Aggregate source concept per
+    // input now (SimulationModelDrawer.vue's own form.inputSources) --
+    // auto-mapping a point here should flip that input to 'point' sourcing
+    // for either provider, same as it already did for FMU alone.
+    if ((props.providerType === 'fmu' || props.providerType === 'ai') && row.variable.direction === 'input') {
       switchToPoint.push(row.variable.name)
     }
   }
@@ -243,6 +247,12 @@ const directionLabel = computed(() => {
             </div>
           </template>
           <template v-else-if="column.key === 'point'">
+            <!-- This modal opens on top of SimulationModelDrawer (an a-drawer),
+            so its own z-index is manually bumped above 1000 (see the a-modal
+            below). A default a-select teleports its dropdown to <body> at
+            Ant Design's default popup z-index, which then renders BEHIND this
+            modal -- get-popup-container keeps the dropdown in the modal's own
+            DOM subtree instead, so it inherits the modal's stacking context. -->
             <a-select
               v-model:value="(record as VariableRow).chosenPointId"
               show-search
@@ -251,6 +261,7 @@ const directionLabel = computed(() => {
               :options="pointOptionsList()"
               option-filter-prop="label"
               placeholder="Select a point"
+              :get-popup-container="(triggerNode: HTMLElement) => triggerNode.parentElement ?? triggerNode"
               style="width:100%"
             />
             <a-tag v-if="crossDeviceTag(record as VariableRow)" color="blue" style="margin-top:4px">

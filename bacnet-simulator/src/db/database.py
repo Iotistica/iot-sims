@@ -18,7 +18,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..semantics.backfill import (
     backfill_device_location_relationships,
@@ -37,6 +37,7 @@ from ..simulation.models.store import (
     insert_simulation_model,
     list_all_simulation_models,
     reconcile_provider_owned_raw_behavior,
+    reconcile_unowned_raw_behavior,
 )
 from .migrations.runner import run_migrations
 
@@ -44,10 +45,107 @@ from .migrations.runner import run_migrations
 log = logging.getLogger("bacnet-sim")
 
 
+def _encode_state_text(value: Any) -> Optional[str]:
+    """objects.state_text is stored as a JSON-encoded TEXT column (see
+    migration 031) -- None stays None (the vast majority of objects, not a
+    multi-state object with labeled states), a list gets json.dumps'd, and
+    anything already a string (e.g. round-tripped from get_object's own
+    decode) passes through unchanged rather than double-encoding it."""
+    if value is None or isinstance(value, str):
+        return value
+    return json.dumps(list(value))
+
+
+def _decode_state_text(row: dict) -> dict:
+    """Inverse of _encode_state_text -- call on every dict read straight off
+    the `objects` table (get_object/get_objects/create_object/
+    update_object) so callers always see a real list or None, never a raw
+    JSON string. Malformed/legacy content decodes to None rather than
+    raising -- same "never break a read over one stale column" precedent
+    as _decode_config in models/store.py."""
+    raw = row.get("state_text")
+    if raw is None:
+        return row
+    try:
+        row["state_text"] = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        row["state_text"] = None
+    return row
+
+
+# calibration_runs (migration 033): JSON-typed columns and the set of columns a
+# create_/update_calibration_run() caller may write. `id`/`created_at` are managed by
+# SQLite. Same "decode defensively, never break a read over one stale column" precedent as
+# _decode_state_text / models/store.py::_decode_config.
+_CALIBRATION_RUN_JSON_DEFAULTS: dict[str, str] = {
+    "tuner_names": "[]",
+    "mapping_json": "{}",
+    "best_parameters_json": "{}",
+    "fmu_defaults_json": "{}",
+}
+_CALIBRATION_RUN_WRITABLE_COLUMNS: frozenset[str] = frozenset({
+    "schema_version",
+    "runtime_job_id", "runtime_dataset_id", "runtime_validation_dataset_id",
+    "model_id", "simulation_model_id",
+    "recording_id", "validation_recording_id",
+    "fmu_sha256", "metadata_sha256", "tuner_names",
+    "status", "failure_stage", "error_summary",
+    "mapping_json",
+    "objective_metric", "baseline_metric", "calibration_metric", "improvement_pct",
+    "validation_status",
+    "validation_cv_rmse", "validation_nmbe", "validation_rmse", "validation_mae", "validation_r2",
+    "g14_interval", "g14_based_on", "g14_applicable", "g14_pass",
+    "best_parameters_json", "fmu_defaults_json",
+    "started_at", "completed_at", "applied_at", "applied_to_simulation_model_id",
+})
+
+
+def _decode_calibration_run(row: Any) -> dict:
+    """Row -> plain dict with the JSON columns parsed back into list/dict. Malformed
+    content falls back to that column's empty default rather than raising."""
+    result = dict(row)
+    for column, default in _CALIBRATION_RUN_JSON_DEFAULTS.items():
+        raw = result.get(column)
+        try:
+            result[column] = json.loads(raw if raw is not None else default)
+        except (TypeError, json.JSONDecodeError):
+            result[column] = json.loads(default)
+    return result
+
+
+def _encode_calibration_run_fields(fields: dict) -> dict:
+    """Validates column names against the writable set and json.dumps() the JSON columns.
+    Raises ValueError on an unknown column (guards the f-string column interpolation in
+    create_/update_calibration_run)."""
+    unknown = set(fields) - _CALIBRATION_RUN_WRITABLE_COLUMNS
+    if unknown:
+        raise ValueError(f"Unknown calibration_runs column(s): {sorted(unknown)}")
+    encoded = {}
+    for key, value in fields.items():
+        if key in _CALIBRATION_RUN_JSON_DEFAULTS and not isinstance(value, str):
+            encoded[key] = json.dumps(value if value is not None else json.loads(_CALIBRATION_RUN_JSON_DEFAULTS[key]))
+        else:
+            encoded[key] = value
+    return encoded
+
+
+def _parse_bool_setting(value: Any) -> bool:
+    """SETTINGS_SCHEMA cast for a boolean setting -- the bare `bool` builtin
+    is unsafe here (bool("False") is True, since any non-empty string is
+    truthy) and no existing setting is boolean-typed, so there's no prior
+    cast to reuse. save_settings always stores str(python_bool) ("True"/
+    "False") as the TEXT value; this parses that form explicitly instead of
+    relying on Python's own string truthiness."""
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
 # ─── Runtime settings ──────────────────────────────────────────────────────────
 # Persisted key/value overrides for constants that used to be hardcoded. Values
 # are stored as TEXT in the `settings` table; SETTINGS_SCHEMA casts them back.
-SETTINGS_SCHEMA: dict[str, type] = {
+# Almost every entry is a plain type constructor (int/float/str); a couple
+# (see _parse_bool_setting above) are a custom callable instead, hence the
+# wider Callable annotation rather than plain `type`.
+SETTINGS_SCHEMA: dict[str, Callable[[Any], Any]] = {
     "tick_seconds": float,
     "device_log_maxlen": int,
     "global_log_maxlen": int,
@@ -72,6 +170,9 @@ SETTINGS_SCHEMA: dict[str, type] = {
     "openai_compatible_base_url": str,
     "openai_compatible_api_key": str,
     "openai_compatible_model": str,
+    "recording_retention_enabled": _parse_bool_setting,
+    "recording_retention_days": int,
+    "semantic_provider": str,
 }
 
 
@@ -123,6 +224,13 @@ def _default_settings() -> dict:
         "openai_compatible_base_url": "",
         "openai_compatible_api_key": "",
         "openai_compatible_model": "",
+        # Off by default -- ships without ever silently deleting an existing
+        # deployment's recordings; the user opts in via Settings. Days keeps
+        # a sane default even while disabled, so turning it on later doesn't
+        # start from 0. See recording_retention_loop (simulation/runtime.py).
+        "recording_retention_enabled": False,
+        "recording_retention_days": 30,
+        "semantic_provider": "brick",
     }
 
 
@@ -160,6 +268,7 @@ class Database:
         # it -- opening a second connection while the first is still open
         # risks a locked-database error on this file-backed SQLite DB.
         reconcile_provider_owned_raw_behavior(self)
+        reconcile_unowned_raw_behavior(self)
         log.info("Database ready at %s", self.path)
 
     def seed_default(self) -> None:
@@ -975,9 +1084,11 @@ class Database:
 
         Returns None (not an empty set) when this device has no controller
         entity or controls no Equipment -- callers must treat None as "no
-        scope resolved, fall back to unscoped behavior", and an empty set
-        as "topology resolved but has no eligible points" (return none, do
-        not fall back further)."""
+        scope resolved" (the API layer's own _controller_topology_scope
+        falls back to just this device's own points for that case, not an
+        unscoped project-wide list -- see its own docstring), and an empty
+        set as "topology resolved but has no eligible points" (return
+        none, do not fall back further)."""
         with self._conn() as conn:
             controller_entity = conn.execute(
                 "SELECT id FROM semantic_entities WHERE entity_kind='controller' AND device_id=?",
@@ -1423,10 +1534,10 @@ class Database:
             for d in discovered:
                 meta = d.get("metadata") or {}
                 conn.execute(
-                    "INSERT INTO devices (device_instance, name, description, vendor_name, "
+                    "INSERT INTO devices (protocol, device_instance, name, description, vendor_name, "
                     "model_name, enabled, source_type, external_host, external_port, "
                     "external_vendor_id, external_last_seen_at) "
-                    "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, "
+                    "VALUES ('bacnet', :device_instance, :name, :description, :vendor_name, :model_name, "
                     "1, 'external-bacnet', :external_host, :external_port, "
                     ":external_vendor_id, :external_last_seen_at) "
                     "ON CONFLICT(device_instance, source_type) DO UPDATE SET "
@@ -1461,14 +1572,14 @@ class Database:
         # sub-equipment sharing this device_id.
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO devices (device_instance, name, description, vendor_name, model_name, enabled, "
+                "INSERT INTO devices (protocol, device_instance, name, description, vendor_name, model_name, enabled, "
                 "firmware_revision, protocol_revision, max_apdu_length_accepted, segmentation_supported, "
                 "location_id, equipment_type, can_receive_event_notifications, "
-                "simulation_mode, source_device_id, replay_recording_id) "
-                "VALUES (:device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
+                "simulation_mode, source_device_id, active_recording_id) "
+                "VALUES (:protocol, :device_instance, :name, :description, :vendor_name, :model_name, :enabled, "
                 ":firmware_revision, :protocol_revision, :max_apdu_length_accepted, :segmentation_supported, "
                 ":location_id, :equipment_type, :can_receive_event_notifications, "
-                ":simulation_mode, :source_device_id, :replay_recording_id)",
+                ":simulation_mode, :source_device_id, :active_recording_id)",
                 {
                     **data,
                     "location_id": data.get("location_id"),
@@ -1476,7 +1587,7 @@ class Database:
                     "can_receive_event_notifications": data.get("can_receive_event_notifications"),
                     "simulation_mode": data.get("simulation_mode", "simulation"),
                     "source_device_id": data.get("source_device_id"),
-                    "replay_recording_id": data.get("replay_recording_id"),
+                    "active_recording_id": data.get("active_recording_id"),
                 },
             )
             sync_entity_from_flat_field(
@@ -1502,7 +1613,7 @@ class Database:
             # source_device_id is provenance set at creation; always preserve existing.
             src_dev_id = existing["source_device_id"]
             conn.execute(
-                "UPDATE devices SET device_instance=:device_instance, name=:name, "
+                "UPDATE devices SET protocol=:protocol, device_instance=:device_instance, name=:name, "
                 "description=:description, vendor_name=:vendor_name, model_name=:model_name, "
                 "enabled=:enabled, firmware_revision=:firmware_revision, protocol_revision=:protocol_revision, "
                 "max_apdu_length_accepted=:max_apdu_length_accepted, "
@@ -1596,7 +1707,7 @@ class Database:
 
     def get_objects(self, device_id: int) -> list[dict]:
         with self._conn() as conn:
-            return [dict(r) for r in conn.execute(
+            return [_decode_state_text(dict(r)) for r in conn.execute(
                 "SELECT * FROM objects WHERE device_id=? ORDER BY object_type, object_instance",
                 (device_id,),
             )]
@@ -1604,7 +1715,7 @@ class Database:
     def get_object(self, obj_id: int) -> Optional[dict]:
         with self._conn() as conn:
             r = conn.execute("SELECT * FROM objects WHERE id=?", (obj_id,)).fetchone()
-            return dict(r) if r else None
+            return _decode_state_text(dict(r)) if r else None
 
     def get_classified_points(self, exclude_object_id: Optional[int] = None) -> list[dict]:
         """Every already-classified point project-wide (point_type set, by
@@ -1675,16 +1786,141 @@ class Database:
         # can ever reference a given object_id (DB-enforced).
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled, number_of_states, reliability, polarity, point_type) "
-                "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled, :number_of_states, :reliability, :polarity, :point_type)",
-                {**data, "device_id": device_id},
+                "INSERT INTO objects (device_id, object_type, object_instance, name, units, behavior, behavior_params, enabled, number_of_states, reliability, polarity, point_type, state_text) "
+                "VALUES (:device_id, :object_type, :object_instance, :name, :units, :behavior, :behavior_params, :enabled, :number_of_states, :reliability, :polarity, :point_type, :state_text)",
+                {**data, "device_id": device_id, "state_text": _encode_state_text(data.get("state_text"))},
             )
             sync_entity_from_flat_field(
                 conn, entity_kind="point", name=data.get("name") or "",
                 brick_class=data.get("point_type"), object_id=cur.lastrowid,
             )
             conn.commit()
-            return dict(conn.execute("SELECT * FROM objects WHERE id=?", (cur.lastrowid,)).fetchone())
+            return _decode_state_text(dict(conn.execute("SELECT * FROM objects WHERE id=?", (cur.lastrowid,)).fetchone()))
+
+    def create_linked_object(self, device_id: int, source_object_id: int) -> dict:
+        """Creates a new object row on device_id that's a live-value link to
+        source_object_id -- copies the source's identity fields (type/name/
+        units/number_of_states) into a brand-new, independently-addressed
+        row (matching every other "bring an object onto a device" path's
+        create_object() shape), picks a free object_instance on the target
+        device the same way ObjectDrawer.vue's own nextInstanceFor() does
+        client-side, and sets source_object_id so mirror_sync_loop's
+        per-object linking pass (see simulation/runtime.py) keeps its value
+        in sync going forward.
+
+        Starts unclassified (point_type left NULL, same as any other new
+        object) and at behavior_params {"value": 0} -- picks up its real
+        value on the next sync cycle (within MIRROR_POLL_SECONDS), not
+        eagerly seeded here; a few seconds at 0 on creation is a smaller
+        cost than the extra engine/BACnet round trip eager seeding would
+        need at this layer.
+
+        Caller (routers/objects.py) is responsible for validating the
+        target device's simulation_mode and that source_object_id isn't
+        itself already linked -- this method only does the create."""
+        source = self.get_object(source_object_id)
+        if source is None:
+            raise ValueError(f"Source object {source_object_id} not found")
+        source_device = self.get_device(source["device_id"])
+        source_device_name = source_device["name"] if source_device else "unknown device"
+        with self._conn() as conn:
+            existing_instances = [
+                row[0] for row in conn.execute(
+                    "SELECT object_instance FROM objects WHERE device_id=? AND object_type=?",
+                    (device_id, source["object_type"]),
+                )
+            ]
+            next_instance = max(existing_instances) + 1 if existing_instances else 0
+
+            # Always name a linked object after its source device -- not
+            # just to dodge a collision, but so where it comes FROM is
+            # visible at a glance in the Name column itself, not only in
+            # the "Linked from..." tooltip (list_objects' own link_source
+            # field). This also happens to be what avoids the BACnet
+            # unique-object-name-per-device collision (bacpypes3's
+            # Application.add_object enforces this, independent of the
+            # objects table's own (device_id, object_type, object_instance)
+            # uniqueness) that copying the source's name verbatim used to
+            # hit the moment a point was linked onto the SAME device it
+            # came from (confirmed live: "already an object with name
+            # 'X.Y'", the hot-add silently failing since it's a fire-and
+            # -forget task, leaving the DB row created but never actually
+            # registered with the running BACnet app -- no sync value ever
+            # reached it). The suffix loop below is just a safety net for
+            # the rare case even this combined name collides (e.g. linking
+            # the same source point onto one device twice).
+            existing_names = {
+                row[0] for row in conn.execute(
+                    "SELECT name FROM objects WHERE device_id=?", (device_id,),
+                )
+            }
+            name = f"{source['name']} ({source_device_name})"
+            if name in existing_names:
+                suffix = 2
+                base = name
+                while name in existing_names:
+                    name = f"{base} {suffix}"
+                    suffix += 1
+
+            cur = conn.execute(
+                "INSERT INTO objects "
+                "(device_id, object_type, object_instance, name, units, behavior, "
+                "behavior_params, enabled, number_of_states, reliability, polarity, source_object_id) "
+                "VALUES (?, ?, ?, ?, ?, 'constant', '{\"value\":0}', 1, ?, 'no-fault-detected', 'normal', ?)",
+                (
+                    device_id, source["object_type"], next_instance, name, source["units"],
+                    source["number_of_states"], source_object_id,
+                ),
+            )
+            conn.commit()
+            return _decode_state_text(dict(conn.execute("SELECT * FROM objects WHERE id=?", (cur.lastrowid,)).fetchone()))
+
+    def get_linked_objects(self) -> list[dict]:
+        """Every object with source_object_id set -- the input to
+        mirror_sync_loop's per-object linking pass (see
+        simulation/runtime.py). Joined to the source object's own
+        device_id so the sync loop can resolve whether that source is
+        simulated (in-process read) or external-bacnet (BACnet poll)
+        without a second round trip per row."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT o.id, o.object_type, o.object_instance, o.device_id, "
+                "o.source_object_id, s.object_type AS source_object_type, "
+                "s.object_instance AS source_object_instance, s.device_id AS source_device_id "
+                "FROM objects o JOIN objects s ON s.id = o.source_object_id "
+                "WHERE o.source_object_id IS NOT NULL"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def unlink_object(self, obj_id: int) -> Optional[dict]:
+        """Clears source_object_id -- the object becomes an ordinary, locally
+        -driven object again. behavior/behavior_params are left exactly as
+        they were set at link-creation time ('constant'/{"value":0}, never
+        updated since -- mirror_sync_loop's per-object pass writes straight
+        to the live BACnet object, not back to this DB row), so a point
+        reverts to 0 on unlink rather than keeping its last synced value;
+        use Set Value afterward if a specific starting value matters."""
+        with self._conn() as conn:
+            conn.execute("UPDATE objects SET source_object_id=NULL WHERE id=?", (obj_id,))
+            conn.commit()
+            r = conn.execute("SELECT * FROM objects WHERE id=?", (obj_id,)).fetchone()
+            return dict(r) if r else None
+
+    def get_link_consumers(self, source_object_id: int) -> list[dict]:
+        """Every object currently linked to source_object_id, joined with
+        its own device name -- used by delete_object to reject deleting a
+        point that a linked object elsewhere still depends on, mirroring
+        get_aggregate_membership_owner's shape/purpose (see
+        simulation/models/store.py) but reading objects.source_object_id
+        directly rather than a separate mapping table."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT o.id, o.name, o.device_id, d.name AS device_name "
+                "FROM objects o JOIN devices d ON d.id = o.device_id "
+                "WHERE o.source_object_id = ?",
+                (source_object_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def update_object(self, obj_id: int, data: dict) -> Optional[dict]:
         with self._conn() as conn:
@@ -1692,8 +1928,8 @@ class Database:
                 "UPDATE objects SET object_type=:object_type, object_instance=:object_instance, "
                 "name=:name, units=:units, behavior=:behavior, behavior_params=:behavior_params, "
                 "enabled=:enabled, number_of_states=:number_of_states, reliability=:reliability, "
-                "polarity=:polarity, point_type=:point_type WHERE id=:id",
-                {**data, "id": obj_id},
+                "polarity=:polarity, point_type=:point_type, state_text=:state_text WHERE id=:id",
+                {**data, "id": obj_id, "state_text": _encode_state_text(data.get("state_text"))},
             )
             sync_entity_from_flat_field(
                 conn, entity_kind="point", name=data.get("name") or "",
@@ -1701,7 +1937,7 @@ class Database:
             )
             conn.commit()
             r = conn.execute("SELECT * FROM objects WHERE id=?", (obj_id,)).fetchone()
-            return dict(r) if r else None
+            return _decode_state_text(dict(r)) if r else None
 
     def set_manual_value(self, obj_id: int, value: Any) -> None:
         with self._conn() as conn:
@@ -2331,7 +2567,7 @@ class Database:
             conn.commit()
             return cur.rowcount > 0
 
-    # ── Replay Recordings ────────────────────────────────────────────────────────
+    # ── Recordings ───────────────────────────────────────────────────────────────
     # Application-managed, SQLite-backed device-wide recording of an external
     # BACnet device's values, later replayed through a cloned simulated
     # device ("Replay" mode in CreateSimulatedCopyModal.vue). Distinct from
@@ -2341,21 +2577,28 @@ class Database:
     # (sample_index), not individual point rows. point_count/sample_count
     # are computed here rather than stored, unlike trend_logs.record_count/
     # total_record_count -- both are cheap indexed lookups
-    # (idx_replay_recording_points_recording / idx_replay_samples_recording_index).
+    # (idx_recording_points_recording / idx_recording_samples_recording_index).
+    #
+    # Renamed from "replay_recordings" (migration 29) -- this feature serves
+    # Training/Calibration/general trend inspection at least as much as it
+    # serves actual Replay-mode playback now; "replay" stays only on the
+    # things genuinely about playing a recording back to a device (see
+    # replay_playback.py, engine.py's replay_play/pause/seek/... section,
+    # devices.active_recording_id).
 
-    def _replay_recording_counts(self, conn: sqlite3.Connection, recording_id: int) -> dict[str, Any]:
+    def _recording_counts(self, conn: sqlite3.Connection, recording_id: int) -> dict[str, Any]:
         point_count = conn.execute(
-            "SELECT COUNT(*) FROM replay_recording_points WHERE recording_id=?", (recording_id,)
+            "SELECT COUNT(*) FROM recording_points WHERE recording_id=?", (recording_id,)
         ).fetchone()[0]
         sample_count = conn.execute(
-            "SELECT COUNT(DISTINCT sample_index) FROM replay_samples WHERE recording_id=?", (recording_id,)
+            "SELECT COUNT(DISTINCT sample_index) FROM recording_samples WHERE recording_id=?", (recording_id,)
         ).fetchone()[0]
         # min/max, not just the count -- buffer_mode='overwrite' eviction can
         # leave the stored range starting above 0 (see
-        # get_replay_recording_sample_index_bounds's own comment), and the
-        # UI (seek slider) needs the real bounds, not an assumed 0-based one.
+        # get_recording_sample_index_bounds's own comment), and the UI (seek
+        # slider) needs the real bounds, not an assumed 0-based one.
         min_idx, max_idx = conn.execute(
-            "SELECT MIN(sample_index), MAX(sample_index) FROM replay_samples WHERE recording_id=?", (recording_id,)
+            "SELECT MIN(sample_index), MAX(sample_index) FROM recording_samples WHERE recording_id=?", (recording_id,)
         ).fetchone()
         return {
             "point_count": point_count,
@@ -2364,40 +2607,91 @@ class Database:
             "sample_index_max": max_idx,
         }
 
-    def get_replay_recordings(self, device_id: Optional[int] = None) -> list[dict]:
+    def _recording_tags(self, conn, recording_id: int) -> list[str]:
+        return [
+            row["tag"] for row in conn.execute(
+                "SELECT tag FROM recording_tags WHERE recording_id=? ORDER BY tag", (recording_id,)
+            )
+        ]
+
+    def get_recordings(self, device_id: Optional[int] = None) -> list[dict]:
         with self._conn() as conn:
             if device_id is not None:
                 rows = conn.execute(
-                    "SELECT * FROM replay_recordings WHERE source_device_id=? ORDER BY created_at DESC", (device_id,)
+                    "SELECT * FROM recordings WHERE source_device_id=? ORDER BY created_at DESC", (device_id,)
                 )
             else:
-                rows = conn.execute("SELECT * FROM replay_recordings ORDER BY source_device_id, created_at DESC")
+                rows = conn.execute("SELECT * FROM recordings ORDER BY source_device_id, created_at DESC")
             result = []
             for r in rows:
                 item = dict(r)
-                item.update(self._replay_recording_counts(conn, item["id"]))
+                item.update(self._recording_counts(conn, item["id"]))
+                item["tags"] = self._recording_tags(conn, item["id"])
                 result.append(item)
             return result
 
-    def get_replay_recording(self, recording_id: int) -> Optional[dict]:
+    def get_recording(self, recording_id: int) -> Optional[dict]:
         with self._conn() as conn:
-            r = conn.execute("SELECT * FROM replay_recordings WHERE id=?", (recording_id,)).fetchone()
+            r = conn.execute("SELECT * FROM recordings WHERE id=?", (recording_id,)).fetchone()
             if not r:
                 return None
             item = dict(r)
-            item.update(self._replay_recording_counts(conn, recording_id))
+            item.update(self._recording_counts(conn, recording_id))
+            item["tags"] = self._recording_tags(conn, recording_id)
             item["points"] = [
                 dict(p) for p in conn.execute(
-                    "SELECT * FROM replay_recording_points WHERE recording_id=? ORDER BY id", (recording_id,)
+                    "SELECT * FROM recording_points WHERE recording_id=? ORDER BY id", (recording_id,)
+                )
+            ]
+            item["input_constants"] = [
+                dict(c) for c in conn.execute(
+                    "SELECT variable, value FROM recording_input_constants WHERE recording_id=? ORDER BY variable",
+                    (recording_id,),
                 )
             ]
             return item
 
-    def create_replay_recording(self, device_id: int, data: dict) -> dict:
+    def _set_recording_tags(self, conn, recording_id: int, tags: list[str]) -> None:
+        """Full reseed, not a diff -- same precedent as recording_points
+        (create_recording below writes the whole set fresh each time),
+        simpler and cheap at this scale than reconciling add/remove deltas."""
+        conn.execute("DELETE FROM recording_tags WHERE recording_id=?", (recording_id,))
+        if tags:
+            conn.executemany(
+                "INSERT INTO recording_tags (recording_id, tag) VALUES (?, ?)",
+                [(recording_id, tag) for tag in tags],
+            )
+
+    def add_recording_input_constants(self, recording_id: int, constants: dict[str, float]) -> None:
+        """Snapshots a constant-sourced input's value against this recording
+        -- see migration 024's own docstring for why this is a separate
+        table from recording_points, not a BACnet point mapping. Called
+        once, right after create_recording, from the API layer (which
+        knows the device's active simulation model; this method itself
+        stays a plain insert helper, same shape as the points loop in
+        create_recording just below)."""
+        if not constants:
+            return
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT INTO recording_input_constants (recording_id, variable, value) VALUES (?, ?, ?)",
+                [(recording_id, variable, value) for variable, value in constants.items()],
+            )
+            conn.commit()
+
+    def create_recording(self, device_id: int, data: dict) -> dict:
         """Creates the recording row (status='recording', started immediately
         -- there is no separate idle/draft state) and snapshots the selected
-        points' identity into replay_recording_points. point_ids=None means
-        "all of this device's current points"."""
+        points' identity into recording_points. point_ids=None means "all of
+        this device's current points"; an explicit point_ids list is NOT
+        restricted to this device's own objects here -- the API layer
+        (recordings.py's create_recording route) already validated each id
+        appropriately for this device's own source_type (any existing
+        object for a simulated/mirror/replay-source device, since sampling
+        reads by global object id with no device scoping -- see runtime.py's
+        _sample_due_simulated_recordings -- vs. still restricted to this
+        device's own objects for an external-bacnet one, which samples over
+        its own connection)."""
         with self._conn() as conn:
             point_ids = data.get("point_ids")
             if point_ids is None:
@@ -2407,98 +2701,215 @@ class Database:
             else:
                 placeholders = ",".join("?" for _ in point_ids)
                 point_rows = conn.execute(
-                    f"SELECT * FROM objects WHERE device_id=? AND id IN ({placeholders})",
-                    (device_id, *point_ids),
+                    f"SELECT * FROM objects WHERE id IN ({placeholders})",
+                    point_ids,
                 ).fetchall()
 
             cur = conn.execute(
-                "INSERT INTO replay_recordings "
-                "(source_device_id, name, description, status, sample_interval_seconds, "
+                "INSERT INTO recordings "
+                "(source_device_id, name, description, condition, fault_type, status, sample_interval_seconds, "
                 "maximum_samples, buffer_mode) "
-                "VALUES (:source_device_id, :name, :description, 'recording', "
+                "VALUES (:source_device_id, :name, :description, :condition, :fault_type, 'recording', "
                 ":sample_interval_seconds, :maximum_samples, :buffer_mode)",
                 {
                     "source_device_id": device_id,
                     "name": data["name"],
                     "description": data.get("description", ""),
+                    "condition": data.get("condition") or None,
+                    "fault_type": data.get("fault_type") or None,
                     "sample_interval_seconds": data["sample_interval_seconds"],
                     "maximum_samples": data["maximum_samples"],
                     "buffer_mode": data["buffer_mode"],
                 },
             )
             recording_id = cur.lastrowid
+            self._set_recording_tags(conn, recording_id, data.get("tags") or [])
             for p in point_rows:
                 conn.execute(
-                    "INSERT INTO replay_recording_points "
+                    "INSERT INTO recording_points "
                     "(recording_id, source_object_id, object_type, object_instance, object_name, point_type, units) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (recording_id, p["id"], p["object_type"], p["object_instance"], p["name"],
                      p["point_type"], p["units"]),
                 )
             conn.commit()
-        return self.get_replay_recording(recording_id)
+        return self.get_recording(recording_id)
 
-    def stop_replay_recording(self, recording_id: int) -> Optional[dict]:
+    def stop_recording(self, recording_id: int) -> Optional[dict]:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE replay_recordings SET status='completed', ended_at=datetime('now') "
+                "UPDATE recordings SET status='completed', ended_at=datetime('now') "
                 "WHERE id=? AND status='recording'",
                 (recording_id,),
             )
             conn.commit()
-        return self.get_replay_recording(recording_id)
+        return self.get_recording(recording_id)
 
-    def delete_replay_recording(self, recording_id: int) -> bool:
+    def delete_recording(self, recording_id: int) -> bool:
         with self._conn() as conn:
-            cur = conn.execute("DELETE FROM replay_recordings WHERE id=?", (recording_id,))
+            cur = conn.execute("DELETE FROM recordings WHERE id=?", (recording_id,))
             conn.commit()
             return cur.rowcount > 0
 
-    def get_replay_recording_names(self, recording_ids: list[int]) -> dict[int, str]:
+    # ─── Calibration runs (migration 033) ────────────────────────────────
+    # The BACnet Simulator's durable workflow/audit record for one FMU calibration.
+    # Models Runtime keeps the compute record (datasets, HEBO run, artifacts) in its own
+    # file store; this row is the reconstruction summary, joined to it by runtime_job_id.
+
+    def create_calibration_run(self, **fields: Any) -> dict:
+        """Insert a calibration_runs row. `model_id` is required; every other column may
+        be supplied now or filled in later via update_calibration_run(). Returns the
+        created row (JSON columns decoded)."""
+        if not fields.get("model_id"):
+            raise ValueError("create_calibration_run requires model_id")
+        encoded = _encode_calibration_run_fields(fields)
+        columns = ", ".join(encoded)
+        placeholders = ", ".join(f":{key}" for key in encoded)
+        with self._conn() as conn:
+            cur = conn.execute(
+                f"INSERT INTO calibration_runs ({columns}) VALUES ({placeholders})", encoded
+            )
+            conn.commit()
+            run_id = cur.lastrowid
+        return self.get_calibration_run(run_id)  # type: ignore[return-value]
+
+    def update_calibration_run(self, run_id: int, **fields: Any) -> Optional[dict]:
+        """Patch the given columns on one calibration_runs row (no-op if `fields` is
+        empty). Returns the updated row, or None if `run_id` doesn't exist."""
+        if fields:
+            encoded = _encode_calibration_run_fields(fields)
+            assignments = ", ".join(f"{key}=:{key}" for key in encoded)
+            with self._conn() as conn:
+                conn.execute(
+                    f"UPDATE calibration_runs SET {assignments} WHERE id=:__run_id",
+                    {**encoded, "__run_id": run_id},
+                )
+                conn.commit()
+        return self.get_calibration_run(run_id)
+
+    def get_calibration_run(self, run_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM calibration_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        return _decode_calibration_run(row) if row else None
+
+    def get_calibration_run_by_runtime_job(self, runtime_job_id: str) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM calibration_runs WHERE runtime_job_id=?", (runtime_job_id,)
+            ).fetchone()
+        return _decode_calibration_run(row) if row else None
+
+    def list_calibration_runs(
+        self,
+        *,
+        model_id: Optional[str] = None,
+        simulation_model_id: Optional[int] = None,
+        recording_id: Optional[int] = None,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if model_id is not None:
+            clauses.append("model_id=?")
+            params.append(model_id)
+        if simulation_model_id is not None:
+            clauses.append("simulation_model_id=?")
+            params.append(simulation_model_id)
+        if recording_id is not None:
+            clauses.append("recording_id=?")
+            params.append(recording_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM calibration_runs{where} ORDER BY id DESC", params
+            ).fetchall()
+        return [_decode_calibration_run(row) for row in rows]
+
+    def purge_expired_recordings(self, retention_days: int) -> int:
+        """Deletes every completed recording whose ended_at is older than
+        retention_days -- called by recording_retention_loop
+        (simulation/runtime.py) when recording_retention_enabled is on.
+
+        Only ever considers status='completed' -- a recording still
+        'recording' (buffer_mode='overwrite' can run indefinitely with no
+        natural end) is actively in use, not stale, regardless of how long
+        it's been running.
+
+        Skips any recording a Replay device is currently driving from
+        (devices.active_recording_id) even if past retention age -- an
+        automated sweep silently doing that deserves more caution than the
+        manual Delete button, which at least makes the user click through
+        an explicit "this will also stop that device" warning first.
+
+        Child rows (samples, points, tags, input constants) cascade away on
+        their own -- all four already ON DELETE CASCADE to recordings(id),
+        FK enforcement already on for every connection (see __init__)."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM recordings "
+                "WHERE status='completed' AND ended_at IS NOT NULL "
+                "AND ended_at < datetime('now', '-' || ? || ' days') "
+                "AND id NOT IN ("
+                "  SELECT active_recording_id FROM devices "
+                "  WHERE active_recording_id IS NOT NULL"
+                ")",
+                (int(retention_days),),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def get_recording_names(self, recording_ids: list[int]) -> dict[int, str]:
         """Bulk id->name lookup -- backs devices.py's list_devices()
-        attaching active_replay_recording to each Replay device, the same
-        way get_active_simulation_models_by_device() backs
-        active_simulation_model. One query for every device on the page
-        rather than one per device."""
+        attaching active_recording to each Replay device, the same way
+        get_active_simulation_models_by_device() backs active_simulation_model.
+        One query for every device on the page rather than one per device."""
         if not recording_ids:
             return {}
         with self._conn() as conn:
             placeholders = ",".join("?" for _ in recording_ids)
             rows = conn.execute(
-                f"SELECT id, name FROM replay_recordings WHERE id IN ({placeholders})",
+                f"SELECT id, name FROM recordings WHERE id IN ({placeholders})",
                 recording_ids,
             ).fetchall()
             return {int(r["id"]): r["name"] for r in rows}
 
-    def update_replay_recording(self, recording_id: int, data: dict) -> Optional[dict]:
+    def update_recording(self, recording_id: int, data: dict) -> Optional[dict]:
         """Editable regardless of status -- unlike the points list (fixed at
-        create time, see create_replay_recording's own docstring), name/
+        create time, see create_recording's own docstring), name/
         description/interval/cap/buffer_mode are just operational config and
         don't affect any sample already stored. A raised maximum_samples
         just gives more headroom, taking effect on the next sample same as
         sample_interval_seconds. A LOWERED maximum_samples is applied
         immediately, though: trimming down to the new cap right here
-        (oldest sample_index first, same eviction add_replay_sample already
-        uses) rather than waiting for it to lazily converge one sample at a
-        time as new snapshots arrive -- a user editing the cap down expects
-        the count they see to reflect it right away, not on the next tick.
-        A 'stop'-mode recording already at/over the new lower cap is
-        completed immediately for the same reason, instead of waiting for
-        the next sample attempt to discover it's full."""
+        (oldest sample_index first, same eviction add_recording_sample
+        already uses) rather than waiting for it to lazily converge one
+        sample at a time as new snapshots arrive -- a user editing the cap
+        down expects the count they see to reflect it right away, not on
+        the next tick. A 'stop'-mode recording already at/over the new
+        lower cap is completed immediately for the same reason, instead of
+        waiting for the next sample attempt to discover it's full."""
         with self._conn() as conn:
             conn.execute(
-                "UPDATE replay_recordings SET name=:name, description=:description, "
-                "sample_interval_seconds=:sample_interval_seconds, maximum_samples=:maximum_samples, "
-                "buffer_mode=:buffer_mode WHERE id=:id",
-                {**data, "id": recording_id},
+                "UPDATE recordings SET name=:name, description=:description, condition=:condition, "
+                "fault_type=:fault_type, "
+                "sample_interval_seconds=:sample_interval_seconds, "
+                "maximum_samples=:maximum_samples, buffer_mode=:buffer_mode WHERE id=:id",
+                {
+                    **data,
+                    "condition": data.get("condition") or None,
+                    "fault_type": data.get("fault_type") or None,
+                    "id": recording_id,
+                },
             )
+            self._set_recording_tags(conn, recording_id, data.get("tags") or [])
             row = conn.execute(
-                "SELECT status, buffer_mode, maximum_samples FROM replay_recordings WHERE id=?",
+                "SELECT status, buffer_mode, maximum_samples FROM recordings WHERE id=?",
                 (recording_id,),
             ).fetchone()
             if row:
                 sample_count = conn.execute(
-                    "SELECT COUNT(DISTINCT sample_index) FROM replay_samples WHERE recording_id=?",
+                    "SELECT COUNT(DISTINCT sample_index) FROM recording_samples WHERE recording_id=?",
                     (recording_id,),
                 ).fetchone()[0]
                 excess = sample_count - row["maximum_samples"]
@@ -2506,19 +2917,19 @@ class Database:
                     if row["buffer_mode"] == "overwrite":
                         for _ in range(excess):
                             conn.execute(
-                                "DELETE FROM replay_samples WHERE recording_id=? AND sample_index = ("
-                                "SELECT MIN(sample_index) FROM replay_samples WHERE recording_id=?)",
+                                "DELETE FROM recording_samples WHERE recording_id=? AND sample_index = ("
+                                "SELECT MIN(sample_index) FROM recording_samples WHERE recording_id=?)",
                                 (recording_id, recording_id),
                             )
                     elif row["status"] == "recording":
                         conn.execute(
-                            "UPDATE replay_recordings SET status='completed', ended_at=datetime('now') WHERE id=?",
+                            "UPDATE recordings SET status='completed', ended_at=datetime('now') WHERE id=?",
                             (recording_id,),
                         )
             conn.commit()
-        return self.get_replay_recording(recording_id)
+        return self.get_recording(recording_id)
 
-    def add_replay_sample(self, recording_id: int, values: dict[int, dict]) -> Optional[int]:
+    def add_recording_sample(self, recording_id: int, values: dict[int, dict]) -> Optional[int]:
         """Appends one snapshot -- every entry in `values` (keyed by
         recording_point_id) shares the same sample_index and timestamp,
         enforcing "all point values captured during the same polling cycle
@@ -2528,33 +2939,33 @@ class Database:
         sample_index, or None if the recording isn't active or is full with
         buffer_mode='stop' (in which case it's also auto-completed here)."""
         with self._conn() as conn:
-            cfg = conn.execute("SELECT * FROM replay_recordings WHERE id=?", (recording_id,)).fetchone()
+            cfg = conn.execute("SELECT * FROM recordings WHERE id=?", (recording_id,)).fetchone()
             if not cfg or cfg["status"] != "recording":
                 return None
             sample_count = conn.execute(
-                "SELECT COUNT(DISTINCT sample_index) FROM replay_samples WHERE recording_id=?", (recording_id,)
+                "SELECT COUNT(DISTINCT sample_index) FROM recording_samples WHERE recording_id=?", (recording_id,)
             ).fetchone()[0]
             if sample_count >= cfg["maximum_samples"]:
                 if cfg["buffer_mode"] == "stop":
                     conn.execute(
-                        "UPDATE replay_recordings SET status='completed', ended_at=datetime('now') WHERE id=?",
+                        "UPDATE recordings SET status='completed', ended_at=datetime('now') WHERE id=?",
                         (recording_id,),
                     )
                     conn.commit()
                     return None
                 conn.execute(
-                    "DELETE FROM replay_samples WHERE recording_id=? AND sample_index = ("
-                    "SELECT MIN(sample_index) FROM replay_samples WHERE recording_id=?)",
+                    "DELETE FROM recording_samples WHERE recording_id=? AND sample_index = ("
+                    "SELECT MIN(sample_index) FROM recording_samples WHERE recording_id=?)",
                     (recording_id, recording_id),
                 )
             next_index_row = conn.execute(
-                "SELECT MAX(sample_index) FROM replay_samples WHERE recording_id=?", (recording_id,)
+                "SELECT MAX(sample_index) FROM recording_samples WHERE recording_id=?", (recording_id,)
             ).fetchone()
             next_index = (next_index_row[0] + 1) if next_index_row[0] is not None else 0
             timestamp = datetime.now(timezone.utc).isoformat()
             for recording_point_id, entry in values.items():
                 conn.execute(
-                    "INSERT INTO replay_samples "
+                    "INSERT INTO recording_samples "
                     "(recording_id, recording_point_id, sample_index, timestamp, value, reliability, out_of_service) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
@@ -2566,7 +2977,7 @@ class Database:
             conn.commit()
             return next_index
 
-    def get_replay_recording_sample_index_bounds(self, recording_id: int) -> Optional[tuple[int, int]]:
+    def get_recording_sample_index_bounds(self, recording_id: int) -> Optional[tuple[int, int]]:
         """(min, max) sample_index currently stored -- eviction (buffer_mode=
         'overwrite') only ever removes the single lowest sample_index, so
         the remaining range is always contiguous (no internal gaps),
@@ -2575,23 +2986,23 @@ class Database:
         recording has no samples yet."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT MIN(sample_index), MAX(sample_index) FROM replay_samples WHERE recording_id=?",
+                "SELECT MIN(sample_index), MAX(sample_index) FROM recording_samples WHERE recording_id=?",
                 (recording_id,),
             ).fetchone()
             if row[0] is None:
                 return None
             return (row[0], row[1])
 
-    def get_replay_recording_samples(self, recording_id: int, sample_index: int) -> list[dict]:
+    def get_recording_samples(self, recording_id: int, sample_index: int) -> list[dict]:
         """All point rows for one snapshot -- used by playback, one call per
         advanced frame."""
         with self._conn() as conn:
             return [dict(r) for r in conn.execute(
-                "SELECT * FROM replay_samples WHERE recording_id=? AND sample_index=?",
+                "SELECT * FROM recording_samples WHERE recording_id=? AND sample_index=?",
                 (recording_id, sample_index),
             )]
 
-    def get_replay_recording_all_samples(self, recording_id: int) -> list[dict]:
+    def get_recording_all_samples(self, recording_id: int) -> list[dict]:
         """Every sample this recording has, long-format (one row per
         sample_index x point), ordered by sample_index then
         recording_point_id, `value` JSON-decoded back to its original type.
@@ -2604,8 +3015,8 @@ class Database:
                     "SELECT s.sample_index, s.timestamp, s.recording_point_id, "
                     "p.object_type, p.object_instance, p.object_name, p.point_type, p.units, "
                     "s.value, s.reliability, s.out_of_service "
-                    "FROM replay_samples s "
-                    "JOIN replay_recording_points p ON p.id = s.recording_point_id "
+                    "FROM recording_samples s "
+                    "JOIN recording_points p ON p.id = s.recording_point_id "
                     "WHERE s.recording_id=? "
                     "ORDER BY s.sample_index, s.recording_point_id",
                     (recording_id,),
@@ -2618,8 +3029,8 @@ class Database:
     def has_replayable_recording(self, device_id: int) -> bool:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT EXISTS(SELECT 1 FROM replay_recordings r WHERE r.source_device_id=? "
-                "AND r.status='completed' AND (SELECT COUNT(*) FROM replay_samples WHERE recording_id=r.id) > 0)",
+                "SELECT EXISTS(SELECT 1 FROM recordings r WHERE r.source_device_id=? "
+                "AND r.status='completed' AND (SELECT COUNT(*) FROM recording_samples WHERE recording_id=r.id) > 0)",
                 (device_id,),
             ).fetchone()
             return bool(row[0])
@@ -3276,31 +3687,62 @@ class Database:
         d["definition"] = json.loads(d.pop("definition_json"))
         return d
 
-    # ─── Custom graphs ───────────────────────────────────────────────────
-    # Project-level data, mirroring functional_tests exactly: a named
-    # JSON-blob definition (device_id/object_id per series -- opaque
-    # references, not FKs, resolved live against /points whenever a graph
-    # is opened) with no relational table of its own and no id-remapping
-    # needed on restore, included verbatim in save_project/load_project
-    # below the same way functional_tests already is.
+    # ─── Custom graphs (dashboard widgets) ─────────────────────────────────
+    # Project-level data: a named JSON-blob definition (device_id/object_id
+    # per series for widget_type='chart', or {device_id, object_id,
+    # decimals?} for widget_type='kpi' -- opaque references, not FKs,
+    # resolved live against /points whenever a widget is rendered) plus a
+    # dashboard_id grouping and a grid position/size (migration 28 -- see
+    # its own docstring for why this table, not a new parallel one, became
+    # the dashboard/widget system). No id-remapping needed for the
+    # definition's own device_id/object_id refs on restore (same as
+    # functional_tests), but dashboard_id DOES need remapping -- see
+    # load_project.
+
+    def _resolve_dashboard_id(self, conn: sqlite3.Connection, dashboard_id: Optional[int]) -> int:
+        """A widget always belongs to exactly one dashboard -- enforced
+        here, not via a DB-level NOT NULL (see migration 28's docstring for
+        why that's not possible at ALTER TABLE time). An explicit id is
+        trusted as-is (the API layer/caller already validated it exists);
+        omitted means "put it on the first dashboard there is," auto-
+        creating one if this is a completely fresh install with no
+        dashboards yet at all (e.g. ObjectsPanel's quick single-point graph
+        icon, which has no dashboard-switcher context of its own)."""
+        if dashboard_id is not None:
+            return dashboard_id
+        row = conn.execute("SELECT id FROM dashboards ORDER BY id LIMIT 1").fetchone()
+        if row:
+            return row["id"]
+        cur = conn.execute("INSERT INTO dashboards (name) VALUES ('My Dashboard')")
+        return cur.lastrowid
 
     def create_custom_graph(self, data: dict) -> dict:
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
+            dashboard_id = self._resolve_dashboard_id(conn, data.get("dashboard_id"))
             cur = conn.execute(
-                "INSERT INTO custom_graphs (name, definition_json, created_at, updated_at) "
-                "VALUES (?,?,?,?)",
-                (data["name"], json.dumps(data["definition"]), now, now),
+                "INSERT INTO custom_graphs "
+                "(name, definition_json, dashboard_id, widget_type, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    data["name"], json.dumps(data["definition"]), dashboard_id,
+                    data.get("widget_type", "chart"),
+                    data.get("grid_x", 0), data.get("grid_y", 0), data.get("grid_w", 6), data.get("grid_h", 4),
+                    now, now,
+                ),
             )
             conn.commit()
             return self._custom_graph_row(conn, cur.lastrowid)
 
-    def get_custom_graphs(self) -> list[dict]:
+    def get_custom_graphs(self, dashboard_id: Optional[int] = None) -> list[dict]:
         with self._conn() as conn:
-            return [
-                self._custom_graph_dict(r)
-                for r in conn.execute("SELECT * FROM custom_graphs ORDER BY name")
-            ]
+            if dashboard_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM custom_graphs WHERE dashboard_id=? ORDER BY name", (dashboard_id,)
+                )
+            else:
+                rows = conn.execute("SELECT * FROM custom_graphs ORDER BY name")
+            return [self._custom_graph_dict(r) for r in rows]
 
     def get_custom_graph(self, graph_id: int) -> Optional[dict]:
         with self._conn() as conn:
@@ -3308,14 +3750,35 @@ class Database:
             return self._custom_graph_dict(row) if row else None
 
     def update_custom_graph(self, graph_id: int, data: dict) -> Optional[dict]:
+        """Any of dashboard_id/widget_type/grid_x/y/w/h left out of `data`
+        (None) keeps the row's EXISTING value rather than resetting to a
+        default -- see CustomGraphUpdate's own comment for why a PUT that's
+        only renaming/re-pointing a widget must not silently move or
+        retype it. Only `name`/`definition` are always required (every
+        caller -- SavedGraphCard.vue's persist(), CustomGraphModal.vue's
+        Save -- always has a full, current value for both)."""
         with self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE custom_graphs SET name=?, definition_json=?, updated_at=? WHERE id=?",
-                (data["name"], json.dumps(data["definition"]), datetime.now(timezone.utc).isoformat(), graph_id),
-            )
-            if cur.rowcount == 0:
-                conn.commit()
+            existing = conn.execute("SELECT * FROM custom_graphs WHERE id=?", (graph_id,)).fetchone()
+            if existing is None:
                 return None
+
+            dashboard_id_in = data.get("dashboard_id")
+            dashboard_id = dashboard_id_in if dashboard_id_in is not None else existing["dashboard_id"]
+            widget_type = data.get("widget_type") or existing["widget_type"]
+            grid_x = data.get("grid_x") if data.get("grid_x") is not None else existing["grid_x"]
+            grid_y = data.get("grid_y") if data.get("grid_y") is not None else existing["grid_y"]
+            grid_w = data.get("grid_w") if data.get("grid_w") is not None else existing["grid_w"]
+            grid_h = data.get("grid_h") if data.get("grid_h") is not None else existing["grid_h"]
+
+            conn.execute(
+                "UPDATE custom_graphs SET name=?, definition_json=?, dashboard_id=?, widget_type=?, "
+                "grid_x=?, grid_y=?, grid_w=?, grid_h=?, updated_at=? WHERE id=?",
+                (
+                    data["name"], json.dumps(data["definition"]), dashboard_id, widget_type,
+                    grid_x, grid_y, grid_w, grid_h,
+                    datetime.now(timezone.utc).isoformat(), graph_id,
+                ),
+            )
             conn.commit()
             return self._custom_graph_row(conn, graph_id)
 
@@ -3335,6 +3798,50 @@ class Database:
         d = dict(row)
         d["definition"] = json.loads(d.pop("definition_json"))
         return d
+
+    # ─── Dashboards ─────────────────────────────────────────────────────
+    # Just a name to group custom_graphs (widget) rows under -- no content
+    # of its own. See migration 28's docstring for why widgets live on the
+    # existing custom_graphs table rather than a new one.
+
+    def create_dashboard(self, name: str) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO dashboards (name, created_at, updated_at) VALUES (?,?,?)", (name, now, now)
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM dashboards WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def get_dashboards(self) -> list[dict]:
+        with self._conn() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM dashboards ORDER BY id")]
+
+    def get_dashboard(self, dashboard_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM dashboards WHERE id=?", (dashboard_id,)).fetchone()
+            return dict(row) if row else None
+
+    def update_dashboard(self, dashboard_id: int, name: str) -> Optional[dict]:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE dashboards SET name=?, updated_at=? WHERE id=?",
+                (name, datetime.now(timezone.utc).isoformat(), dashboard_id),
+            )
+            if cur.rowcount == 0:
+                conn.commit()
+                return None
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM dashboards WHERE id=?", (dashboard_id,)).fetchone())
+
+    def delete_dashboard(self, dashboard_id: int) -> bool:
+        """Cascades to every widget on it (custom_graphs.dashboard_id ON
+        DELETE CASCADE, migration 28) -- same as recordings' own child
+        cleanup, no extra code needed here."""
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM dashboards WHERE id=?", (dashboard_id,))
+            conn.commit()
+            return cur.rowcount > 0
 
     # ── Functional test runs (execution state -- not project data, see
     # save_project/load_project below: deliberately not included in the
@@ -3453,6 +3960,11 @@ class Database:
             # Same "no FK, store/restore verbatim" reasoning as
             # functional_tests immediately above.
             custom_graphs = [dict(r) for r in conn.execute("SELECT * FROM custom_graphs")]
+            # Widgets' own dashboard_id (above) DOES need id-remapping on
+            # restore, unlike the rest of a custom_graphs row -- so the
+            # dashboard it belongs to has to be snapshotted too. See
+            # load_project's own dashboard_id_map for the remap.
+            dashboards = [dict(r) for r in conn.execute("SELECT * FROM dashboards ORDER BY id")]
             # Stored verbatim, including the (soon-to-be-stale) id/
             # created_from_device_id/mapping point_id values -- load_project()
             # remaps these through dev_id_map/global_obj_id_map, the same
@@ -3475,6 +3987,7 @@ class Database:
                 "energy_model_configs": energy_model_configs,
                 "functional_tests": functional_tests,
                 "custom_graphs": custom_graphs,
+                "dashboards": dashboards,
                 "simulation_models": simulation_models,
                 "connection_config": connection_config,
                 "discovery_connections": discovery_connections,
@@ -3532,6 +4045,7 @@ class Database:
             energy_model_configs = [dict(r) for r in conn.execute("SELECT * FROM energy_model_configs")]
             functional_tests = [dict(r) for r in conn.execute("SELECT * FROM functional_tests")]
             custom_graphs = [dict(r) for r in conn.execute("SELECT * FROM custom_graphs")]
+            dashboards = [dict(r) for r in conn.execute("SELECT * FROM dashboards ORDER BY id")]
             # See save_project's identical line for why this exists --
             # previously missing entirely, silently losing every simulation
             # model on save/reload.
@@ -3545,6 +4059,7 @@ class Database:
                 "energy_model_configs": energy_model_configs,
                 "functional_tests": functional_tests,
                 "custom_graphs": custom_graphs,
+                "dashboards": dashboards,
                 "simulation_models": simulation_models,
                 "connection_config": connection_config,
                 "discovery_connections": discovery_connections,
@@ -3585,6 +4100,7 @@ class Database:
             conn.execute("DELETE FROM locations")
             conn.execute("DELETE FROM functional_tests")
             conn.execute("DELETE FROM custom_graphs")
+            conn.execute("DELETE FROM dashboards")
             conn.commit()
 
     def load_project(self, project_id: int) -> Optional[dict]:
@@ -3618,6 +4134,7 @@ class Database:
             conn.execute("DELETE FROM locations")
             conn.execute("DELETE FROM functional_tests")
             conn.execute("DELETE FROM custom_graphs")
+            conn.execute("DELETE FROM dashboards")
             conn.commit()
 
             # Restore locations parent-before-child, remapping old ids -> new
@@ -3712,9 +4229,9 @@ class Database:
                     obj_cur = conn.execute(
                         "INSERT OR IGNORE INTO objects "
                         "(device_id, object_type, object_instance, name, units, behavior, "
-                        "behavior_params, enabled, manual_value, number_of_states, reliability, polarity, point_type, description) "
+                        "behavior_params, enabled, manual_value, number_of_states, reliability, polarity, point_type, description, state_text) "
                         "VALUES (:device_id, :object_type, :object_instance, :name, :units, "
-                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability, :polarity, :point_type, :description)",
+                        ":behavior, :behavior_params, :enabled, :manual_value, :number_of_states, :reliability, :polarity, :point_type, :description, :state_text)",
                         {
                             **obj,
                             "device_id": dev_id,
@@ -3724,6 +4241,7 @@ class Database:
                             "polarity": obj.get("polarity") or "normal",
                             "point_type": obj.get("point_type"),
                             "description": obj.get("description"),
+                            "state_text": _encode_state_text(obj.get("state_text")),
                         },
                     )
                     obj_id = obj_cur.lastrowid if obj_cur.lastrowid else conn.execute(
@@ -3956,17 +4474,46 @@ class Database:
                     ),
                 )
 
+            # Dashboards are parent-only (no nested references of their
+            # own), so they can be restored in one flat pass, before their
+            # widgets (custom_graphs) below need dashboard_id_map ready.
+            dashboard_id_map: dict[int, int] = {}
+            for dash in payload.get("dashboards", []):
+                cur = conn.execute(
+                    "INSERT INTO dashboards (name, created_at, updated_at) VALUES (?,?,?)",
+                    (
+                        dash["name"],
+                        dash.get("created_at") or datetime.now(timezone.utc).isoformat(),
+                        dash.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                dashboard_id_map[dash["id"]] = cur.lastrowid
+
             # Same "no FK, re-insert verbatim" reasoning as functional_tests
-            # immediately above -- a custom_graphs definition's device_id/
-            # object_id references are opaque JSON, resolved live against
-            # /points whenever a graph is opened, not real foreign keys.
+            # immediately above for a custom_graphs (widget) row's own
+            # device_id/object_id references (opaque JSON, resolved live
+            # against /points) -- but dashboard_id IS a real FK and DOES
+            # need remapping, through dashboard_id_map just built above. A
+            # project exported before migration 28 (no "dashboards" key, no
+            # dashboard_id on its custom_graphs rows at all) falls back to
+            # _resolve_dashboard_id's own "first dashboard there is,
+            # auto-creating one if there really isn't one yet" behavior --
+            # the same fallback a live create_custom_graph call with no
+            # dashboard_id uses.
             for cg in payload.get("custom_graphs", []):
+                dashboard_id = dashboard_id_map.get(cg.get("dashboard_id"))
+                if dashboard_id is None:
+                    dashboard_id = self._resolve_dashboard_id(conn, None)
                 conn.execute(
-                    "INSERT INTO custom_graphs (name, definition_json, created_at, updated_at) "
-                    "VALUES (?,?,?,?)",
+                    "INSERT INTO custom_graphs "
+                    "(name, definition_json, dashboard_id, widget_type, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         cg["name"],
                         cg.get("definition_json") or "{}",
+                        dashboard_id,
+                        cg.get("widget_type", "chart"),
+                        cg.get("grid_x", 0), cg.get("grid_y", 0), cg.get("grid_w", 6), cg.get("grid_h", 4),
                         cg.get("created_at") or datetime.now(timezone.utc).isoformat(),
                         cg.get("updated_at") or datetime.now(timezone.utc).isoformat(),
                     ),

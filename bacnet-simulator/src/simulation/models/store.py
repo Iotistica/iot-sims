@@ -636,7 +636,7 @@ def list_enabled_simulation_models(database: Any) -> list[dict]:
 # provider whose implementation is gone from the codebase (e.g. 'weather',
 # removed in 47a1a46 in favor of the FMU-based Weather.mo model) with no
 # code path left that can ever load it again.
-_REGISTRABLE_OR_LEGACY_PROVIDER_TYPES = ("fmu", "ai", "system")
+_REGISTRABLE_OR_LEGACY_PROVIDER_TYPES = ("fmu", "ai", "classifier", "system")
 
 
 def purge_unsupported_simulation_models(database: Any) -> list[dict[str, Any]]:
@@ -904,6 +904,54 @@ def reconcile_provider_owned_raw_behavior(database: Any) -> None:
         conn.commit()
 
 
+def reconcile_unowned_raw_behavior(database: Any) -> None:
+    """Mirror image of reconcile_provider_owned_raw_behavior() above: any point
+    still showing 'raw' that is NOT actually provider-owned right now (its
+    mapping was removed, its model was disabled, or -- before the
+    scaffold-points endpoint stopped defaulting to 'raw' -- it was scaffolded
+    but never mapped) gets reset to the ordinary 'constant' default.
+
+    Keeps 'raw' meaning exactly one thing everywhere in this app: genuinely,
+    currently provider-owned, no exceptions -- see the sibling function's own
+    docstring. Only ever touches a point whose CURRENT value is literally
+    'raw'; a point an operator has deliberately moved to some other behavior
+    (e.g. 'constant'/'manual'/'sine' to inject a test value on top of an
+    otherwise-owned point) never matches behavior='raw' in the first place, so
+    this can never clobber that -- same reasoning that already protects an
+    intentional override from the 'raw' sibling's own constant->raw promotion.
+
+    Same boot-time, every-time, non-migration rationale as
+    reconcile_provider_owned_raw_behavior() -- called unconditionally from
+    Database.setup() right after it, for the same reason: a point can become
+    (or stop being) provider-owned at any time after the app starts, so a
+    one-time historical fixup could never catch that going forward."""
+    with database._conn() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('simulation_model_mappings','simulation_model_configs','simulation_model_input_exposures')"
+            )
+        }
+        if len(tables) < 3:
+            return
+        conn.execute(
+            """
+            UPDATE objects SET behavior='constant'
+            WHERE behavior='raw' AND id NOT IN (
+                SELECT m.point_id FROM simulation_model_mappings m
+                JOIN simulation_model_configs c ON c.id=m.model_config_id
+                WHERE c.enabled=1 AND m.direction='output' AND c.provider_type<>'system'
+                UNION
+                SELECT e.point_id FROM simulation_model_input_exposures e
+                JOIN simulation_model_configs c ON c.id=e.model_config_id
+                WHERE c.enabled=1 AND c.provider_type<>'system'
+            )
+            """
+        )
+        conn.commit()
+
+
 def _replace_mappings(
     conn: sqlite3.Connection,
     model_id: int,
@@ -1138,6 +1186,37 @@ def update_simulation_model(
         _replace_input_exposures(conn, model_id, input_exposures or [])
         conn.commit()
 
+    return get_simulation_model(database, model_id)
+
+
+def merge_simulation_model_parameter_overrides(
+    database: Any, model_id: int, overrides: dict[str, Any]
+) -> dict | None:
+    """Deep-merge `overrides` into parameters.parameter_overrides and persist ONLY the
+    parameters column (same narrow-write spirit as set_simulation_model_enabled) --
+    name/mappings/enabled are untouched. Backs the calibration apply-by-run endpoint:
+    pushing a completed calibration's best parameters onto a configured model instance
+    without going through the full SimulationModelPayload edit path. Returns the updated
+    config, or None if the model doesn't exist."""
+    ensure_simulation_model_schema(database)
+    with database._conn() as conn:
+        row = conn.execute(
+            "SELECT parameters FROM simulation_model_configs WHERE id=?", (model_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            parameters = json.loads(row["parameters"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            parameters = {}
+        merged = dict(parameters.get("parameter_overrides") or {})
+        merged.update(overrides)
+        parameters["parameter_overrides"] = merged
+        conn.execute(
+            "UPDATE simulation_model_configs SET parameters=?, updated_at=datetime('now') WHERE id=?",
+            (json.dumps(parameters), model_id),
+        )
+        conn.commit()
     return get_simulation_model(database, model_id)
 
 

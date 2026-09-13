@@ -95,7 +95,7 @@ def test_fmu_input_source_constant_persists_and_bootstraps_without_stale_point(
     monkeypatch.setattr(model_runtime, "FMUSimulationProvider", _FakeFMUProvider)
     _FakeFMUProvider.created.clear()
 
-    device = client.post("/devices", json={"device_instance": 2401, "name": "AHU-Test"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 2401, "name": "AHU-Test"}).json()
     fan_point = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-output",
         "object_instance": 1,
@@ -195,3 +195,46 @@ def test_fmu_input_source_constant_persists_and_bootstraps_without_stale_point(
     registration = next(iter(engine.registrations.values()))
     assert registration["input_point_ids"] == set()
     assert registration["output_point_ids"] == {fan_output_point["id"]}
+
+
+# ---------------------------------------------------------------------------
+# _effective_mappings() direct unit coverage -- both provider types now
+# exclude a stale Point mapping shadowed by a constant-sourced variable
+# (previously FMU-only; the runtime-layer twin of simulation.py's own
+# _mapping_dicts, widened the same way for AI's new Constant/Point/
+# Aggregate sourcing). Calling the function directly, no device/HTTP
+# fixtures needed -- immune to the pre-existing, unrelated objects_router
+# import issue the end-to-end tests above hit in this environment.
+# ---------------------------------------------------------------------------
+
+def _config_with_stale_point_mapping(provider_type: str) -> dict:
+    return {
+        "provider_type": provider_type,
+        "parameters": {"input_sources": {"outdoor_air_temp_c": "constant"}},
+        "mappings": [
+            {"variable": "outdoor_air_temp_c", "direction": "input", "point_id": 999},
+            {"variable": "supply_air_temp_c", "direction": "output", "point_id": 111},
+        ],
+    }
+
+
+def test_effective_mappings_excludes_stale_point_for_fmu_constant_input():
+    result = model_runtime._effective_mappings(_config_with_stale_point_mapping("fmu"))
+    assert [(m["variable"], m["direction"]) for m in result] == [("supply_air_temp_c", "output")]
+
+
+def test_effective_mappings_excludes_stale_point_for_ai_constant_input():
+    """The exact behavior gained by this change -- previously this filter
+    only applied `if provider_type == "fmu"`, so an AI config's stale Point
+    row would have leaked through unfiltered."""
+    result = model_runtime._effective_mappings(_config_with_stale_point_mapping("ai"))
+    assert [(m["variable"], m["direction"]) for m in result] == [("supply_air_temp_c", "output")]
+
+
+def test_effective_mappings_keeps_point_mapping_when_not_constant_sourced():
+    config = _config_with_stale_point_mapping("ai")
+    config["parameters"]["input_sources"]["outdoor_air_temp_c"] = "point"
+    result = model_runtime._effective_mappings(config)
+    assert {(m["variable"], m["direction"]) for m in result} == {
+        ("outdoor_air_temp_c", "input"), ("supply_air_temp_c", "output"),
+    }

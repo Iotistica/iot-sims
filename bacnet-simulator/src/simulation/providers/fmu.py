@@ -8,6 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from ...semantics import ml_units
 from ..mapping.conversions import apply_output_conversion
 from .base import ProviderStatus, SimulationContext, SimulationProvider, ValidationResult
 
@@ -196,12 +197,14 @@ class FMURuntimeClient:
         self,
         model_id: str,
         inputs: Mapping[str, Any] | None = None,
-        string_parameters: Mapping[str, str] | None = None,
+        parameters: Mapping[str, str] | None = None,
         warmup_seconds: float | None = None,
+        real_parameters: Mapping[str, float] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "inputs": dict(inputs or {}),
-            "string_parameters": dict(string_parameters or {}),
+            "parameters": dict(parameters or {}),
+            "real_parameters": dict(real_parameters or {}),
         }
         if warmup_seconds is not None:
             body["warmup_seconds"] = warmup_seconds
@@ -247,26 +250,51 @@ class FMUSimulationProvider(SimulationProvider):
         aggregate_inputs: list[FMUAggregateInput] | None = None,
         input_exposures: list[FMUInputExposure] | None = None,
         input_defaults: Mapping[str, Any] | None = None,
-        string_parameters: Mapping[str, str] | None = None,
+        parameters: Mapping[str, str] | None = None,
+        real_parameters: Mapping[str, float] | None = None,
         warmup_seconds: float | None = None,
         timeout_s: float = 20.0,
         api_key: str | None = None,
         input_variables: set[str] | None = None,
         output_variables: set[str] | None = None,
+        ml_input_contract: list[dict[str, Any]] | None = None,
     ) -> None:
         self._runtime_url = runtime_url.rstrip("/")
         self._model = model
+        # {model input variable -> expected engineering unit} for a promoted ML model.
+        # When set, each live BACnet value for that variable is normalised into the
+        # model's expected catalog unit exactly ONCE in _convert_input_value, and the
+        # FMU-native CFM / conversion steps are skipped (the ML /step payload is in
+        # catalog units, matching what OnnxSessionManager / ClassifierSessionManager
+        # consume). Empty for every FMU model -> those paths are byte-for-byte unchanged.
+        self._ml_expected_units: dict[str, str] = {
+            str(entry["variable"]): str(entry["expected_unit"])
+            for entry in (ml_input_contract or [])
+            if entry.get("variable") and entry.get("expected_unit")
+        }
         self._bindings = bindings
         self._aggregate_inputs = list(aggregate_inputs or [])
         self._input_exposures = list(input_exposures or [])
-        self._input_defaults = dict(input_defaults or {})
+        # Boolean FMI inputs (model.json unit "boolean", e.g. a genset
+        # start/breaker command) reach here as a real bool from an older
+        # saved config or the catalog `default`; iot-models' /initialize and
+        # /step take dict[str, float], so normalise to 1.0/0.0 once.
+        self._input_defaults = {
+            name: (1.0 if value is True else 0.0 if value is False else value)
+            for name, value in (input_defaults or {}).items()
+        }
         # Session-lifetime FMI String parameter overrides, resolved once by
         # runtime._build_fmu_provider and captured here for the whole
         # provider lifetime -- unlike self._inputs, these are never
         # re-resolved per tick, matching the runtime's own once-at-
         # initialize() semantics (see shared/runtime/models/manager.py's
-        # RuntimeSession.string_parameters).
-        self._string_parameters = dict(string_parameters or {})
+        # RuntimeSession.parameters).
+        self._parameters = dict(parameters or {})
+        # Applied calibration results (see runtime._build_fmu_provider's own
+        # comment) -- FMI causality="parameter" Real overrides, same
+        # resolved-once-and-captured-for-the-provider-lifetime shape as
+        # self._parameters above.
+        self._real_parameters = dict(real_parameters or {})
         # Per-session warmup override (e.g. Weather's "Playback Start
         # Month", converted to seconds by runtime._build_fmu_provider)
         # -- distinct from self._warmup_seconds below, which holds the
@@ -454,15 +482,17 @@ class FMUSimulationProvider(SimulationProvider):
         *,
         reason: str,
     ) -> str:
-        # string_parameters/warmup_seconds are only passed as kwargs when
+        # parameters/warmup_seconds are only passed as kwargs when
         # actually set -- preserves the exact 2-positional-arg call shape
         # for every session that uses neither (the overwhelming majority),
         # so existing test doubles that monkeypatch FMURuntimeClient.initialize
         # with an older (self, model_id, inputs=None) signature keep working
         # unchanged.
         extra_kwargs: dict[str, Any] = {}
-        if self._string_parameters:
-            extra_kwargs["string_parameters"] = self._string_parameters
+        if self._parameters:
+            extra_kwargs["parameters"] = self._parameters
+        if self._real_parameters:
+            extra_kwargs["real_parameters"] = self._real_parameters
         if self._warmup_seconds_override is not None:
             extra_kwargs["warmup_seconds"] = self._warmup_seconds_override
         result = self._client.initialize(self._model, inputs or {}, **extra_kwargs)
@@ -473,7 +503,7 @@ class FMUSimulationProvider(SimulationProvider):
         log.info(
             "FMU runtime session created: session=%s model=%s runtime=%s "
             "reason=%s state=%s warmup_progress=%s warmup_seconds=%s inputs=%s "
-            "string_parameters=%s",
+            "parameters=%s real_parameters=%s",
             session_id,
             self._model,
             self._runtime_url,
@@ -482,7 +512,8 @@ class FMUSimulationProvider(SimulationProvider):
             self._warmup_progress,
             self._warmup_seconds,
             dict(inputs or {}),
-            self._string_parameters,
+            self._parameters,
+            self._real_parameters,
         )
         return session_id
 
@@ -835,6 +866,22 @@ class FMUSimulationProvider(SimulationProvider):
         return variable.endswith("_m3_s")
 
     def _convert_output_value(self, binding: FMUPointBinding, value: Any) -> Any:
+        # A classifier-backed model's /step response carries a rich dict for
+        # its output (see shared/runtime/models/classifier_manager.py's
+        # step(): {prediction_index, prediction_label, confidence,
+        # probabilities}), not a plain float -- unwrapped here to its own
+        # prediction_index (a plain 0-based int) BEFORE the named conversion
+        # below, so a classifier mapping's conversion="zero_based_to_
+        # multistate" (see mapping/conversions.py) applies to it exactly the
+        # same way it already does for a zero-based FMU compressor-stage
+        # output. This is the same 0-based -> 1-based BACnet multi-state
+        # shift either way -- no separate conversion needed. The full dict
+        # (confidence/probabilities included) is preserved separately in
+        # step()'s own output_report for diagnostics, not discarded --
+        # see the classifier_result key added there.
+        if isinstance(value, dict) and "prediction_index" in value:
+            value = value["prediction_index"]
+
         # Declarative, mapping-configured conversion first (e.g.
         # 'zero_based_to_multistate') -- applied regardless of variable
         # name, unlike the CFM handling below which is inferred from a
@@ -873,6 +920,25 @@ class FMUSimulationProvider(SimulationProvider):
         declared unit (m3/s) diverge -- every other Point-mapped input
         already matches its bound point's unit 1:1 (degC-to-degC,
         percent-to-percent, etc)."""
+        # Promoted ML model: normalise the live BACnet value into the model's expected
+        # catalog unit exactly once, then RETURN -- do not also run the CFM branch below
+        # (a CFM point against an m3/s contract would otherwise be divided by 2118.88
+        # twice) and do not apply any FMU-native `conversion` (the ML /step payload is in
+        # catalog units). An incompatible / unknown-source unit is raised, never sent.
+        expected_unit = self._ml_expected_units.get(binding.variable)
+        if expected_unit is not None:
+            metadata = self._binding_metadata(binding)
+            source_unit = str(metadata.get("units") or "") or None
+            try:
+                return ml_units.normalize(float(value), source_unit, expected_unit)
+            except ml_units.UnitError as exc:
+                raise ValueError(
+                    f"model input {binding.variable!r}: {exc} (bound point units "
+                    f"{source_unit!r}, model expects {expected_unit!r})"
+                ) from exc
+            except (TypeError, ValueError):
+                return value
+
         if not self._is_volumetric_flow_variable(binding.variable):
             return value
         metadata = self._binding_metadata(binding)
@@ -1127,13 +1193,23 @@ class FMUSimulationProvider(SimulationProvider):
                 if variable not in result:
                     missing_fields.append(variable)
                     continue
-                value = self._convert_output_value(binding, result[variable])
+                raw_value = result[variable]
+                value = self._convert_output_value(binding, raw_value)
                 output_updates[binding.point_id] = value
-                output_report[variable] = {
+                report_entry = {
                     "value": value,
                     "point_id": binding.point_id,
                     **self._binding_metadata(binding),
                 }
+                if isinstance(raw_value, dict) and "prediction_index" in raw_value:
+                    # Retained for future FDD UI/analytics -- see the plan's
+                    # own runtime-result design. `value` above is only the
+                    # winning class's 1-based BACnet state; this keeps the
+                    # full prediction_label/confidence/probabilities breakdown
+                    # available via diagnostics even though nothing consumes
+                    # it yet.
+                    report_entry["classifier_result"] = raw_value
+                output_report[variable] = report_entry
 
             # Input exposures: reuse the value already resolved into
             # input_report by _build_step_payload() above -- no recompute,

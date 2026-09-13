@@ -16,7 +16,7 @@ from src.bacnet.brick_export import build_brick_graph
 
 
 def _create_boiler_with_objects(client):
-    device = client.post("/devices", json={"device_instance": 1002, "name": "Boiler-1"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 1002, "name": "Boiler-1"}).json()
     o1 = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "BLR-Firing-Rate",
     }).json()
@@ -28,7 +28,7 @@ def _create_boiler_with_objects(client):
 
 def _classify_device(client, device, equipment_type):
     resp = client.put(f"/devices/{device['id']}", json={
-        "device_instance": device["device_instance"], "name": device["name"], "equipment_type": equipment_type,
+        "protocol": "bacnet", "device_instance": device["device_instance"], "name": device["name"], "equipment_type": equipment_type,
     })
     assert resp.status_code == 200, resp.text
 

@@ -3,7 +3,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { message } from 'ant-design-vue'
 import { CaretRightOutlined, PauseOutlined, StopOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
-import type { Device, ReplayRecording, ReplayPlaybackState } from '../types'
+import type { Device, Recording, ReplayPlaybackState } from '../types'
 
 const props = defineProps<{ open: boolean; device: Device | null }>()
 const emit = defineEmits<{ 'update:open': [v: boolean] }>()
@@ -11,7 +11,7 @@ const emit = defineEmits<{ 'update:open': [v: boolean] }>()
 const SPEEDS = [0.5, 1, 2, 5, 10]
 
 const loading = ref(false)
-const recording = ref<ReplayRecording | null>(null)
+const recording = ref<Recording | null>(null)
 const state = ref<ReplayPlaybackState | null>(null)
 
 // Polls playback state while the drawer is open so the seek slider tracks
@@ -33,11 +33,11 @@ async function refreshState() {
 }
 
 async function load() {
-  if (!props.device || props.device.replay_recording_id == null) return
+  if (!props.device || props.device.active_recording_id == null) return
   loading.value = true
   try {
     const [rec] = await Promise.all([
-      api.replayRecordings.get(props.device.replay_recording_id),
+      api.recordings.get(props.device.active_recording_id),
       refreshState(),
     ])
     recording.value = rec

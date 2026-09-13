@@ -20,6 +20,8 @@ from typing import Any, Optional
 
 from bacpypes3.basetypes import EngineeringUnits
 
+from ..core.config import BACNET_UNITS
+
 OBJECT_TYPE_CODE = {
     "analog-input": 0, "analog-output": 1, "analog-value": 2,
     "binary-input": 3, "binary-output": 4, "binary-value": 5,
@@ -33,15 +35,10 @@ OBJECT_TYPE_ABBR = {
 CODE_TO_OBJECT_TYPE = {v: k for k, v in OBJECT_TYPE_CODE.items()}
 ABBR_TO_OBJECT_TYPE = {v: k for k, v in OBJECT_TYPE_ABBR.items()}
 
-# Same set the admin UI offers (BACNET_UNITS in bacnet_simulator.py). Codes
-# come from bacpypes3 so they match the real BACnet standard values.
-UNIT_NAMES = [
-    "no-units", "degrees-celsius", "degrees-fahrenheit", "degrees-kelvin",
-    "percent", "parts-per-million", "kilowatts", "watts", "kilowatt-hours",
-    "amperes", "volts", "cubic-feet-per-minute", "liters-per-second",
-    "pascals", "kilopascals", "bars", "cubic-meters-per-hour",
-    "revolutions-per-minute", "meters-per-second", "luxes",
-]
+# Same set the admin UI offers -- shared with core.config so a unit added
+# for one (e.g. a simulation-model output point) stays exportable here too.
+# Codes come from bacpypes3 so they match the real BACnet standard values.
+UNIT_NAMES = BACNET_UNITS
 UNIT_CODE = {name: int(EngineeringUnits(name)) for name in UNIT_NAMES}
 CODE_TO_UNIT = {v: k for k, v in UNIT_CODE.items()}
 

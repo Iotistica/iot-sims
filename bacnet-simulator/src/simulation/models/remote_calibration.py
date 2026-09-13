@@ -76,12 +76,28 @@ def create_calibration_job(
     model_id: str,
     dataset_id: str,
     configuration: dict[str, Any] | None = None,
+    *,
+    validation_dataset_id: str | None = None,
+    experiment_id: str | None = None,
 ) -> dict[str, Any]:
     """POST /models/{model_id}/calibrations -- returns a CalibrationJobResponse
-    dict (job_id, model_id, method, dataset_id, status, experiment_id,
-    created_at, started_at, completed_at, error)."""
+    dict (job_id, model_id, method, dataset_id, validation_dataset_id, status,
+    experiment_id, created_at, started_at, completed_at, error).
+
+    `validation_dataset_id` is an already-uploaded second dataset the runtime replays the
+    best parameters against for held-out validation. `experiment_id` is an opaque
+    cross-reference the runtime echoes back untouched (the simulator passes its
+    calibration_runs row id)."""
     base_url, timeout_s, api_key = get_runtime_settings(settings)
-    body = {"method": "hebo", "dataset_id": dataset_id, "configuration": configuration or {}}
+    body: dict[str, Any] = {
+        "method": "hebo",
+        "dataset_id": dataset_id,
+        "configuration": configuration or {},
+    }
+    if validation_dataset_id is not None:
+        body["validation_dataset_id"] = validation_dataset_id
+    if experiment_id is not None:
+        body["experiment_id"] = experiment_id
     return _post_json(f"{base_url}/models/{model_id}/calibrations", timeout_s, api_key, json=body)
 
 

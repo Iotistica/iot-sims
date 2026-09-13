@@ -30,7 +30,10 @@ import { CloseOutlined, SaveOutlined } from '@ant-design/icons-vue'
 import { isDark } from '../theme'
 import { api } from '../api'
 import { CHART_COLORS, axisForUnits, buildChartData, buildChartOptions } from '../customGraphChart'
-import type { CustomGraphDefinition, CustomGraphSeries, HistoryPoint, Meta, PointRef, PointRow, SavedGraph } from '../types'
+import type {
+  CustomGraphDefinition, CustomGraphSeries, HistoryPoint, KpiDefinition, Meta, PointRef, PointRow,
+  SavedGraph, TableDefinition, WidgetType,
+} from '../types'
 import PointPicker from './PointPicker.vue'
 
 ChartJS.register(LinearScale, PointElement, LineElement, Tooltip, Legend)
@@ -40,8 +43,30 @@ const props = defineProps<{
   meta: Meta
   initialPoint?: PointRef | null
   savedGraph?: SavedGraph | null
+  /** Which dashboard a NEW widget lands on -- ignored when editing an
+   * existing one (its own dashboard_id is preserved instead). Omitted
+   * entirely (ObjectsPanel.vue's quick single-point graph icon has no
+   * dashboard-switcher context) falls back to the backend's own "first
+   * dashboard there is" default. */
+  dashboardId?: number | null
+  /** Where a NEW widget's grid geometry starts (SavedGraphsView.vue
+   * computes "append below everything else on this dashboard"). Ignored
+   * when editing -- the existing widget's own position/size is preserved. */
+  defaultGridX?: number
+  defaultGridY?: number
 }>()
 const emit = defineEmits<{ 'update:open': [boolean]; saved: [] }>()
+
+// Only choosable when creating a NEW widget -- converting an existing
+// populated chart's multi-series list into a KPI/Table's single point (or
+// vice versa) is a different, lossy operation not worth supporting here;
+// editing an existing widget just keeps whatever type it already is.
+const widgetType = ref<WidgetType>('chart')
+// Shared by both 'kpi' and 'table' modes -- both are "pick exactly one
+// point," just displayed differently.
+const singlePoint = ref<PointRow | null>(null)
+const tableColumns = ref({ min: false, max: false, avg: false })
+const tablePageSize = ref(10)
 
 interface GraphSeriesState extends CustomGraphSeries {
   device_name: string
@@ -81,6 +106,7 @@ function addSeriesFromRow(row: PointRow, overrides?: Partial<CustomGraphSeries>)
     color: overrides?.color ?? CHART_COLORS[series.value.length % CHART_COLORS.length],
     axis: overrides?.axis ?? axisForUnits(series.value.map(s => s.units), units),
     visible: overrides?.visible ?? true,
+    role: overrides?.role ?? 'pv',
     device_name: row.device_name,
     name: row.name,
     units,
@@ -128,6 +154,21 @@ function onAxisChange(entry: GraphSeriesState) {
   }
 }
 
+// Same typed-handler-returned-from-a-function pattern as onAxisChange above
+// and for the identical reason -- a-segmented's change event isn't typed
+// specifically enough for the template to infer on its own.
+function onRoleChange(entry: GraphSeriesState) {
+  return (value: string | number) => {
+    entry.role = value === 'setpoint' ? 'setpoint' : 'pv'
+  }
+}
+
+function onPickSingle(picked: PointRef | null) {
+  if (!picked) return
+  const row = allPoints.value.find(p => p.device_id === picked.device_id && p.object_id === picked.object_id)
+  singlePoint.value = row ?? null
+}
+
 watch(
   () => props.open,
   async (isOpen) => {
@@ -135,6 +176,10 @@ watch(
     series.value = []
     graphName.value = ''
     savedGraphId.value = null
+    widgetType.value = 'chart'
+    singlePoint.value = null
+    tableColumns.value = { min: false, max: false, avg: false }
+    tablePageSize.value = 10
 
     loadingPoints.value = true
     try {
@@ -148,17 +193,38 @@ watch(
     if (props.savedGraph) {
       graphName.value = props.savedGraph.name
       savedGraphId.value = props.savedGraph.id
-      let missingCount = 0
-      for (const s of props.savedGraph.definition.series) {
-        const row = allPoints.value.find(p => p.device_id === s.device_id && p.object_id === s.object_id)
-        if (!row) {
-          missingCount += 1
-          continue
+      widgetType.value = props.savedGraph.widget_type
+
+      if (props.savedGraph.widget_type === 'kpi' || props.savedGraph.widget_type === 'table') {
+        const def = props.savedGraph.definition as KpiDefinition | TableDefinition
+        const row = allPoints.value.find(p => p.device_id === def.device_id && p.object_id === def.object_id)
+        if (row) {
+          singlePoint.value = row
+        } else {
+          message.warning('The saved point no longer exists')
         }
-        addSeriesFromRow(row, { color: s.color, axis: s.axis, visible: s.visible })
-      }
-      if (missingCount > 0) {
-        message.warning(`${missingCount} saved point${missingCount === 1 ? '' : 's'} no longer exist and ${missingCount === 1 ? 'was' : 'were'} skipped`)
+        if (props.savedGraph.widget_type === 'table') {
+          const table = props.savedGraph.definition as TableDefinition
+          tableColumns.value = {
+            min: table.columns?.min ?? false,
+            max: table.columns?.max ?? false,
+            avg: table.columns?.avg ?? false,
+          }
+          tablePageSize.value = table.page_size ?? 10
+        }
+      } else {
+        let missingCount = 0
+        for (const s of (props.savedGraph.definition as CustomGraphDefinition).series) {
+          const row = allPoints.value.find(p => p.device_id === s.device_id && p.object_id === s.object_id)
+          if (!row) {
+            missingCount += 1
+            continue
+          }
+          addSeriesFromRow(row, { color: s.color, axis: s.axis, visible: s.visible, role: s.role })
+        }
+        if (missingCount > 0) {
+          message.warning(`${missingCount} saved point${missingCount === 1 ? '' : 's'} no longer exist and ${missingCount === 1 ? 'was' : 'were'} skipped`)
+        }
       }
     } else if (props.initialPoint) {
       const row = allPoints.value.find(p => p.device_id === props.initialPoint!.device_id && p.object_id === props.initialPoint!.object_id)
@@ -186,7 +252,12 @@ const chartOptions = computed(() => buildChartOptions(isDark.value, hasRightAxis
 const saving = ref(false)
 
 async function doSave() {
-  if (!series.value.length) {
+  if (widgetType.value === 'kpi' || widgetType.value === 'table') {
+    if (!singlePoint.value) {
+      message.error('Pick a point before saving')
+      return
+    }
+  } else if (!series.value.length) {
     message.error('Add at least one point before saving')
     return
   }
@@ -197,16 +268,51 @@ async function doSave() {
   }
   saving.value = true
   try {
-    const definition: CustomGraphDefinition = {
-      version: 1,
-      series: series.value.map(s => ({
-        device_id: s.device_id, object_id: s.object_id, color: s.color, axis: s.axis, visible: s.visible,
-      })),
-      time_range: 'live',
+    let definition: CustomGraphDefinition | KpiDefinition | TableDefinition
+    if (widgetType.value === 'kpi') {
+      definition = { device_id: singlePoint.value!.device_id, object_id: singlePoint.value!.object_id }
+    } else if (widgetType.value === 'table') {
+      definition = {
+        device_id: singlePoint.value!.device_id,
+        object_id: singlePoint.value!.object_id,
+        columns: tableColumns.value,
+        page_size: tablePageSize.value,
+      }
+    } else {
+      definition = {
+        version: 1,
+        series: series.value.map(s => ({
+          device_id: s.device_id, object_id: s.object_id, color: s.color, axis: s.axis, visible: s.visible,
+          role: s.role,
+        })),
+        time_range: 'live',
+      }
+    }
+    // Editing keeps the widget's existing dashboard/geometry unchanged;
+    // creating a new one uses the dashboard/position the caller supplied
+    // (SavedGraphsView.vue computes "append below everything else" for
+    // grid_x/y; ObjectsPanel.vue's quick graph icon supplies neither, and
+    // the backend falls back to its own defaults).
+    //
+    // Default height differs by type: a KPI tile is just a big number and
+    // fits comfortably in 4 grid rows (~156px); a Chart/Table needs real
+    // room for its plot/rows on top of the card's own header/footer --
+    // 4 rows left new charts visibly clipped/squished (confirmed live,
+    // needing a manual resize every time), so those default taller.
+    const defaultGridH = widgetType.value === 'kpi' ? 4 : 10
+    const payload = {
+      name,
+      definition,
+      dashboard_id: props.savedGraph?.dashboard_id ?? props.dashboardId ?? undefined,
+      widget_type: widgetType.value,
+      grid_x: props.savedGraph?.grid_x ?? props.defaultGridX ?? 0,
+      grid_y: props.savedGraph?.grid_y ?? props.defaultGridY ?? 0,
+      grid_w: props.savedGraph?.grid_w ?? 6,
+      grid_h: props.savedGraph?.grid_h ?? defaultGridH,
     }
     const result = savedGraphId.value
-      ? await api.customGraphs.update(savedGraphId.value, { name, definition })
-      : await api.customGraphs.create({ name, definition })
+      ? await api.customGraphs.update(savedGraphId.value, payload)
+      : await api.customGraphs.create(payload)
     savedGraphId.value = result.id
     graphName.value = result.name
     message.success('Graph saved')
@@ -239,6 +345,53 @@ function close() {
       style="margin-bottom:10px"
     />
 
+    <a-segmented
+      v-model:value="widgetType"
+      :disabled="!!savedGraphId"
+      :options="[{ label: 'Chart', value: 'chart' }, { label: 'KPI Tile', value: 'kpi' }, { label: 'Table', value: 'table' }]"
+      style="margin-bottom:10px"
+    />
+
+    <template v-if="widgetType === 'kpi' || widgetType === 'table'">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <PointPicker
+          :model-value="null"
+          :points="allPoints"
+          :meta="meta"
+          placeholder="Pick Point"
+          :disabled="loadingPoints"
+          @update:modelValue="onPickSingle"
+        />
+        <a-button type="primary" :loading="saving" @click="doSave">
+          <template #icon><SaveOutlined /></template>
+          Save Widget
+        </a-button>
+      </div>
+      <div v-if="!singlePoint" style="text-align:center;color:var(--text-placeholder);padding:40px 0">
+        No point picked yet — use "Pick Point" above.
+      </div>
+      <template v-else-if="widgetType === 'kpi'">
+        <div style="text-align:center;padding:40px 0">
+          <div style="font-size:13px;color:var(--text-secondary)">{{ singlePoint.device_name }} / {{ singlePoint.name }}</div>
+          <div style="font-size:28px;font-weight:600;margin-top:6px">{{ singlePoint.units === 'no-units' ? '' : singlePoint.units }}</div>
+        </div>
+      </template>
+      <template v-else>
+        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px">
+          {{ singlePoint.device_name }} / {{ singlePoint.name }}
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+          <span style="font-size:12.5px;color:var(--text-secondary)">Columns:</span>
+          <a-checkbox v-model:checked="tableColumns.min">Min</a-checkbox>
+          <a-checkbox v-model:checked="tableColumns.max">Max</a-checkbox>
+          <a-checkbox v-model:checked="tableColumns.avg">Avg</a-checkbox>
+          <span style="margin-left:16px;font-size:12.5px;color:var(--text-secondary)">Rows per page:</span>
+          <a-input-number v-model:value="tablePageSize" :min="1" :max="720" />
+        </div>
+      </template>
+    </template>
+
+    <template v-else>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px">
       <PointPicker
         :model-value="null"
@@ -275,6 +428,13 @@ function close() {
             {{ s.device_name }} / {{ s.name }}
           </span>
           <span style="color:var(--text-secondary);width:80px;flex:none">{{ s.units === 'no-units' ? '' : s.units }}</span>
+          <a-segmented
+            :value="s.role ?? 'pv'"
+            size="small"
+            :options="[{ label: 'PV', value: 'pv' }, { label: 'Setpoint', value: 'setpoint' }]"
+            style="flex:none"
+            @change="onRoleChange(s)"
+          />
           <a-radio-group
             :value="s.axis"
             size="small"
@@ -291,6 +451,7 @@ function close() {
           </a-button>
         </div>
       </div>
+    </template>
     </template>
   </a-modal>
 </template>

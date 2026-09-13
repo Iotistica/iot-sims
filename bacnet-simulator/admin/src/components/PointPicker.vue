@@ -1,15 +1,20 @@
 <script setup lang="ts">
 /** Device+point selector for the Functional Test builder -- replaces the
  * old bare `a-select :options="meta.point_types"` (Brick class only, no
- * device, no live value). Device/Point Name is the primary identity;
- * semantic type/object type·instance/units/live value are secondary,
- * matching ObjectsPanel.vue's existing table pattern. Brick semantics are
- * filter-only here, never the value stored -- see PointRef in types.ts. */
+ * device). Device/Point Name is the primary identity; semantic type/object
+ * type·instance/units are secondary, matching ObjectsPanel.vue's existing
+ * table pattern. Brick semantics are filter-only here, never the value
+ * stored -- see PointRef in types.ts.
+ *
+ * Deliberately no live-value column -- GET /points only ever populates one
+ * for source_type=='simulated' rows (points.py), leaving external-bacnet
+ * rows permanently blank; showing a column that's blank for every external
+ * point (now a real, common case here since Link Existing Point sources
+ * from external controllers too) was more confusing than showing nothing. */
 import { computed, ref } from 'vue'
 import type { TableColumnsType } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import type { Meta, PointRef, PointRow } from '../types'
-import { formatPresentValue } from '../format'
 import GridFilterToolbar from './GridFilterToolbar.vue'
 
 const props = withDefaults(
@@ -98,10 +103,6 @@ const triggerLabel = computed(() => {
   return row ? `${row.device_name} / ${row.name}` : 'Unknown point'
 })
 
-function fmtLive(row: PointRow): string {
-  return formatPresentValue(row.object_type, row.live_value)
-}
-
 function selectRow(row: PointRow) {
   emit('update:modelValue', { device_id: row.device_id, object_id: row.object_id })
   open.value = false
@@ -116,7 +117,6 @@ const columns: TableColumnsType<PointRow> = [
   { title: 'Type', key: 'semantic', width: 190 },
   { title: 'Object', key: 'object', width: 140 },
   { title: 'Units', key: 'units', width: 90 },
-  { title: 'Live Value', key: 'live', width: 100 },
 ]
 </script>
 
@@ -189,9 +189,6 @@ const columns: TableColumnsType<PointRow> = [
           <span style="color:var(--text-secondary);font-size:12px">
             {{ !(record as PointRow).units || (record as PointRow).units === 'no-units' ? '—' : (record as PointRow).units }}
           </span>
-        </template>
-        <template v-else-if="column.key === 'live'">
-          <span style="font-family:monospace;color:#1890ff">{{ fmtLive(record as PointRow) }}</span>
         </template>
       </template>
     </a-table>

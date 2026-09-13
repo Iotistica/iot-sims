@@ -17,21 +17,8 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
-from bacpypes3.basetypes import (
-    BinaryPV,
-    DeviceObjectPropertyReference,
-    EngineeringUnits,
-    LoggingType,
-    LogRecord,
-    PriorityValue,
-    Reliability,
-    Segmentation,
-)
-from bacpypes3.local.analog import AnalogInputObject, AnalogOutputObject, AnalogValueObject
-from bacpypes3.local.binary import BinaryInputObject, BinaryOutputObject, BinaryValueObject
+from bacpypes3.basetypes import BinaryPV, LogRecord, PriorityValue
 from bacpypes3.local.cmd import Commandable
-from bacpypes3.local.device import DeviceObject
-from bacpypes3.local.multistate import MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject
 from bacpypes3.local.networkport import NetworkPortObject
 from bacpypes3.primitivedata import Boolean, Real, Unsigned
 from bacpypes3.constructeddata import SequenceOf
@@ -39,30 +26,59 @@ from fastapi import WebSocket
 
 from ..bacnet import alarms
 from ..bacnet import calendar as bacnet_calendar
-from ..bacnet import schedule as bacnet_schedule
-from ..bacnet.app import (
-    SimApplication,
-    _apply_polarity,
-    _apply_reliability,
-    _force_close_bacnet_transports,
-    _resolve_base_ip,
-    coerce_binary_write_value,
-    install_bacpypes_packet_capture_hooks,
-    normalize_present_value,
-)
-from ..bacnet.trend_logs import LocalTrendLogObject, _build_log_record
-from ..core.config import BACNET_PORT, MULTISTATE_TYPES
+from ..bacnet import object_factory
+from ..bacnet.app import SimApplication, coerce_binary_write_value, normalize_present_value
 from .. import dependencies
 from ..db import Database
 from ..fault_detection import FaultDetectionEngine
 from ..monitoring.event_log import _log_event, _log_event_notification_received
 from ..energy import EnergyEngine
-from .behaviors import Behavior, ManualBehavior, make_behavior
-from .providers.base import PointConfig, ProviderStatus, SimulationContext, SimulationProvider
+from .behaviors import Behavior, FaultBehavior, ManualBehavior, make_behavior
+from .protocol_runtime import (
+    DeviceRuntimeConfig, PointQuality, PointRuntimeConfig, PointValue, RuntimePoint,
+)
+from .protocols.base import ProtocolAdapter, ProtocolContext
+from .providers.base import PointConfig, PointDataType, ProviderStatus, SimulationContext, SimulationProvider
 from .providers.builtin import BuiltInSimulationProvider
 from .state import SimState
 
 log = logging.getLogger("bacnet-sim")
+
+
+def _is_offline_fault_active(live_behavior: Any) -> bool:
+    """Protocol-neutral: is an "offline" fault CURRENTLY active on this point's live Behavior
+    THIS tick? Factored out of _offline_reliability_override() below (BACnet's own
+    reliability-string mapping of this same question) so tick()'s generic per-point loop can ask
+    the identical question to build a PointQuality for ProtocolAdapter.write_point(), without
+    duplicating the isinstance/fault_type/_fault_active check in two places."""
+    return (
+        isinstance(live_behavior, FaultBehavior)
+        and live_behavior.fault_type == "offline"
+        and live_behavior._fault_active
+    )
+
+
+def _offline_reliability_override(live_behavior: Any, configured_reliability: Optional[str]) -> str:
+    """The Reliability string SimEngine.tick() used to apply directly to a point's BACnet object
+    THIS tick, given its live Behavior instance (whatever actually computed this tick's value --
+    see tick()'s own comment on why that's NOT always `self._runtime_points[obj_id].behavior`)
+    and the object's own persisted `reliability` field (the value it would show if no fault were
+    involved at all). Still the reliability-mapping source of truth (test_fault_offline.py calls
+    this directly) and still used by BacnetProtocolAdapter.write_point() -- tick() itself no
+    longer calls it directly, since Present_Value and Reliability now travel together through one
+    ProtocolAdapter.write_point() call, fed a protocol-neutral PointQuality (see
+    _is_offline_fault_active() above) rather than a BACnet Reliability string.
+
+    A pure function, deliberately factored out of tick() so this specific decision -- the one
+    piece of "offline" that isn't visible in behaviors.py's own unit tests, since FaultBehavior
+    itself has no BACnet object reference at all by design -- is unit-testable without running a
+    full engine tick. "offline" is the only fault_type that changes Reliability at all (see
+    FaultBehavior's own class docstring for why spike/stuck/bias/drift/delay are pure
+    Present_Value transformations instead); every other case here restores the object's own
+    configured reliability, which is what makes recovery, switching away from offline, and
+    Behavior != "fault" all self-correct with no dedicated cleanup path."""
+    is_offline_active = _is_offline_fault_active(live_behavior)
+    return "communication-failure" if is_offline_active else (configured_reliability or "no-fault-detected")
 
 
 class SimEngine:
@@ -73,8 +89,26 @@ class SimEngine:
         self.state = SimState()
         self.app: Optional[SimApplication] = None
         self.network_port: Optional[NetworkPortObject] = None
-        # object DB id → (bacpypes3 object, Behavior)
-        self._objects: dict[int, tuple[Any, Behavior]] = {}
+        # object DB id → RuntimePoint (protocol-neutral: a handle owned by whichever
+        # ProtocolAdapter created it, plus the point's own live Behavior -- see
+        # protocol_runtime.py's own docstring for why `.behavior` is a transitional field, not
+        # part of the intended protocol boundary). Was `dict[int, tuple[bacpypes3_object,
+        # Behavior]]` before the protocol-adapter seam; every consumer below now goes through
+        # `.handle`/`.adapter`/`.behavior` instead of tuple-unpacking.
+        self._runtime_points: dict[int, RuntimePoint] = {}
+        # protocol name -> the ProtocolAdapter driving it. SimEngine does not construct wire
+        # protocol adapters; application composition registers them explicitly.
+        self._protocol_adapters: dict[str, ProtocolAdapter] = {}
+        # protocol name -> currently started this start()/reload() cycle -- what stop()/reload()
+        # iterate to tear down every adapter that actually ran, regardless of whether BACnet
+        # itself ever started (see stop()'s own comment on why this can't just be `if self.app:`).
+        self._active_adapters: set[str] = set()
+        # protocol name -> device handles that adapter's add_device() returned this cycle, for
+        # stop()/reload() to hand back to remove_device(). Only populated for non-BACnet
+        # protocols -- BACnet's own device/point teardown is one batch call to
+        # BacnetProtocolAdapter.stop() instead (see that method's own docstring on why it isn't
+        # decomposed into per-device remove_device() calls, unlike every other protocol).
+        self._adapter_device_handles: dict[str, list[Any]] = {}
         self._used_object_identifiers: set[tuple[str, int]] = set()
         # device instance → slot index (for physical instance offset)
         self._device_slots: dict[int, int] = {}
@@ -132,6 +166,12 @@ class SimEngine:
         # /sim/state diagnostics don't conflate Twin (live external mirror)
         # and Replay (recorded-data playback) devices.
         self._replay_values: dict[int, Any] = {}
+        # Per-object link propagation: obj DB id -> last normalized value
+        # injected by _link_sync_once (runtime.py) for an object with its
+        # own source_object_id set -- independent of _mirror_values/
+        # _replay_values above, which are keyed by the OWNING DEVICE's
+        # simulation_mode rather than a per-object condition.
+        self._linked_values: dict[int, Any] = {}
         # device DB id -> in-memory playback transport state (never
         # persisted -- a restart resets every Replay device to stopped-at-
         # first-sample, an accepted simplification). See _get_replay_state.
@@ -166,6 +206,38 @@ class SimEngine:
         # start ticking.
         self.clock_state: str = "running"
 
+        # runtime_id -> deliberately, individually paused via pause_provider()
+        # (Simulation -> Model's own per-device Pause control), as opposed to
+        # merely PAUSED because the global clock is paused. This distinction
+        # is what lets a locally-paused provider survive a global
+        # pause()/resume() cycle still paused (see resume()'s own check
+        # below) -- clock_state alone can't tell the two apart, since both
+        # produce the exact same provider ProviderStatus.PAUSED.
+        self._locally_paused_provider_ids: set[str] = set()
+
+        # runtime_id -> per-model real-time-factor target, default 1.0 (not
+        # tracked here for unregistered/never-set ids -- see
+        # set_provider_real_time_factor's own get(..., 1.0) fallback
+        # everywhere this is read). Scales how much SIMULATED time this
+        # provider's own step(dt) call represents per shared wall-clock
+        # tick -- every provider still steps together, on the same cadence,
+        # via _run_registered_providers; nothing here changes when a
+        # provider is stepped, only how big a dt it's told. Confirmed
+        # numerically safe for every catalog model except
+        # EnergyPlusThermalZone (the one Co-Simulation-kind FMU): iot-models
+        # runs ME2 models through pyfmi's fmu.simulate() under an adaptive-
+        # step CVode solver keyed to its own rtol/atol
+        # (CVODE_RTOL/CVODE_ATOL in iot-models' shared/runtime/models/
+        # manager.py), so a larger requested interval changes how far it
+        # integrates before returning a value, not the solver's own
+        # internal step size/accuracy -- dt*RTF is exactly the same kind of
+        # scaling that already happens implicitly whenever TICK_SECONDS
+        # itself changes. EnergyPlusThermalZone's own CS do_step/internal-
+        # sub-stepping behavior under a scaled communication step is
+        # unverified (no in-repo evidence either way) -- accepted,
+        # documented limitation, not fixed here.
+        self._provider_real_time_factor: dict[str, float] = {}
+
         # Provider runtime registry.
         #
         # "builtin" is always present and owns every normal simulated point
@@ -194,6 +266,34 @@ class SimEngine:
         # already-registered provider (the recovery sweep's main case), so a
         # plain non-reentrant Lock would deadlock on that path.
         self._simulation_registry_lock = threading.RLock()
+
+    def register_protocol_adapter(
+        self,
+        protocol: str,
+        adapter: ProtocolAdapter,
+        *,
+        replace: bool = False,
+    ) -> None:
+        protocol = str(protocol).strip()
+        if not protocol:
+            raise ValueError("protocol must be explicit")
+        if protocol in self._protocol_adapters and not replace:
+            raise ValueError(f"ProtocolAdapter already registered for protocol {protocol!r}")
+        if getattr(adapter, "protocol", protocol) != protocol:
+            raise ValueError(
+                f"ProtocolAdapter protocol {getattr(adapter, 'protocol', None)!r} "
+                f"does not match registration {protocol!r}"
+            )
+        self._protocol_adapters[protocol] = adapter
+
+    def get_protocol_adapter(self, protocol: str) -> ProtocolAdapter:
+        protocol = str(protocol).strip()
+        if not protocol:
+            raise ValueError("protocol must be explicit")
+        try:
+            return self._protocol_adapters[protocol]
+        except KeyError as exc:
+            raise ValueError(f"No ProtocolAdapter registered for protocol {protocol!r}") from exc
 
     def _model_input_shadow_for_point(self, point_id: int) -> tuple[Any | None, str | None]:
         if point_id in self._model_input_shadow_values:
@@ -260,12 +360,15 @@ class SimEngine:
     @staticmethod
     def _point_config_from_row(obj_row: dict) -> PointConfig:
         """Translate an object DB row into protocol-agnostic provider config."""
+        object_type = obj_row.get("object_type")
+        if object_type is None:
+            raise ValueError(f"Object row {obj_row.get('id')!r} is missing explicit object_type")
         return PointConfig(
             point_id=int(obj_row["id"]),
             behavior=str(obj_row.get("behavior") or "constant"),
             behavior_params=str(obj_row.get("behavior_params") or '{"value":0}'),
+            data_type=SimEngine._point_data_type_from_bacnet_object_type(str(object_type)),
             manual_value=obj_row.get("manual_value"),
-            object_type=str(obj_row.get("object_type") or "analog-value"),
         )
 
     def register_simulation_provider(
@@ -371,6 +474,8 @@ class SimEngine:
                 self._model_input_shadow_values.pop(int(point_id), None)
             self._provider_contexts.pop(provider_id, None)
             self._provider_diagnostics.pop(provider_id, None)
+            self._locally_paused_provider_ids.discard(provider_id)
+            self._provider_real_time_factor.pop(provider_id, None)
 
         log.info("Unregistered simulation provider %s", provider_id)
         return True
@@ -393,6 +498,12 @@ class SimEngine:
                 "output_point_ids": sorted(
                     self._provider_output_points.get(provider_id, set())
                 ),
+                # Distinguishes "paused because a user explicitly paused
+                # just this model" from merely being PAUSED as a side
+                # effect of the global clock being paused -- see
+                # pause_provider()/resume()'s own comments.
+                "locally_paused": provider_id in self._locally_paused_provider_ids,
+                "real_time_factor": self._provider_real_time_factor.get(provider_id, 1.0),
             }
             if hasattr(provider, "get_diagnostics"):
                 try:
@@ -433,17 +544,16 @@ class SimEngine:
         if point_id in self._prev_values:
             return self._prev_values[point_id]
 
-        runtime_entry = self._objects.get(point_id)
-        if runtime_entry is None:
+        runtime_point = self._runtime_points.get(point_id)
+        if runtime_point is None:
             return None
-        bacnet_obj, _ = runtime_entry
-        return self._plain_present_value(getattr(bacnet_obj, "presentValue", None))
+        return self._plain_present_value(getattr(runtime_point.handle, "presentValue", None))
 
     def resolve_provider_input_value(self, point_id: int) -> Any:
         """Public counterpart of _provider_input_value for callers outside
         the tick loop (provider registration/recovery), where no same-tick
         generated_values exist yet. Read-only access to _prev_values/
-        _objects -- safe to call from a worker thread (e.g. the recovery
+        _runtime_points -- safe to call from a worker thread (e.g. the recovery
         sweep's asyncio.to_thread body): dict reads are atomic under the
         GIL, and the tick loop's own writes to these dicts happen on the
         main event-loop thread, so at worst this returns a value that is one
@@ -474,31 +584,48 @@ class SimEngine:
         never race on those dict writes."""
         try:
             provider.set_inputs(inputs)
-            if provider.get_status() != ProviderStatus.RUNNING:
-                provider.start()
-            # Timed separately from the rest of this method (set_inputs/
-            # get_outputs/diagnostics are in-memory and fast) -- step()
-            # is the one call that can be a real blocking HTTP round trip
-            # to the FMU runtime, and is the thing tick_loop's own overrun
-            # warning is actually explained by when it fires.
-            step_started_at = time.monotonic()
-            provider.step(dt)
-            step_duration = time.monotonic() - step_started_at
-            if step_duration > dependencies.TICK_SECONDS:
-                log.warning(
-                    "Provider %s (%s) step() took %.2fs, exceeding TICK_SECONDS=%.2fs",
-                    provider_id,
-                    type(provider).__name__,
-                    step_duration,
-                    dependencies.TICK_SECONDS,
-                )
+            status = provider.get_status()
+            if status == ProviderStatus.PAUSED:
+                # Deliberately paused (see pause_provider()) -- never
+                # auto-resume from this per-tick path the way a
+                # never-started READY provider would be; only an explicit
+                # resume (resume_provider(), or global resume() for a
+                # NON-locally-paused one) calls provider.start(). Falls
+                # through to the same outputs/diagnostics reporting below,
+                # just without start()/step() -- get_outputs() still
+                # returns its last-known values unchanged, so this
+                # provider's points correctly stay frozen and it still
+                # shows up live in diagnostics (matches how a STOPPED
+                # provider already behaves today, via its own internal
+                # step() guard: FMUSimulationProvider.step() itself
+                # no-ops when self._status != RUNNING).
+                pass
             else:
-                log.debug(
-                    "Provider %s (%s) step() took %.2fs",
-                    provider_id,
-                    type(provider).__name__,
-                    step_duration,
-                )
+                if status != ProviderStatus.RUNNING:
+                    provider.start()
+                # Timed separately from the rest of this method (set_inputs/
+                # get_outputs/diagnostics are in-memory and fast) -- step()
+                # is the one call that can be a real blocking HTTP round trip
+                # to the FMU runtime, and is the thing tick_loop's own overrun
+                # warning is actually explained by when it fires.
+                step_started_at = time.monotonic()
+                provider.step(dt)
+                step_duration = time.monotonic() - step_started_at
+                if step_duration > dependencies.TICK_SECONDS:
+                    log.warning(
+                        "Provider %s (%s) step() took %.2fs, exceeding TICK_SECONDS=%.2fs",
+                        provider_id,
+                        type(provider).__name__,
+                        step_duration,
+                        dependencies.TICK_SECONDS,
+                    )
+                else:
+                    log.debug(
+                        "Provider %s (%s) step() took %.2fs",
+                        provider_id,
+                        type(provider).__name__,
+                        step_duration,
+                    )
             outputs = dict(provider.get_outputs())
             diagnostics = {}
             if hasattr(provider, "get_diagnostics"):
@@ -587,20 +714,32 @@ class SimEngine:
                 for provider_id, _provider in wave_providers
             }
 
+            # Per-provider dt -- scales how much SIMULATED time this
+            # provider's own step() represents, not when/how often it's
+            # stepped (every provider is still stepped together, on the
+            # exact same wall-clock cadence, right here). See
+            # set_provider_real_time_factor's own docstring for why this is
+            # numerically safe for every catalog model except
+            # EnergyPlusThermalZone.
+            provider_dt = {
+                provider_id: dt * self._provider_real_time_factor.get(provider_id, 1.0)
+                for provider_id, _provider in wave_providers
+            }
+
             if len(wave_providers) == 1:
                 # Skip ThreadPoolExecutor overhead for the common
                 # single-provider-per-wave case.
                 only_id, only_provider = wave_providers[0]
                 results = {
                     only_id: self._step_one_provider(
-                        only_id, only_provider, wave_inputs[only_id], dt,
+                        only_id, only_provider, wave_inputs[only_id], provider_dt[only_id],
                     )
                 }
             else:
                 with ThreadPoolExecutor(max_workers=min(8, len(wave_providers))) as pool:
                     futures = {
                         provider_id: pool.submit(
-                            self._step_one_provider, provider_id, provider, wave_inputs[provider_id], dt,
+                            self._step_one_provider, provider_id, provider, wave_inputs[provider_id], provider_dt[provider_id],
                         )
                         for provider_id, provider in wave_providers
                     }
@@ -664,6 +803,13 @@ class SimEngine:
     def resume(self) -> None:
         self.clock_state = "running"
         for provider_id, provider in list(self._providers.items()):
+            if provider_id in self._locally_paused_provider_ids:
+                # Deliberately paused via pause_provider() (Simulation ->
+                # Model's own per-device Pause control) before this global
+                # resume happened -- a local pause survives a global
+                # pause()/resume() cycle, so this provider is skipped here
+                # and stays paused until its own resume_provider() call.
+                continue
             try:
                 provider.start()
             except Exception:
@@ -675,11 +821,64 @@ class SimEngine:
         self.state.elapsed_seconds = 0.0
         self.state.time_of_day = 12.0
         self._history.clear()
+        # A full reset legitimately un-pauses everything -- every provider
+        # comes back fresh via its own reset()/re-initialize() below, so
+        # nothing should still be considered "locally paused" afterward.
+        self._locally_paused_provider_ids.clear()
         for provider_id, provider in list(self._providers.items()):
             try:
                 provider.reset()
             except Exception:
                 log.exception("Failed to reset simulation provider %s", provider_id)
+
+    def pause_provider(self, runtime_id: str) -> bool:
+        """Freeze just this one provider's outputs in place -- everything
+        else (other providers, builtin, the tick loop itself) keeps
+        running normally. See _step_one_provider's own PAUSED handling for
+        why this actually sticks (the bug it fixes: a naive provider.pause()
+        used to get silently undone on the very next tick)."""
+        provider = self._providers.get(runtime_id)
+        if provider is None:
+            return False
+        self._locally_paused_provider_ids.add(runtime_id)
+        provider.pause()
+        return True
+
+    def resume_provider(self, runtime_id: str) -> bool:
+        """Explicitly resume a provider paused via pause_provider(). Calls
+        provider.start() directly, outside the per-tick auto-start path --
+        the only thing that can bring a PAUSED provider back to RUNNING."""
+        provider = self._providers.get(runtime_id)
+        if provider is None:
+            return False
+        self._locally_paused_provider_ids.discard(runtime_id)
+        provider.start()
+        return True
+
+    def reset_provider(self, runtime_id: str) -> bool:
+        """Reset just this one provider (real FMU-session terminate +
+        re-initialize, or the builtin-shaped equivalent) -- also clears any
+        local-pause tracking, since a reset provider comes back running."""
+        provider = self._providers.get(runtime_id)
+        if provider is None:
+            return False
+        self._locally_paused_provider_ids.discard(runtime_id)
+        provider.reset()
+        return True
+
+    def set_provider_real_time_factor(self, runtime_id: str, target: float) -> bool:
+        """Scales how much simulated time this one provider's own step(dt)
+        call represents per shared wall-clock tick (>1 = faster than every
+        other provider, <1 = slower) -- see _run_registered_providers'
+        provider_dt and this field's own docstring in __init__ for why
+        that's numerically safe for every catalog model except
+        EnergyPlusThermalZone. Every provider still steps together, on the
+        same wall-clock cadence; this never changes when a provider is
+        stepped, only how big a dt it's told."""
+        if runtime_id not in self._providers:
+            return False
+        self._provider_real_time_factor[runtime_id] = target
+        return True
 
     @staticmethod
     def _simulated_enabled_devices(devices: list[dict]) -> list[dict]:
@@ -697,226 +896,115 @@ class SimEngine:
             if d["enabled"] and d.get("source_type", "simulated") == "simulated"
         ]
 
+    @staticmethod
+    def _protocol_of(device_row: dict) -> str:
+        protocol = str(device_row.get("protocol") or "").strip()
+        if not protocol:
+            raise ValueError("Device row is missing explicit protocol")
+        return protocol
+
+    @staticmethod
+    def _device_runtime_config(device_row: dict) -> DeviceRuntimeConfig:
+        return DeviceRuntimeConfig(
+            device_id=int(device_row["id"]),
+            name=str(device_row["name"]),
+            protocol=SimEngine._protocol_of(device_row),
+            protocol_config=device_row,
+        )
+
+    @staticmethod
+    def _point_runtime_config(obj_row: dict) -> PointRuntimeConfig:
+        return PointRuntimeConfig(
+            point_id=int(obj_row["id"]),
+            device_id=int(obj_row["device_id"]),
+            name=str(obj_row["name"]),
+            units=obj_row.get("units"),
+            protocol_config=obj_row,
+        )
+
+    @staticmethod
+    def _point_data_type_from_bacnet_object_type(object_type: str) -> PointDataType:
+        normalized = str(object_type or "").strip().lower().replace("_", "-")
+        if normalized.startswith("analog-"):
+            return PointDataType.REAL
+        if normalized.startswith("binary-"):
+            return PointDataType.BOOLEAN
+        if normalized.startswith("multi-state-"):
+            return PointDataType.ENUM
+        if normalized == "characterstring-value":
+            return PointDataType.STRING
+        raise ValueError(f"Unsupported BACnet object_type for simulation provider: {object_type!r}")
+
     async def start(self) -> None:
         devices = await asyncio.to_thread(self.db.get_devices)
         self._devices_by_instance = {d["device_instance"]: d for d in devices}
         enabled = self._simulated_enabled_devices(devices)
 
-        # A start/reload rebuilds the BACnet runtime from DB, so rebuild only
-        # the Built-in adapter from the same source of truth. Registered FMU/
-        # AI providers remain registered and keep their output claims.
+        # A start/reload rebuilds every protocol runtime from DB, so rebuild only the Built-in
+        # adapter from the same source of truth. Registered FMU/AI providers remain registered
+        # and keep their output claims.
         self._replace_builtin_provider(BuiltInSimulationProvider())
-        provider_participants: list[int] = []
-        provider_points: list[PointConfig] = []
+        # Fed by whichever ProtocolAdapter.start() calls run below. Batch adapters fill these
+        # internally; other adapters use the generic per-device loop further down. They are then
+        # consumed once by the single
+        # self._builtin_provider.initialize(...) call after the loop, regardless of which
+        # protocol(s) actually produced points this cycle.
+        self._boot_provider_participants = []
+        self._boot_provider_points = []
 
         if not enabled:
-            log.info("No enabled devices — BACnet stack idle")
+            log.info("No enabled devices — protocol runtimes idle")
             self.app = None
             self._reload_preserved_values = {}
             return
 
-        base_ip = _resolve_base_ip()
+        devices_by_protocol: dict[str, list[dict]] = {}
+        for dev in enabled:
+            devices_by_protocol.setdefault(self._protocol_of(dev), []).append(dev)
 
-        install_bacpypes_packet_capture_hooks(
-            local_ip=base_ip,
-            local_port=BACNET_PORT,
-            get_clock_state=lambda: self.clock_state,
-        )
-        
-        loop = asyncio.get_running_loop()
-        orig = loop.get_exception_handler()
-
-        def _exc_handler(loop, ctx):
-            exc = ctx.get("exception")
-            if isinstance(exc, RuntimeError) and str(exc) == "no broadcast":
-                return
-            if orig:
-                orig(loop, ctx)
-            else:
-                loop.default_exception_handler(ctx)
-
-        loop.set_exception_handler(_exc_handler)
-
-        primary = enabled[0]
-        bind_addr = f"{base_ip}:{BACNET_PORT}"
-
-        primary_dev_obj = self._make_device_object(primary)
-        self.network_port = NetworkPortObject(
-            bind_addr,
-            objectIdentifier=("network-port", 1),
-            objectName="NetworkPort-1",
-        )
-
-        self.app = SimApplication.from_object_list([primary_dev_obj, self.network_port])
-        self.app._sim_engine = self
-        self.app._own_ip = base_ip  # for filtering our own I-Am loopback in duplicate-ID detection
-        self._used_object_identifiers.clear()
-        await asyncio.sleep(0.3)
-
-        self.app._virtual_devices[primary["device_instance"]] = primary_dev_obj
-        self._device_slots = {d["device_instance"]: i for i, d in enumerate(enabled)}
-
-        log.info("BACnet socket bound to %s", bind_addr)
-
-        for idx, dev in enumerate(enabled):
-            slot = idx
-            provider_participants.append(int(dev["id"]))
-            if idx == 0:
-                dev_obj = primary_dev_obj
-            else:
-                dev_obj = self._make_device_object(dev)
-                self.app._virtual_devices[dev["device_instance"]] = dev_obj
-
-            objects = await asyncio.to_thread(self.db.get_objects, dev["id"])
-            bacnet_ids = [dev_obj.objectIdentifier]
-            if idx == 0:
-                bacnet_ids.append(self.network_port.objectIdentifier)
-
-            for obj_row in objects:
-                if not obj_row["enabled"]:
-                    continue
-                bacnet_obj, behavior = self._create_object(obj_row, slot, dev["name"])
-                try:
-                    self.app.add_object(bacnet_obj)
-                except RuntimeError:
-                    log.exception(
-                        "Failed to add object %r as %r on device %r "
-                        "(name/identifier collision?) — skipping",
-                        obj_row["name"], bacnet_obj.objectIdentifier, dev["name"],
+        for protocol, devs in devices_by_protocol.items():
+            adapter = self.get_protocol_adapter(protocol)
+            device_configs = [self._device_runtime_config(d) for d in devs]
+            await adapter.start(ProtocolContext(devices=device_configs))
+            self._active_adapters.add(protocol)
+            if adapter.builds_runtime_points_in_start:
+                continue
+            for dev, device_config in zip(devs, device_configs):
+                device_handle = adapter.add_device(device_config)
+                self._adapter_device_handles.setdefault(protocol, []).append(device_handle)
+                objects = await asyncio.to_thread(self.db.get_objects, dev["id"])
+                for obj_row in objects:
+                    if not obj_row["enabled"]:
+                        continue
+                    point_config = self._point_runtime_config(obj_row)
+                    point_handle = adapter.add_point(device_handle, point_config)
+                    behavior = make_behavior(
+                        obj_row["behavior"], obj_row["behavior_params"], obj_row.get("manual_value"),
                     )
-                    continue
-                self._objects[obj_row["id"]] = (bacnet_obj, behavior)
-                bacnet_ids.append(bacnet_obj.objectIdentifier)
-
-                # Mirror points remain driven by mirror_sync_loop. Everything
-                # else follows the historical built-in behavior path.
-                if (
-                    dev.get("simulation_mode", "simulation") != "mirror"
-                    and int(obj_row["id"]) not in self._point_output_owner
-                ):
-                    provider_points.append(self._point_config_from_row(obj_row))
-
-            # Calendars (GH #18) must be built before Schedules below, since a
-            # Schedule's exceptionSchedule may reference one by name.
-            calendars = await asyncio.to_thread(self.db.get_calendars, dev["id"])
-            calendar_phys_by_name: dict[str, int] = {}
-            for cal_idx, cal in enumerate(calendars):
-                if not cal["enabled"]:
-                    continue
-                try:
-                    entries = json.loads(cal["date_list"] or "[]")
-                    phys = slot * 1000 + cal_idx + 1
-                    cal_bacnet_obj = bacnet_calendar.LocalCalendarObject(
-                        objectIdentifier=("calendar", phys),
-                        objectName=f"{dev['name']}.{cal['name']}",
-                        description=cal.get("description", ""),
-                        presentValue=Boolean(bacnet_calendar.today_in_date_list(entries)),
-                        dateList=bacnet_calendar.build_date_list(entries),
+                    self._point_behaviors[int(obj_row["id"])] = behavior
+                    self._runtime_points[obj_row["id"]] = RuntimePoint(
+                        config=point_config, adapter=adapter, handle=point_handle, behavior=behavior,
                     )
-                    self.app.add_object(cal_bacnet_obj)
-                    self._calendar_objects[cal["id"]] = cal_bacnet_obj
-                    calendar_phys_by_name[cal["name"]] = phys
-                    bacnet_ids.append(cal_bacnet_obj.objectIdentifier)
-                except Exception:
-                    log.exception("Failed to build calendar %r on device %r — skipping", cal["name"], dev["name"])
-
-            trend_logs = await asyncio.to_thread(self.db.get_trend_logs, dev["id"])
-            for tl_idx, tl in enumerate(trend_logs):
-                monitored = self._objects.get(tl["monitored_object_id"])
-                if monitored is None:
-                    continue  # monitored object disabled/missing — skip exposing on the wire
-                monitored_objid = monitored[0].objectIdentifier
-                records = await asyncio.to_thread(
-                    self.db.get_trend_log_records, tl["id"], limit=tl["buffer_size"], order="asc"
-                )
-                log_buffer = SequenceOf(LogRecord)(
-                    [_build_log_record(r, monitored_objid[0]) for r in records]
-                )
-                try:
-                    tl_bacnet_obj = LocalTrendLogObject(
-                        objectIdentifier=("trend-log", slot * 1000 + tl_idx + 1),
-                        objectName=f"{dev['name']}.{tl['name']}",
-                        description=tl.get("description", ""),
-                        enable=Boolean(bool(tl["enabled"])),
-                        stopWhenFull=Boolean(bool(tl["stop_when_full"])),
-                        bufferSize=Unsigned(tl["buffer_size"]),
-                        logBuffer=log_buffer,
-                        recordCount=Unsigned(tl["record_count"]),
-                        totalRecordCount=Unsigned(tl["total_record_count"]),
-                        loggingType=LoggingType(tl["logging_type"]),
-                        statusFlags=[0, 0, 0, 0],
-                        reliability=Reliability("no-fault-detected"),
-                        logDeviceObjectProperty=DeviceObjectPropertyReference(
-                            objectIdentifier=monitored_objid,
-                            propertyIdentifier="present-value",
-                        ),
-                        logInterval=Unsigned(tl.get("log_interval") or 0),
-                    )
-                    self.app.add_object(tl_bacnet_obj)
-                    self._trend_log_objects[tl["id"]] = tl_bacnet_obj
-                    bacnet_ids.append(tl_bacnet_obj.objectIdentifier)
-                except Exception:
-                    log.exception("Failed to build trend log %r on device %r — skipping", tl["name"], dev["name"])
-
-            schedules = await asyncio.to_thread(self.db.get_schedules, dev["id"])
-            for sched_idx, sched in enumerate(schedules):
-                if not sched["enabled"]:
-                    continue  # same convention as disabled regular objects: not built at all
-                targets = await asyncio.to_thread(self.db.get_schedule_targets, sched["id"])
-                obj_prop_refs = []
-                for t in targets:
-                    target_entry = self._objects.get(t["object_id"])
-                    if target_entry is None:
-                        continue  # target object disabled/missing — skip that reference
-                    obj_prop_refs.append(DeviceObjectPropertyReference(
-                        objectIdentifier=target_entry[0].objectIdentifier,
-                        propertyIdentifier=t.get("property_identifier", "present-value"),
-                    ))
-                try:
-                    value_type = sched.get("value_type", "real")
-                    default_raw = json.loads(sched["schedule_default"] or "0")
-                    sched_bacnet_obj = bacnet_schedule.LocalScheduleObject(
-                        objectIdentifier=("schedule", slot * 1000 + sched_idx + 1),
-                        objectName=f"{dev['name']}.{sched['name']}",
-                        description=sched.get("description", ""),
-                        presentValue=bacnet_schedule.default_value(value_type, default_raw),
-                        effectivePeriod=bacnet_schedule.build_effective_period(
-                            sched.get("effective_start"), sched.get("effective_end")
-                        ),
-                        weeklySchedule=bacnet_schedule.build_weekly_schedule(
-                            json.loads(sched["weekly_schedule"] or "{}"), value_type
-                        ),
-                        exceptionSchedule=bacnet_schedule.build_exception_schedule(
-                            json.loads(sched["exception_schedule"] or "[]"), value_type, calendar_phys_by_name
-                        ),
-                        scheduleDefault=bacnet_schedule.default_value(value_type, default_raw),
-                        listOfObjectPropertyReferences=SequenceOf(DeviceObjectPropertyReference)(obj_prop_refs),
-                        priorityForWriting=Unsigned(sched["priority_for_writing"]),
-                    )
-                    sched_bacnet_obj._value_type = value_type
-                    self.app.add_object(sched_bacnet_obj)
-                    self._schedule_objects[sched["id"]] = sched_bacnet_obj
-                    bacnet_ids.append(sched_bacnet_obj.objectIdentifier)
-                except Exception:
-                    log.exception("Failed to build schedule %r on device %r — skipping", sched["name"], dev["name"])
-
-            dev_obj.objectList = bacnet_ids
-            self.app._virtual_object_lists[dev["device_instance"]] = bacnet_ids
-            log.info("Device %d (%s): %d objects", dev["device_instance"], dev["name"], len(objects))
+                    self._boot_provider_participants.append(int(dev["id"]))
+                    if (
+                        dev.get("simulation_mode", "simulation") != "mirror"
+                        and int(obj_row["id"]) not in self._point_output_owner
+                    ):
+                        self._boot_provider_points.append(self._point_config_from_row(obj_row))
 
         self._builtin_provider.initialize(
             SimulationContext(
-                participant_device_ids=provider_participants,
-                point_configs=provider_points,
+                participant_device_ids=self._boot_provider_participants,
+                point_configs=self._boot_provider_points,
             )
         )
         if self.clock_state == "running":
             self._builtin_provider.start()
 
-        # Keep registered non-built-in models alive across BACnet runtime
-        # rebuilds. Device/object CRUD reloads should not rewind FMU/AI
-        # sessions; their output ownership/mappings remain valid because the
-        # DB object IDs do not change.
+        # Keep registered non-built-in models alive across a runtime rebuild.
+        # Device/object CRUD reloads should not rewind FMU/AI sessions; their
+        # output ownership/mappings remain valid because the DB object IDs do
+        # not change.
         for provider_id, provider in list(self._providers.items()):
             if provider_id == "builtin":
                 continue
@@ -929,168 +1017,12 @@ class SimEngine:
                     provider_id,
                 )
 
-        # Announce all devices
-        saved = self.app.device_object
-        try:
-            for dev_obj in self.app._virtual_devices.values():
-                self.app.device_object = dev_obj
-                self.app.i_am()
-        finally:
-            self.app.device_object = saved
-
         # One-shot: every _create_object() call for this start() has now
         # run, so the pre-reload snapshot has done its job. Drop it rather
         # than let it linger and get reused by some later, unrelated
         # start() call.
-        self._reload_preserved_values = {}
+            self._reload_preserved_values = {}
 
-    def _make_device_object(self, dev: dict) -> DeviceObject:
-        try:
-            segmentation = Segmentation(dev.get("segmentation_supported") or "segmented-both")
-        except Exception:
-            segmentation = Segmentation("segmented-both")
-        return DeviceObject(
-            objectIdentifier=f"device,{dev['device_instance']}",
-            objectName=dev["name"],
-            vendorIdentifier=999,
-            description=dev.get("description", ""),
-            modelName=dev.get("model_name", "BACnet Simulator"),
-            vendorName=dev.get("vendor_name", "Iotistica"),
-            applicationSoftwareVersion="3.0",
-            location=dev["name"],
-            firmwareRevision=dev.get("firmware_revision") or "N/A",
-            protocolRevision=Unsigned(dev.get("protocol_revision") or 22),
-            maxApduLengthAccepted=Unsigned(dev.get("max_apdu_length_accepted") or 1024),
-            segmentationSupported=segmentation,
-        )
-
-    def _allocate_object_identifier(
-        self,
-        object_type: str,
-        preferred_instance: int,
-    ) -> int:
-        """Return a BACnet object instance not already used for this type."""
-        instance = max(0, int(preferred_instance)) % 4_194_303
-        while (object_type, instance) in self._used_object_identifiers:
-            instance += 1
-            if instance > 4_194_302:
-                instance = 0
-
-        self._used_object_identifiers.add((object_type, instance))
-        return instance
-
-    def _create_object(self, obj_row: dict, slot: int, device_name: str = "") -> tuple[Any, Behavior]:
-
-
-        otype = obj_row["object_type"]
-        phys = self._allocate_object_identifier(
-            otype,
-            slot * 1000 + int(obj_row["object_instance"]),
-        )
-        behavior = make_behavior(
-            obj_row["behavior"],
-            obj_row["behavior_params"],
-            obj_row.get("manual_value"),
-        )
-        # Kept for every object, not just provider-owned ones -- provider-owned
-        # points read this same instance every tick to apply the configured
-        # Behavior on top of the provider's raw value (see
-        # _apply_fmu_behavior()); non-provider-owned points ignore it, since
-        # BuiltInSimulationProvider keeps its own separate instance.
-        obj_id = int(obj_row["id"])
-        self._point_behaviors[obj_id] = behavior
-        # A provider-owned "raw"/"constant" point's real value IS whatever
-        # the provider last computed, never something derived from
-        # behavior_params (which is frequently empty/stale for a point that
-        # has only ever displayed a live provider value -- see reload()'s
-        # comment). _point_output_owner survives reload() untouched (only
-        # _objects/_prev_values/etc. get cleared -- registered providers
-        # keep their output claims), so it's already correct here even
-        # mid-rebuild. Restoring from the pre-reload snapshot rather than
-        # re-seeding from params is what stops a provider-owned point that
-        # also feeds its own model as an input (e.g. a fan command echoed
-        # back as the FMU's own speed input) from latching at a zeroed
-        # seed value forever.
-        if (
-            obj_id in self._reload_preserved_values
-            and obj_row["behavior"] in ("raw", "constant")
-            and self._point_output_owner.get(obj_id, "builtin") != "builtin"
-        ):
-            val = self._reload_preserved_values[obj_id]
-        else:
-            val = behavior.compute(self.state)
-        # BACnet requires globally unique object names within a single application,
-        # even across virtual devices — prefix with device name to guarantee uniqueness.
-        obj_name = f"{device_name}.{obj_row['name']}" if device_name else obj_row["name"]
-
-        _ANALOG_CLS = {
-            "analog-input":  AnalogInputObject,
-            "analog-output": AnalogOutputObject,
-            "analog-value":  AnalogValueObject,
-        }
-        _BINARY_CLS = {
-            "binary-input":  BinaryInputObject,
-            "binary-output": BinaryOutputObject,
-            "binary-value":  BinaryValueObject,
-        }
-        if otype in _ANALOG_CLS:
-            units_str = obj_row.get("units") or "no-units"
-            try:
-                units = EngineeringUnits(units_str)
-            except Exception:
-                units = EngineeringUnits("no-units")
-            bacnet_obj = _ANALOG_CLS[otype](
-                objectIdentifier=f"{otype},{phys}",
-                objectName=obj_name,
-                presentValue=Real(float(val)),
-                units=units,
-            )
-            _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
-        elif otype == "binary-output":
-            # Pass presentValue= in the constructor so Commandable.__init__ can set
-            # relinquishDefault from it (line 87 in bacpypes3/local/cmd.py).
-            # _Object.__init__ sets it directly via super().__setattr__, bypassing
-            # Commandable.__setattr__, so priorityArray is not accessed before it exists.
-            # The tick loop later writes via Commandable.__setattr__ → priorityArray[15]
-            # → recalculating() which keeps presentValue up-to-date for ReadProperty.
-            active = bool(val) if not isinstance(val, bool) else val
-            bacnet_obj = BinaryOutputObject(
-                objectIdentifier=f"{otype},{phys}",
-                objectName=obj_name,
-                presentValue=BinaryPV("active" if active else "inactive"),
-            )
-            _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
-            _apply_polarity(bacnet_obj, obj_row.get("polarity") or "normal")
-        elif otype in MULTISTATE_TYPES:
-            _MULTISTATE_CLS = {
-                "multi-state-input":  MultiStateInputObject,
-                "multi-state-output": MultiStateOutputObject,
-                "multi-state-value":  MultiStateValueObject,
-            }
-            n_states = max(1, int(obj_row.get("number_of_states") or 2))
-            state = max(1, min(n_states, round(float(val))))
-            # Same reasoning as binary-output above — multi-state-output is
-            # Commandable too, so presentValue must be passed at construction.
-            bacnet_obj = _MULTISTATE_CLS[otype](
-                objectIdentifier=f"{otype},{phys}",
-                objectName=obj_name,
-                presentValue=Unsigned(state),
-                numberOfStates=Unsigned(n_states),
-            )
-            _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
-        else:
-            active = bool(val) if not isinstance(val, bool) else val
-            cls = _BINARY_CLS.get(otype, BinaryInputObject)
-            bacnet_obj = cls(
-                objectIdentifier=f"{otype},{phys}",
-                objectName=obj_name,
-                presentValue=BinaryPV("active" if active else "inactive"),
-            )
-            _apply_reliability(bacnet_obj, obj_row.get("reliability") or "no-fault-detected")
-            if otype == "binary-input":
-                _apply_polarity(bacnet_obj, obj_row.get("polarity") or "normal")
-        return bacnet_obj, behavior
-    
     def get_object_value(self, object_id: int):
         """Live per-object value, refreshed every tick (self._prev_values,
         set at the top of the tick loop -- see the `self._prev_values[obj_id]
@@ -1136,8 +1068,8 @@ class SimEngine:
     ) -> Optional[dict]:
         """Resolve a wire-visible BACnet object back to its simulator row.
 
-        Regular simulator objects are stored in ``self._objects`` as:
-            database object id -> (live BACpypes object, Behavior)
+        Regular simulator objects are stored in ``self._runtime_points`` as:
+            database object id -> RuntimePoint(handle=live BACpypes object, ...)
 
         Matching the actual live ``objectIdentifier`` is safer than trying to
         reverse the slot-offset formula because it also stays correct after
@@ -1145,9 +1077,9 @@ class SimEngine:
         """
         normalized_type = str(object_type).strip().lower().replace('_', '-')
 
-        for object_db_id, (bacnet_obj, behavior) in self._objects.items():
+        for object_db_id, runtime_point in self._runtime_points.items():
             try:
-                identifier = bacnet_obj.objectIdentifier
+                identifier = runtime_point.handle.objectIdentifier
                 wire_type = str(identifier[0]).strip().lower().replace('_', '-')
                 wire_instance = int(identifier[1])
             except Exception:
@@ -1195,32 +1127,6 @@ class SimEngine:
             }
 
         return None
-
-    def _update_value(self, bacnet_obj: Any, otype: str, val: Any) -> Any:
-        """Writes the live BACnet presentValue and returns the exact value
-        actually written (post type-coercion/clamping) -- this is the one
-        place that knows what really landed on the wire, e.g. a multi-state
-        object's [1, numberOfStates] clamp. Callers that separately track a
-        "current value" for /sim/state, the Admin UI, Mirror sync, or manual
-        overrides should use this return value rather than re-deriving their
-        own, so that tracked value can't drift from what Present_Value
-        actually reads -- see the tick loop, inject_mirror_values, and
-        set_manual_value, all of which previously stored the pre-clamp raw
-        value instead and could disagree with a real BACnet client's read."""
-        if otype in ("analog-input", "analog-output", "analog-value"):
-            written = float(val)
-            bacnet_obj.presentValue = Real(written)
-        elif otype == "binary-output":
-            written = bool(val) if not isinstance(val, bool) else val
-            bacnet_obj.presentValue = BinaryPV("active" if written else "inactive")  # triggers recalculating() via priorityArray
-        elif otype in MULTISTATE_TYPES:
-            n_states = int(bacnet_obj.numberOfStates)
-            written = max(1, min(n_states, round(float(val))))
-            bacnet_obj.presentValue = Unsigned(written)
-        else:
-            written = bool(val) if not isinstance(val, bool) else val
-            bacnet_obj.presentValue = BinaryPV("active" if written else "inactive")
-        return written
 
     def _apply_fmu_behavior(
         self, behavior: Behavior, behavior_name: str, raw_value: Any, state: SimState,
@@ -1343,7 +1249,7 @@ class SimEngine:
         # provider (which would incorrectly reset random-walk/fault state).
         runtime_rows: dict[int, dict] = {}
         active_builtin_points: list[PointConfig] = []
-        for obj_id in list(self._objects):
+        for obj_id in list(self._runtime_points):
             obj_row = await asyncio.to_thread(self.db.get_object, obj_id)
             if not obj_row:
                 continue
@@ -1352,6 +1258,7 @@ class SimEngine:
             if (
                 dev
                 and dev.get("simulation_mode", "simulation") != "mirror"
+                and obj_row.get("source_object_id") is None
                 and obj_id not in self._point_output_owner
             ):
                 active_builtin_points.append(self._point_config_from_row(obj_row))
@@ -1400,7 +1307,7 @@ class SimEngine:
             provider_outputs,
         )
 
-        for obj_id, (bacnet_obj, behavior) in self._objects.items():
+        for obj_id, runtime_point in self._runtime_points.items():
             obj_row = runtime_rows.get(obj_id)
             if not obj_row:
                 continue
@@ -1408,11 +1315,18 @@ class SimEngine:
             if not dev:
                 continue
             sim_mode = dev.get("simulation_mode", "simulation")
-            if sim_mode in ("mirror", "replay"):
-                # Behaviors stay stored but inactive; mirror_sync_loop (mirror)
-                # or replay_playback_loop (replay) drives the value out of band.
+            is_linked = obj_row.get("source_object_id") is not None
+            if sim_mode in ("mirror", "replay") or is_linked:
+                # Behaviors stay stored but inactive; mirror_sync_loop drives
+                # the value out of band -- either the whole-device Mirror
+                # path (mirror), replay_playback_loop (replay), or the
+                # per-object link path (_link_sync_once, is_linked) added
+                # alongside it. is_linked is independent of the owning
+                # device's own simulation_mode -- an ordinary 'simulation'
+                # device can freely mix normal points and linked points.
                 injected_val = (
-                    self._mirror_values.get(obj_id) if sim_mode == "mirror"
+                    self._linked_values.get(obj_id) if is_linked
+                    else self._mirror_values.get(obj_id) if sim_mode == "mirror"
                     else self._replay_values.get(obj_id)
                 )
                 payload = self._twin_snapshot_payload(
@@ -1459,16 +1373,43 @@ class SimEngine:
                             exc_info=True,
                         )
                         val = provider_outputs[obj_id]
-            # written_val is what _update_value actually put on the wire
-            # (post type-coercion/clamping -- e.g. a multi-state object's
-            # [1, numberOfStates] clamp). Used below only for /sim/state
-            # (_prev_values) and the Admin UI's live "value" field, so
-            # those can never disagree with a real BACnet client's read.
-            # Alarm/enrollment evaluation, trend logging, and history
-            # deliberately keep using the pre-clamp `val` -- unchanged
-            # behavior, since clamping is a no-op for every object type
-            # except multi-state.
-            written_val = self._update_value(bacnet_obj, obj_row["object_type"], val)
+            # written_val is what write_point() actually put on the wire (post
+            # type-coercion/clamping -- e.g. a multi-state object's [1, numberOfStates]
+            # clamp). Used below only for /sim/state (_prev_values) and the Admin UI's live
+            # "value" field, so those can never disagree with a real client's read.
+            # Alarm/enrollment evaluation, trend logging, and history deliberately keep using
+            # the pre-clamp `val` -- unchanged behavior, since clamping is a no-op for every
+            # object type except multi-state.
+            #
+            # Offline is a protocol-status fault, not a value fault (see behaviors.py's
+            # FaultBehavior class docstring) -- write_point() folds quality (derived from
+            # whether an "offline" fault is CURRENTLY active on this point, via
+            # _is_offline_fault_active()) into the same call that writes Present_Value,
+            # letting each adapter translate it into whatever its own protocol calls
+            # "unreliable" (BACnet: Reliability + Status_Flags.fault, via the same
+            # _apply_reliability helper _create_object() already uses once, at creation, for
+            # an object's own persisted `reliability` field -- see
+            # BacnetProtocolAdapter.write_point()). Idempotent when nothing changed, and what
+            # makes recovery, switching to a different fault_type, and Behavior != "fault" all
+            # self-correct for free: none of those is "offline right now", so the adapter
+            # always falls through to restoring the point's own configured reliability, with
+            # no separate offline-specific cleanup/state needed. `runtime_point.behavior`
+            # (the transitional field -- see RuntimePoint's own docstring) is NOT used here
+            # for a builtin-owned point -- it's the instance _create_object() built once and
+            # is never the live one BuiltInSimulationProvider actually ticks (see that dict's
+            # own docstring); get_behavior() reaches the real one.
+            live_behavior = (
+                self._builtin_provider.get_behavior(obj_id) if owner == "builtin"
+                else self._point_behaviors.get(obj_id)
+            )
+            quality = (
+                PointQuality.OFFLINE if _is_offline_fault_active(live_behavior)
+                else PointQuality.GOOD
+            )
+            written_val = runtime_point.adapter.write_point(
+                runtime_point.handle, PointValue(value=val, quality=quality)
+            )
+
             if owner != "builtin":
                 log.info(
                     "BACnet object write from simulation provider: provider=%s "
@@ -1562,10 +1503,9 @@ class SimEngine:
             if val is None:
                 continue  # BACnet read failed for this object
             obj_id = obj["id"]
-            entry = self._objects.get(obj_id)
-            if not entry:
+            runtime_point = self._runtime_points.get(obj_id)
+            if not runtime_point:
                 continue
-            bacnet_obj, _ = entry
             normalized = normalize_present_value(obj["object_type"], val)
             # written_val: see the tick loop's identical comment above --
             # what actually landed on the wire, used for /sim/state so it
@@ -1575,11 +1515,38 @@ class SimEngine:
             # deliberately keep the un-clamped `normalized` value -- that's
             # "what the mirrored source reported", a distinct diagnostic
             # concept from "what this object's Present_Value now holds".
-            written_val = self._update_value(bacnet_obj, obj["object_type"], normalized)
+            written_val = runtime_point.adapter.write_point(
+                runtime_point.handle, PointValue(value=normalized)
+            )
             self._mirror_values[obj_id] = normalized
             self._prev_values[obj_id] = written_val
             if dev is not None:
                 self._upsert_current_value_snapshot(dev, obj, normalized)
+
+    async def inject_linked_value(self, object_id: int, value: Any) -> None:
+        """Per-object sibling of inject_mirror_values -- propagates one
+        already-resolved value (from either a simulated source's own
+        get_object_value() or an external-bacnet ReadProperty) into a
+        single linked object. Called only by _link_sync_once (runtime.py) --
+        never from the HTTP layer. `value` is expected already normalized
+        for a simulated source (get_object_value returns what a prior tick
+        already wrote); an external-bacnet source's raw read is normalized
+        here exactly like inject_mirror_values does for its own source."""
+        obj = await asyncio.to_thread(self.db.get_object, object_id)
+        if obj is None:
+            return
+        runtime_point = self._runtime_points.get(object_id)
+        if not runtime_point:
+            return
+        normalized = normalize_present_value(obj["object_type"], value)
+        written_val = runtime_point.adapter.write_point(
+            runtime_point.handle, PointValue(value=normalized)
+        )
+        self._linked_values[object_id] = normalized
+        self._prev_values[object_id] = written_val
+        dev = await asyncio.to_thread(self.db.get_device, obj["device_id"])
+        if dev is not None:
+            self._upsert_current_value_snapshot(dev, obj, normalized)
 
     async def inject_replay_values(
         self,
@@ -1601,12 +1568,13 @@ class SimEngine:
             if val is None:
                 continue
             obj_id = obj["id"]
-            entry = self._objects.get(obj_id)
-            if not entry:
+            runtime_point = self._runtime_points.get(obj_id)
+            if not runtime_point:
                 continue
-            bacnet_obj, _ = entry
             normalized = normalize_present_value(obj["object_type"], val)
-            written_val = self._update_value(bacnet_obj, obj["object_type"], normalized)
+            written_val = runtime_point.adapter.write_point(
+                runtime_point.handle, PointValue(value=normalized)
+            )
             self._replay_values[obj_id] = normalized
             self._prev_values[obj_id] = written_val
             if dev is not None:
@@ -1655,10 +1623,10 @@ class SimEngine:
         state["status"] = "stopped"
         first_index = 0
         device = await asyncio.to_thread(self.db.get_device, device_id)
-        recording_id = device.get("replay_recording_id") if device else None
+        recording_id = device.get("active_recording_id") if device else None
         if recording_id is not None:
             bounds = await asyncio.to_thread(
-                self.db.get_replay_recording_sample_index_bounds, recording_id
+                self.db.get_recording_sample_index_bounds, recording_id
             )
             if bounds is not None:
                 first_index = bounds[0]
@@ -1690,12 +1658,12 @@ class SimEngine:
         what's actually applied yet (covers Play advancing AND a Seek that
         happened while paused/stopped)."""
         device_id = device["id"]
-        recording_id = device.get("replay_recording_id")
+        recording_id = device.get("active_recording_id")
         if recording_id is None:
             return
-        recording = await asyncio.to_thread(self.db.get_replay_recording, recording_id)
+        recording = await asyncio.to_thread(self.db.get_recording, recording_id)
         bounds = await asyncio.to_thread(
-            self.db.get_replay_recording_sample_index_bounds, recording_id
+            self.db.get_recording_sample_index_bounds, recording_id
         )
         if not recording or bounds is None:
             return
@@ -1728,7 +1696,7 @@ class SimEngine:
 
         point_lookup = {p["id"]: p for p in recording["points"]}
         samples = await asyncio.to_thread(
-            self.db.get_replay_recording_samples, recording_id, state["current_sample_index"]
+            self.db.get_recording_samples, recording_id, state["current_sample_index"]
         )
         values: dict[tuple[str, int], Any] = {}
         for s in samples:
@@ -1880,6 +1848,29 @@ class SimEngine:
                 on_local_delivery=_log_event_notification_received,
             ))
 
+    async def _stop_active_protocol_adapters(self) -> None:
+        for protocol in list(self._active_adapters):
+            adapter = self.get_protocol_adapter(protocol)
+            for runtime_point in list(self._runtime_points.values()):
+                if runtime_point.adapter is adapter:
+                    try:
+                        adapter.remove_point(runtime_point.handle)
+                    except Exception:
+                        pass
+            for device_handle in self._adapter_device_handles.get(protocol, []):
+                try:
+                    adapter.remove_device(device_handle)
+                except Exception:
+                    pass
+            try:
+                await adapter.stop()
+            except Exception:
+                pass
+
+        self._runtime_points.clear()
+        self._active_adapters.clear()
+        self._adapter_device_handles.clear()
+
     async def reload(self) -> None:
         """Rebuild the BACnet stack from DB (called after config changes).
 
@@ -1898,111 +1889,34 @@ class SimEngine:
         """
         self._reload_preserved_values = dict(self._prev_values)
         async with self._reload_lock:
-            log.info("Reloading BACnet stack...")
-            if self.app:
-                for (bacnet_obj, _) in list(self._objects.values()):
-                    try:
-                        self.app.delete_object(bacnet_obj)
-                    except Exception:
-                        pass
-                for bacnet_obj in list(self._trend_log_objects.values()):
-                    try:
-                        self.app.delete_object(bacnet_obj)
-                    except Exception:
-                        pass
-                for bacnet_obj in list(self._schedule_objects.values()):
-                    if getattr(bacnet_obj, "_interpret_schedule_handle", None):
-                        bacnet_obj._interpret_schedule_handle.cancel()
-                    try:
-                        self.app.delete_object(bacnet_obj)
-                    except Exception:
-                        pass
-                for bacnet_obj in list(self._calendar_objects.values()):
-                    try:
-                        self.app.delete_object(bacnet_obj)
-                    except Exception:
-                        pass
-                self._objects.clear()
-                self._trend_log_objects.clear()
-                self._schedule_objects.clear()
-                self._calendar_objects.clear()
-                self._prev_values.clear()
-                self._history.clear()
-                self._alarm_runtime.clear()
-                self._enrollment_runtime.clear()
-                self._trend_log_last_value.clear()
-                self._current_values = {}
-                # Explicitly close the bacpypes3 socket before dropping the reference.
-                # BinaryOutputObject↔PriorityArray form a circular reference that delays
-                # GC, keeping the UDP socket bound to port 47808 and preventing re-bind.
-                try:
-                    await self.app.close()
-                except Exception:
-                    pass
-                finally:
-                    # Always sweep for any endpoint task close() didn't get
-                    # to, so a failure here can never leak a live socket
-                    # bind past this reload (see the helper's docstring).
-                    try:
-                        _force_close_bacnet_transports(self.app)
-                    except Exception:
-                        pass
-                self.app = None
+            log.info("Reloading protocol runtimes...")
+            await self._stop_active_protocol_adapters()
+            self._prev_values.clear()
+            self._history.clear()
+            self._alarm_runtime.clear()
+            self._enrollment_runtime.clear()
+            self._trend_log_last_value.clear()
+            self._current_values = {}
+
             await self.start()
             log.info("Reload complete")
 
     async def stop(self) -> None:
-        """Cleanly shut down providers and the BACnet stack."""
+        """Cleanly shut down providers and every protocol runtime."""
         for provider_id, provider in list(self._providers.items()):
             try:
                 provider.stop()
             except Exception:
                 log.exception("Failed to stop simulation provider %s", provider_id)
 
-        if self.app:
-            for (bacnet_obj, _) in list(self._objects.values()):
-                try:
-                    self.app.delete_object(bacnet_obj)
-                except Exception:
-                    pass
-            for bacnet_obj in list(self._trend_log_objects.values()):
-                try:
-                    self.app.delete_object(bacnet_obj)
-                except Exception:
-                    pass
-            for bacnet_obj in list(self._schedule_objects.values()):
-                if getattr(bacnet_obj, "_interpret_schedule_handle", None):
-                    bacnet_obj._interpret_schedule_handle.cancel()
-                try:
-                    self.app.delete_object(bacnet_obj)
-                except Exception:
-                    pass
-            for bacnet_obj in list(self._calendar_objects.values()):
-                try:
-                    self.app.delete_object(bacnet_obj)
-                except Exception:
-                    pass
-            self._objects.clear()
-            self._trend_log_objects.clear()
-            self._schedule_objects.clear()
-            self._calendar_objects.clear()
-            try:
-                await self.app.close()
-            except Exception:
-                pass
-            finally:
-                try:
-                    _force_close_bacnet_transports(self.app)
-                except Exception:
-                    pass
-            self.app = None
-        log.info("BACnet stack stopped")
+        await self._stop_active_protocol_adapters()
+        log.info("Protocol runtimes stopped")
 
     async def add_object_hot(self, device_instance: int, obj_row: dict) -> None:
         """Hot-add a single object to the running BACnet app without full reload.
 
         Takes _reload_lock -- the same lock reload() holds for its own
-        teardown/rebuild of self.app/self._objects/self._device_slots (see
+        teardown/rebuild of self.app/self._runtime_points/self._device_slots (see
         _reload_lock's own comment). Without this, a hot-add racing a
         concurrent reload() (routine: creating a device schedules a
         fire-and-forget reload(), and each object POSTed onto that device
@@ -2010,7 +1924,7 @@ class SimEngine:
         what cloning a multi-point device does, back-to-back) could land
         while reload() is mid-teardown/rebuild and get silently discarded:
         confirmed live where an 11-object clone ended up with only the
-        first 3 objects actually registered in self._objects, the rest
+        first 3 objects actually registered in self._runtime_points, the rest
         present in the DB but never reachable on the BACnet wire or in any
         snapshot/injection path. Queuing behind the lock instead of racing
         it makes the hot-add always land after any in-flight reload's
@@ -2018,12 +1932,18 @@ class SimEngine:
         if not self.app:
             return
         async with self._reload_lock:
+            adapter = self.get_protocol_adapter("bacnet")
             slot = self._device_slots.get(device_instance, 0)
             dev_obj = self.app._virtual_devices.get(device_instance)
             dev_name = str(dev_obj.objectName) if dev_obj else ""
-            bacnet_obj, behavior = self._create_object(obj_row, slot, dev_name)
+            bacnet_obj, behavior = object_factory.create_object(self, obj_row, slot, dev_name)
             self.app.add_object(bacnet_obj)
-            self._objects[obj_row["id"]] = (bacnet_obj, behavior)
+            self._runtime_points[obj_row["id"]] = RuntimePoint(
+                config=self._point_runtime_config(obj_row),
+                adapter=adapter,
+                handle=bacnet_obj,
+                behavior=behavior,
+            )
             dev = self.db.get_device(int(obj_row["device_id"]))
             if (
                 dev
@@ -2038,17 +1958,17 @@ class SimEngine:
                 self.app._virtual_object_lists[device_instance] = existing
 
     def set_manual_value(self, obj_id: int, value: Any) -> bool:
-        if obj_id not in self._objects:
+        runtime_point = self._runtime_points.get(obj_id)
+        if runtime_point is None:
             return False
-        bacnet_obj, behavior = self._objects[obj_id]
-        if isinstance(behavior, ManualBehavior):
-            behavior.set(value)
-            active_behavior = behavior
+        if isinstance(runtime_point.behavior, ManualBehavior):
+            runtime_point.behavior.set(value)
+            active_behavior = runtime_point.behavior
         else:
-            # Keep the legacy tuple shape during migration; provider is the
-            # authoritative behavior executor.
+            # Keep the RuntimePoint.behavior swap exactly as today; provider is
+            # the authoritative behavior executor.
             new_b = ManualBehavior({"value": value})
-            self._objects[obj_id] = (bacnet_obj, new_b)
+            runtime_point.behavior = new_b
             active_behavior = new_b
 
         obj_row = self.db.get_object(obj_id)
@@ -2057,8 +1977,8 @@ class SimEngine:
                 point_id=obj_id,
                 behavior="manual",
                 behavior_params=json.dumps({"value": value}),
+                data_type=self._point_data_type_from_bacnet_object_type(str(obj_row["object_type"])),
                 manual_value=value,
-                object_type=str(obj_row["object_type"]),
             )
             if obj_id not in self._point_output_owner:
                 self._builtin_provider.sync_point_config(manual_cfg)
@@ -2082,8 +2002,8 @@ class SimEngine:
             # code could leave _prev_values holding a raw out-of-range
             # value (e.g. 0) that Present_Value's own clamp would never
             # actually allow on the wire.
-            self._prev_values[obj_id] = self._update_value(
-                bacnet_obj, obj_row["object_type"], value
+            self._prev_values[obj_id] = runtime_point.adapter.write_point(
+                runtime_point.handle, PointValue(value=value)
             )
         return True
 
@@ -2099,15 +2019,16 @@ class SimEngine:
         `source` is the requesting client's address (apdu.pduSource), when
         the caller has one, for a real audit trail of who wrote what.
         """
-        if obj_id not in self._objects:
+        runtime_point = self._runtime_points.get(obj_id)
+        if runtime_point is None:
             return False
-        bacnet_obj, _ = self._objects[obj_id]
+        bacnet_obj = runtime_point.handle
         obj_row = await asyncio.to_thread(self.db.get_object, obj_id)
         if not obj_row:
             return False
         await asyncio.to_thread(self.db.write_object, obj_id, value)
         new_b = ManualBehavior({"value": value})
-        self._objects[obj_id] = (bacnet_obj, new_b)
+        runtime_point.behavior = new_b
 
         # Re-read the persisted row so provider config matches DB exactly.
         updated_row = await asyncio.to_thread(self.db.get_object, obj_id)
@@ -2115,7 +2036,10 @@ class SimEngine:
             self._builtin_provider.sync_point_config(self._point_config_from_row(updated_row))
             self._builtin_provider.set_inputs({obj_id: value})
 
-        self._update_value(bacnet_obj, obj_row["object_type"], value)
+        self._prev_values[obj_id] = runtime_point.adapter.write_point(
+            bacnet_obj,
+            PointValue(value=value),
+        )
         val_str = str(value) + (f" {obj_row['units']}" if obj_row.get("units") and obj_row["units"] != "no-units" else "")
         source_suffix = f" (from {source})" if source else ""
         _log_event(obj_row["device_id"], "info", f"External write: {obj_row['name']} → {val_str}{source_suffix}")
@@ -2133,9 +2057,10 @@ class SimEngine:
         """Read all 16 priority-array slots + relinquish default (GH #17).
         Returns None for object types with no real priority array — i.e.
         everything except the three Commandable *-output types."""
-        if obj_id not in self._objects:
+        runtime_point = self._runtime_points.get(obj_id)
+        if runtime_point is None:
             return None
-        bacnet_obj, _ = self._objects[obj_id]
+        bacnet_obj = runtime_point.handle
         if not isinstance(bacnet_obj, Commandable):
             return None
         cp = bacnet_obj.currentCommandPriority
@@ -2152,9 +2077,10 @@ class SimEngine:
         """Write (or, if value is None, relinquish) a specific priority-array
         slot on a Commandable object (GH #17) — this is a direct priority-array
         write, distinct from write_object()'s "the sim value" (priority 16)."""
-        if obj_id not in self._objects:
+        runtime_point = self._runtime_points.get(obj_id)
+        if runtime_point is None:
             return False
-        bacnet_obj, _ = self._objects[obj_id]
+        bacnet_obj = runtime_point.handle
         if not isinstance(bacnet_obj, Commandable):
             return False
         if not (1 <= priority <= 16):
@@ -2255,8 +2181,8 @@ class SimEngine:
         """Reverse lookup: given a live bacpypes3 object, find the DB row id
         that owns it. Used by both incoming WriteProperty requests and
         Schedule objects' present_value_changed() (see bacnet_schedule.py)."""
-        for did, (bobj, _) in self._objects.items():
-            if bobj is bacnet_obj:
+        for did, runtime_point in self._runtime_points.items():
+            if runtime_point.handle is bacnet_obj:
                 return did
         return None
 

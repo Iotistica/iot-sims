@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ...bacnet.app import normalize_present_value
 from ..behaviors import FaultBehavior, ManualBehavior, RandomWalkBehavior, make_behavior
 from ..state import SimState
 from .base import (
+    PointDataType,
     PointConfig,
     ProviderStatus,
     SimulationContext,
@@ -24,6 +24,18 @@ _KNOWN_BEHAVIORS = {
     "ramp",
     "fault",
 }
+
+
+def normalize_provider_value(data_type: PointDataType, value: Any) -> Any:
+    if data_type == PointDataType.BOOLEAN:
+        return bool(value)
+    if data_type in (PointDataType.INTEGER, PointDataType.ENUM):
+        return round(float(value))
+    if data_type == PointDataType.REAL:
+        return value
+    if data_type == PointDataType.STRING:
+        return str(value)
+    raise ValueError(f"Unsupported point data type: {data_type}")
 
 
 class BuiltInSimulationProvider(SimulationProvider):
@@ -134,8 +146,8 @@ class BuiltInSimulationProvider(SimulationProvider):
 
             raw_value = behavior.compute(self._state)
 
-            self._outputs[point_id] = normalize_present_value(
-                point.object_type,
+            self._outputs[point_id] = normalize_provider_value(
+                point.data_type,
                 raw_value,
             )
 
@@ -172,6 +184,16 @@ class BuiltInSimulationProvider(SimulationProvider):
 
     def get_status(self) -> ProviderStatus:
         return self._status
+
+    def get_behavior(self, point_id: int) -> Any:
+        """The live Behavior instance currently driving `point_id`, if any. Not part of the
+        abstract SimulationProvider contract (an FMU/AI provider has no equivalent per-point
+        Behavior concept to expose) -- a narrow, provider-specific accessor for SimEngine's own
+        tick loop, which needs to introspect fault state that has no representation in
+        get_outputs()'s plain {point_id: value} mapping: specifically, whether an "offline"
+        fault is currently active on this point, so BACnet Reliability/Status_Flags can be kept
+        in sync with it (see engine.py's tick(), and FaultBehavior's own class docstring)."""
+        return self._behaviors.get(point_id)
 
     def sync_point_configs(
         self,
@@ -247,11 +269,37 @@ class BuiltInSimulationProvider(SimulationProvider):
                     isinstance(new_behavior, FaultBehavior)
                     and isinstance(old_behavior, FaultBehavior)
                 ):
-                    new_behavior._fault_active = old_behavior._fault_active
-                    new_behavior._fault_end_elapsed = (
-                        old_behavior._fault_end_elapsed
-                    )
+                    # Preserve the fault's own ongoing activation timing across an
+                    # unrelated config tweak (e.g. adjusting the bias value while a
+                    # fault happens to already be active) -- but deliberately NOT when
+                    # activation_mode itself just changed. That's the one case this
+                    # state must NOT carry over: Intermittent -> Always Active must
+                    # activate immediately rather than inheriting a leftover
+                    # intermittent end time, and Always Active -> Intermittent must
+                    # start a completely fresh MTBF wait rather than staying stuck at
+                    # the old "no expiry" end time -- see FaultBehavior's own class
+                    # docstring. Leaving new_behavior's freshly-constructed defaults
+                    # (_fault_active=False, timers unset) in place when the mode
+                    # changed accomplishes exactly that: its own next compute() call
+                    # activates/schedules entirely from scratch under the NEW mode.
+                    if old_behavior.activation_mode == new_behavior.activation_mode:
+                        new_behavior._fault_active = old_behavior._fault_active
+                        new_behavior._fault_end_elapsed = (
+                            old_behavior._fault_end_elapsed
+                        )
+                        new_behavior._fault_start_elapsed = (
+                            old_behavior._fault_start_elapsed
+                        )
                     new_behavior._inner = old_behavior._inner
+                    # The rolling base-value history (delay's own lookup source, see
+                    # FaultBehavior._record_base) is orthogonal to activation_mode/
+                    # fault_type -- it's maintained for every fault_type whenever the
+                    # base behavior is evaluated, specifically so it's already populated
+                    # the moment a fault is switched TO delay, or Delay is switched to
+                    # Always Active, rather than needing to accumulate from empty on
+                    # every unrelated config edit. Always carried over, unlike the
+                    # activation timing above.
+                    new_behavior._history = old_behavior._history
 
                 elif (
                     isinstance(new_behavior, RandomWalkBehavior)

@@ -14,7 +14,7 @@ import json
 
 
 def _create_device_and_point(client, *, instance: int, **overrides):
-    device = client.post("/devices", json={"device_instance": instance, "name": f"Device-{instance}"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": f"Device-{instance}"}).json()
     payload = {
         "object_type": "analog-value", "object_instance": 1, "name": "Test-Point",
         "units": "percent", "behavior": "constant", "behavior_params": '{"value": 10}',

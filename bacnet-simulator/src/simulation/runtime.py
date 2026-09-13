@@ -36,6 +36,7 @@ from ..monitoring.event_log import (
 from ..monitoring.metrics import broadcast_metrics, build_metrics_snapshot
 from .engine import SimEngine
 from .models.runtime import recover_unhealthy_simulation_models
+from .protocols.bacnet import BacnetProtocolAdapter
 
 log = logging.getLogger("bacnet-sim")
 
@@ -122,7 +123,11 @@ async def mirror_sync_loop() -> None:
     """Reads present-values from source external devices and propagates them
     into all linked Mirror simulated devices every MIRROR_POLL_SECONDS.
     Groups reads by source device so each physical device is polled once per
-    cycle regardless of how many Mirror copies reference it."""
+    cycle regardless of how many Mirror copies reference it.
+
+    Also drives _link_sync_once, the per-OBJECT sibling of the whole-device
+    Mirror mechanism above (objects.source_object_id, see
+    database.get_linked_objects) -- same cadence, independent pass."""
     # Deferred to avoid circular import: routers import from this module
     # (for `lifespan`, via application.py) at module level; this module
     # must not import from routers at module level.
@@ -133,6 +138,10 @@ async def mirror_sync_loop() -> None:
             await _mirror_sync_once(dependencies.engine, _discovery_session)
         except Exception as exc:
             log.error("Mirror sync error: %s", exc)
+        try:
+            await _link_sync_once(dependencies.engine, _discovery_session)
+        except Exception as exc:
+            log.error("Link sync error: %s", exc)
 
 
 async def _mirror_sync_once(sim_engine: SimEngine, discovery_session_ctx: Any) -> None:
@@ -191,57 +200,123 @@ async def _mirror_sync_once(sim_engine: SimEngine, discovery_session_ctx: Any) -
             await sim_engine.inject_mirror_values(mirror_dev["id"], values, mirror_objects)
 
 
+async def _link_sync_once(sim_engine: SimEngine, discovery_session_ctx: Any) -> None:
+    """Per-OBJECT sibling of _mirror_sync_once -- resolves every object with
+    source_object_id set (database.get_linked_objects) instead of a whole
+    Mirror device's full, identical object set. A simulated source is read
+    directly from the running engine's own in-memory state (no network --
+    same process, same event loop as the tick loop, so a plain dict read is
+    safe -- see SimEngine.get_object_value's own docstring, already used
+    this same cross-device way by GET /points); an external-bacnet source
+    gets a real BACnet poll, grouped by host the same way the whole-device
+    mirror pass above already is.
+
+    Runs as its own pass rather than merging into _mirror_sync_once's loop
+    above -- an external host polled by both mechanisms in the same cycle
+    costs one extra read every MIRROR_POLL_SECONDS, a negligible price for
+    keeping the two mechanisms' control flow independent and each one
+    simple to read on its own."""
+    linked = await asyncio.to_thread(sim_engine.db.get_linked_objects)
+    if not linked:
+        return
+
+    devices = await asyncio.to_thread(sim_engine.db.get_devices)
+    dev_map = {d["id"]: d for d in devices}
+
+    from collections import defaultdict  # noqa: PLC0415
+    by_source_device: dict[int, list[dict]] = defaultdict(list)
+    for row in linked:
+        by_source_device[row["source_device_id"]].append(row)
+
+    for src_dev_id, rows in by_source_device.items():
+        src_dev = dev_map.get(src_dev_id)
+        if not src_dev:
+            continue
+
+        if src_dev.get("source_type", "simulated") == "simulated":
+            for row in rows:
+                value = sim_engine.get_object_value(row["source_object_id"])
+                if value is None:
+                    continue
+                await sim_engine.inject_linked_value(row["id"], value)
+            continue
+
+        if src_dev.get("source_type") != "external-bacnet":
+            continue
+        host = src_dev.get("external_host")
+        if not host:
+            continue
+
+        points = [(row["source_object_type"], row["source_object_instance"]) for row in rows]
+        try:
+            async with discovery_session_ctx() as discovery:
+                values = await discovery.read_present_values(
+                    host, src_dev["device_instance"], points,
+                )
+        except Exception:
+            # Source unavailable -- retain last _linked_values; no values change.
+            continue
+
+        await asyncio.to_thread(sim_engine.db.touch_external_device_last_seen, src_dev_id)
+        for row in rows:
+            key = (row["source_object_type"], row["source_object_instance"])
+            value = values.get(key)
+            if value is None:
+                continue
+            await sim_engine.inject_linked_value(row["id"], value)
+
+
 # recording_id -> last-sampled wall-clock time (time.monotonic()). In-memory
 # only, like _mirror_values -- transient process state, no DB column, reset
 # on restart (a recording just gets sampled again on the next due tick).
-# External-BACnet-device recordings only -- see _replay_last_sampled_sim_time
+# External-BACnet-device recordings only -- see _recording_last_sampled_sim_time
 # for simulated/mirror/replay-device recordings, which are sampled on
 # simulated time (tick_loop-triggered) instead of wall-clock time.
-_replay_last_sampled: dict[int, float] = {}
+_recording_last_sampled: dict[int, float] = {}
 
 
-def _next_replay_recording_sleep_seconds(database: Any) -> float:
-    """How long replay_recording_loop should sleep before its next wake-up
-    -- NOT a fixed poll cadence. Computed from how soon the earliest active
+def _next_recording_sleep_seconds(database: Any) -> float:
+    """How long recording_loop should sleep before its next wake-up -- NOT
+    a fixed poll cadence. Computed from how soon the earliest active
     recording's own sample_interval_seconds comes due, so a 1s-interval
     recording gets sampled close to every second while a 60s-interval one
-    doesn't cause 59 wasted wake-ups in between. REPLAY_RECORDING_IDLE_CEILING_SECONDS
+    doesn't cause 59 wasted wake-ups in between. RECORDING_IDLE_CEILING_SECONDS
     only matters when nothing is currently due (including "no active
     recordings at all"), so a newly-started recording is still picked up
     promptly.
 
     Deliberately still considers every "recording"-status row, including
     simulated-device ones this loop no longer actually samples (see
-    _replay_recording_sample_once) -- filtering those out here would need
-    an extra device lookup per recording in a function that's otherwise a
+    _recording_sample_once) -- filtering those out here would need an
+    extra device lookup per recording in a function that's otherwise a
     single cheap in-memory pass; the cost of the occasional wasted wake-up
     is negligible next to that."""
-    recordings = [r for r in database.get_replay_recordings() if r["status"] == "recording"]
+    recordings = [r for r in database.get_recordings() if r["status"] == "recording"]
     if not recordings:
-        return dependencies.REPLAY_RECORDING_IDLE_CEILING_SECONDS
+        return dependencies.RECORDING_IDLE_CEILING_SECONDS
     now = time.monotonic()
     due_in = min(
-        max(0.0, r["sample_interval_seconds"] - (now - _replay_last_sampled.get(r["id"], 0.0)))
+        max(0.0, r["sample_interval_seconds"] - (now - _recording_last_sampled.get(r["id"], 0.0)))
         for r in recordings
     )
-    return max(0.05, min(due_in, dependencies.REPLAY_RECORDING_IDLE_CEILING_SECONDS))
+    return max(0.05, min(due_in, dependencies.RECORDING_IDLE_CEILING_SECONDS))
 
 
-async def replay_recording_loop() -> None:
-    """Samples every due Replay Recording's external source device. A
-    single shared task (not one per recording), woken based on the next
-    recording that's actually due rather than a fixed short poll interval
-    -- see _next_replay_recording_sleep_seconds."""
+async def recording_loop() -> None:
+    """Samples every due Recording's external source device. A single
+    shared task (not one per recording), woken based on the next recording
+    that's actually due rather than a fixed short poll interval -- see
+    _next_recording_sleep_seconds."""
     from ..api.routers.discovery import _discovery_session  # noqa: PLC0415
     while True:
-        await asyncio.sleep(_next_replay_recording_sleep_seconds(dependencies.db))
+        await asyncio.sleep(_next_recording_sleep_seconds(dependencies.db))
         try:
-            await _replay_recording_sample_once(dependencies.db, _discovery_session)
+            await _recording_sample_once(dependencies.db, _discovery_session)
         except Exception as exc:
-            log.error("Replay recording sample error: %s", exc)
+            log.error("Recording sample error: %s", exc)
 
 
-async def _replay_recording_sample_once(database: Any, discovery_session_ctx: Any) -> None:
+async def _recording_sample_once(database: Any, discovery_session_ctx: Any) -> None:
     """External-BACnet-device recordings only, sampled on real wall-clock
     time -- those devices exist in real time regardless of this
     simulator's own tick cadence. Simulated/mirror/replay-device recordings
@@ -249,14 +324,14 @@ async def _replay_recording_sample_once(database: Any, discovery_session_ctx: An
     tied to simulation state actually advancing rather than an independent
     wall-clock poll -- polling on wall-clock time alone could re-read the
     same not-yet-updated cached value multiple times while a slow tick is
-    still in flight (confirmed live: Replay Recording exports showed many
+    still in flight (confirmed live: Recording exports showed many
     consecutive identical samples once individual FMU ticks started taking
     longer than a recording's own sample_interval_seconds)."""
     now = time.monotonic()
     due = [
-        r for r in database.get_replay_recordings()
+        r for r in database.get_recordings()
         if r["status"] == "recording"
-        and now - _replay_last_sampled.get(r["id"], 0.0) >= r["sample_interval_seconds"]
+        and now - _recording_last_sampled.get(r["id"], 0.0) >= r["sample_interval_seconds"]
     ]
     for recording in due:
         device = await asyncio.to_thread(database.get_device, recording["source_device_id"])
@@ -265,13 +340,13 @@ async def _replay_recording_sample_once(database: Any, discovery_session_ctx: An
             # misconfigured external one) -- mark sampled so it doesn't
             # stay "due" every cycle; _sample_due_simulated_recordings
             # handles the simulated case from tick_loop instead.
-            _replay_last_sampled[recording["id"]] = now
+            _recording_last_sampled[recording["id"]] = now
             continue
 
-        detail = await asyncio.to_thread(database.get_replay_recording, recording["id"])
+        detail = await asyncio.to_thread(database.get_recording, recording["id"])
         points = detail["points"] if detail else []
         if not points:
-            _replay_last_sampled[recording["id"]] = now
+            _recording_last_sampled[recording["id"]] = now
             continue
 
         try:
@@ -283,7 +358,7 @@ async def _replay_recording_sample_once(database: Any, discovery_session_ctx: An
                 )
         except Exception:
             # Source unavailable this cycle -- try again next time it's due.
-            _replay_last_sampled[recording["id"]] = now
+            _recording_last_sampled[recording["id"]] = now
             continue
 
         sample_values = {
@@ -291,16 +366,16 @@ async def _replay_recording_sample_once(database: Any, discovery_session_ctx: An
             for p in points
         }
 
-        await asyncio.to_thread(database.add_replay_sample, recording["id"], sample_values)
-        _replay_last_sampled[recording["id"]] = now
+        await asyncio.to_thread(database.add_recording_sample, recording["id"], sample_values)
+        _recording_last_sampled[recording["id"]] = now
 
 
 # recording_id -> last-sampled *simulated* time (SimEngine.state.elapsed_seconds)
 # at which a simulated/mirror/replay-device recording was last sampled.
-# Separate from _replay_last_sampled (wall-clock, external-device only) --
-# `None`/absent means "not yet sampled", always due immediately (matches
+# Separate from _recording_last_sampled (wall-clock, external-device only)
+# -- `None`/absent means "not yet sampled", always due immediately (matches
 # "Start Recording starts immediately").
-_replay_last_sampled_sim_time: dict[int, float] = {}
+_recording_last_sampled_sim_time: dict[int, float] = {}
 
 
 async def _sample_due_simulated_recordings(database: Any, engine: Any) -> None:
@@ -311,7 +386,7 @@ async def _sample_due_simulated_recordings(database: Any, engine: Any) -> None:
     reflects a fully-computed tick's fresh values rather than a value that
     just hasn't updated yet -- unlike wall-clock polling, this can never
     read the same tick's output twice, since it only ever runs once per
-    completed tick and only advances _replay_last_sampled_sim_time using
+    completed tick and only advances _recording_last_sampled_sim_time using
     the simulated clock (SimEngine.state.elapsed_seconds), which itself
     only moves forward once per completed tick.
 
@@ -321,21 +396,21 @@ async def _sample_due_simulated_recordings(database: Any, engine: Any) -> None:
     to sample even if asked for it.
 
     External-BACnet-device recordings are untouched by this function --
-    see _replay_recording_sample_once for those."""
+    see _recording_sample_once for those."""
     elapsed = engine.state.elapsed_seconds
-    recordings = await asyncio.to_thread(database.get_replay_recordings)
+    recordings = await asyncio.to_thread(database.get_recordings)
     for recording in recordings:
         if recording["status"] != "recording":
             continue
-        last_sim_time = _replay_last_sampled_sim_time.get(recording["id"])
+        last_sim_time = _recording_last_sampled_sim_time.get(recording["id"])
         if last_sim_time is not None and elapsed - last_sim_time < recording["sample_interval_seconds"]:
             continue
 
         device = await asyncio.to_thread(database.get_device, recording["source_device_id"])
         if not device or device.get("source_type") == "external-bacnet":
-            continue  # not this function's concern -- see _replay_recording_sample_once
+            continue  # not this function's concern -- see _recording_sample_once
 
-        detail = await asyncio.to_thread(database.get_replay_recording, recording["id"])
+        detail = await asyncio.to_thread(database.get_recording, recording["id"])
         points = detail["points"] if detail else []
         sample_values = {
             p["id"]: {"value": engine.get_object_value(p["source_object_id"])}
@@ -343,11 +418,11 @@ async def _sample_due_simulated_recordings(database: Any, engine: Any) -> None:
             if p.get("source_object_id") is not None
         }
         if not sample_values:
-            _replay_last_sampled_sim_time[recording["id"]] = elapsed
+            _recording_last_sampled_sim_time[recording["id"]] = elapsed
             continue
 
-        await asyncio.to_thread(database.add_replay_sample, recording["id"], sample_values)
-        _replay_last_sampled_sim_time[recording["id"]] = elapsed
+        await asyncio.to_thread(database.add_recording_sample, recording["id"], sample_values)
+        _recording_last_sampled_sim_time[recording["id"]] = elapsed
 
 
 async def replay_playback_loop() -> None:
@@ -369,7 +444,7 @@ async def _advance_replay_playback_once(sim_engine: SimEngine) -> None:
     replay_devices = [
         d for d in devices
         if d.get("simulation_mode") == "replay"
-        and d.get("replay_recording_id") is not None
+        and d.get("active_recording_id") is not None
         and d.get("enabled")
     ]
     for dev in replay_devices:
@@ -420,6 +495,36 @@ async def simulation_recovery_loop() -> None:
             _simulation_recovery_sweep_lock.release()
 
 
+async def recording_retention_loop() -> None:
+    """Purges completed Recordings older than the configured retention
+    window, every RECORDING_RETENTION_SWEEP_SECONDS -- off unless
+    recording_retention_enabled is set (see database._default_settings).
+    Reads both settings live each cycle rather than caching them in a
+    dependencies.py global (unlike e.g. TICK_SECONDS) -- an hourly sweep
+    has no need for that, and it keeps a Settings save taking effect on the
+    very next cycle with no extra plumbing. See
+    Database.purge_expired_recordings for the actual query/safety guards
+    (only status='completed', skips a recording a Replay device is
+    currently driving from)."""
+    while True:
+        await asyncio.sleep(dependencies.RECORDING_RETENTION_SWEEP_SECONDS)
+        try:
+            settings = await asyncio.to_thread(dependencies.db.get_settings)
+            if not settings.get("recording_retention_enabled"):
+                continue
+            retention_days = int(settings.get("recording_retention_days", 30))
+            deleted = await asyncio.to_thread(
+                dependencies.db.purge_expired_recordings, retention_days,
+            )
+            if deleted:
+                log.info(
+                    "Recording retention sweep: deleted %s recording(s) older than %s day(s)",
+                    deleted, retention_days,
+                )
+        except Exception as exc:
+            log.error("Recording retention sweep error: %s", exc)
+
+
 async def metrics_loop() -> None:
     # Deliberately independent of TICK_SECONDS/tick_loop — device-value
     # simulation and analytics refresh are different concerns with different
@@ -444,6 +549,10 @@ async def lifespan(app: FastAPI):
     for d in dependencies.db.get_devices():
         _device_names[d["id"]] = d["name"]
     dependencies.engine = SimEngine(dependencies.db)
+    dependencies.engine.register_protocol_adapter(
+        "bacnet",
+        BacnetProtocolAdapter(dependencies.engine),
+    )
 
      # Expose shared runtime objects to extracted routers.
     app.state.db = dependencies.db
@@ -530,8 +639,9 @@ async def lifespan(app: FastAPI):
     mirror_task = asyncio.create_task(mirror_sync_loop())
     metrics_task = asyncio.create_task(metrics_loop())
     simulation_recovery_task = asyncio.create_task(simulation_recovery_loop())
-    replay_recording_task = asyncio.create_task(replay_recording_loop())
+    recording_task = asyncio.create_task(recording_loop())
     replay_playback_task = asyncio.create_task(replay_playback_loop())
+    recording_retention_task = asyncio.create_task(recording_retention_loop())
     log.info("BACnet Simulator API ready on port %d", SIM_API_PORT)
     yield
     log.info("Shutting down")
@@ -539,8 +649,9 @@ async def lifespan(app: FastAPI):
     mirror_task.cancel()
     metrics_task.cancel()
     simulation_recovery_task.cancel()
-    replay_recording_task.cancel()
+    recording_task.cancel()
     replay_playback_task.cancel()
+    recording_retention_task.cancel()
     try:
         await tick_task
     except asyncio.CancelledError:

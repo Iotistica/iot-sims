@@ -1,5 +1,5 @@
 import { api } from './api'
-import type { Device, SemanticEntity, SimObject, ReplayRecording } from './types'
+import type { Device, SemanticEntity, SimObject, Recording } from './types'
 import type { SimulationModelPayload } from './api'
 import { coerceValueForObjectType } from './objectValue'
 
@@ -244,6 +244,7 @@ export async function copyDeviceAndObjects(
 ): Promise<CopyDeviceResult> {
   const copySemantics = opts.copySemantics ?? true
   const created = await api.devices.create({
+    protocol:        source.protocol,
     device_instance: opts.deviceInstance,
     name:            opts.name,
     description:     source.description,
@@ -308,7 +309,7 @@ interface CreateReplayDeviceOptions {
   name: string
   deviceInstance: number
   sourceDeviceId: number
-  recording: ReplayRecording
+  recording: Recording
   locationId?: number | null
 }
 
@@ -317,7 +318,7 @@ interface CreateReplayDeviceOptions {
  * above: that function's object list (srcObjects: SimObject[]) and its
  * semantic-graph/simulation-model copying both assume real, currently-
  * existing source object rows -- neither applies to a recording, which is a
- * frozen historical snapshot (replay_recording_points, not `objects`) that
+ * frozen historical snapshot (recording_points, not `objects`) that
  * may already outlive the source device's current object structure. Objects
  * are seeded at a neutral default (0/false/first state) -- replay_playback_loop
  * drives their real values once playback starts, the same way a Twin's
@@ -328,6 +329,7 @@ export async function createReplayDevice(
   opts: CreateReplayDeviceOptions,
 ): Promise<CopyDeviceResult> {
   const created = await api.devices.create({
+    protocol:        source.protocol,
     device_instance: opts.deviceInstance,
     name:            opts.name,
     description:     source.description,
@@ -342,7 +344,7 @@ export async function createReplayDevice(
     equipment_type:           null,
     simulation_mode:          'replay',
     source_device_id:         opts.sourceDeviceId,
-    replay_recording_id:      opts.recording.id,
+    active_recording_id:      opts.recording.id,
   })
 
   const objectIdMap: Record<number, number> = {}

@@ -39,8 +39,10 @@ from .api.routers.semantic import router as semantic_router
 from .api.routers.calendars import router as calendars_router
 from .api.routers.alarms import router as alarms_router
 from .api.routers.trend_logs import router as trend_logs_router
-from .api.routers.replay_recordings import router as replay_recordings_router
+from .api.routers.recordings import router as recordings_router
+from .api.routers.replay_playback import router as replay_playback_router
 from .api.routers.calibration import router as calibration_router
+from .api.routers.training_export import router as training_export_router
 from .api.routers.schedules import router as schedules_router
 from .api.routers.devices import router as devices_router
 from .api.routers.analytics import router as analytics_router
@@ -58,6 +60,7 @@ from .api.routers.external_objects import router as external_objects_router
 from .api.routers.semantic_suggestions import router as semantic_suggestions_router
 from .api.routers.functional_tests import router as functional_tests_router
 from .api.routers.custom_graphs import router as custom_graphs_router
+from .api.routers.dashboards import router as dashboards_router
 from .api.routers.functional_test_runs import router as functional_test_runs_router
 from .api.routers.points import router as points_router
 from .api.routers.templates import router as templates_router
@@ -73,8 +76,10 @@ api.include_router(semantic_router)
 api.include_router(calendars_router)
 api.include_router(alarms_router)
 api.include_router(trend_logs_router)
-api.include_router(replay_recordings_router)
+api.include_router(recordings_router)
+api.include_router(replay_playback_router)
 api.include_router(calibration_router)
+api.include_router(training_export_router)
 api.include_router(schedules_router)
 api.include_router(devices_router)
 api.include_router(analytics_router)
@@ -92,6 +97,7 @@ api.include_router(external_objects_router)
 api.include_router(semantic_suggestions_router)
 api.include_router(functional_tests_router)
 api.include_router(custom_graphs_router)
+api.include_router(dashboards_router)
 api.include_router(functional_test_runs_router)
 api.include_router(points_router)
 api.include_router(templates_router)

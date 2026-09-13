@@ -21,7 +21,7 @@ import pytest
 @pytest.fixture
 def external_device(database):
     devices = database.sync_external_devices([
-        {"device_instance": 5000, "name": "ext", "host": "172.22.0.50", "port": 47808,
+        {"protocol": "bacnet", "device_instance": 5000, "name": "ext", "host": "172.22.0.50", "port": 47808,
          "metadata": {"objectName": "External-AHU", "vendorName": "Acme"}},
     ])
     device_id = devices[0]["id"]
@@ -36,7 +36,7 @@ def external_device(database):
 # with this body unchanged is a true no-op on every field.
 def _unchanged_body(**overrides):
     body = {
-        "device_instance": 5000,
+        "protocol": "bacnet", "device_instance": 5000,
         "name": "External-AHU",
         "description": "",
         "vendor_name": "Acme",

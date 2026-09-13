@@ -1063,6 +1063,482 @@ def _migration_022_templates(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_023_replay_recordings_category(conn: sqlite3.Connection) -> None:
+    """Free-text label a recording can be tagged with (e.g. "Normal",
+    "Faulty") -- never read by the BACnet protocol/simulation engine or by
+    replay playback. Purely a training-time signal: when several tagged
+    recordings are combined into a training dataset
+    (src/simulation/training_export.py), each distinct category becomes a
+    numeric input_category feature column, letting a trained model
+    condition on which regime a row came from -- without touching any
+    model's own FMU inputs (see the plan this migration accompanies for
+    why that's the point: model-agnostic, works for every model, no
+    Modelica/FMU change needed for a new category)."""
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(replay_recordings)")}
+    if "category" not in existing_cols:
+        conn.execute("ALTER TABLE replay_recordings ADD COLUMN category TEXT")
+
+
+def _migration_024_replay_recording_input_constants(conn: sqlite3.Connection) -> None:
+    """Snapshots an FMU-backed model's constant-sourced input values (device
+    config: simulation_model_configs.parameters.input_sources=='constant' +
+    input_defaults) at the moment a recording starts -- NOT a BACnet point
+    mapping (deliberately a separate table from replay_recording_points, no
+    source_object_id, no fake object): a constant input never had a live
+    point to begin with, that's the whole meaning of "constant" sourcing, so
+    there's nothing to snapshot as a point identity, only the literal value
+    the simulation actually used.
+
+    Exists so training-data export (training_export.py) can pull each
+    constant input's value from what a recording actually captured at record
+    time, not from the device's CURRENT config -- the device's constants can
+    change between two recordings (or between a recording and whenever
+    training later runs), and using today's value for an old recording would
+    silently mislabel what that recording's rows actually represent. A
+    recording made before this migration existed simply has no rows here --
+    training_export.py must treat that as "this recording cannot supply this
+    variable", the same as a recording that never captured a needed point,
+    not silently fall back to the live device config."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS replay_recording_input_constants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL REFERENCES replay_recordings(id) ON DELETE CASCADE,
+            variable TEXT NOT NULL,
+            value REAL NOT NULL,
+            UNIQUE(recording_id, variable)
+        );
+        CREATE INDEX IF NOT EXISTS idx_replay_recording_input_constants_recording
+            ON replay_recording_input_constants(recording_id);
+        """
+    )
+
+
+def _migration_025_replay_recordings_condition(conn: sqlite3.Connection) -> None:
+    """Lightweight, structured ground-truth classification for a recording
+    -- 'normal'/'degraded'/'fault' -- separate from the free-text `category`
+    column (a scenario/tag label, e.g. "hot-day", unchanged by this
+    migration). Nullable, no default: every existing row reads back
+    condition=NULL, treated everywhere as "unclassified/legacy", never
+    backfilled or guessed. No CHECK constraint here -- same as `category`,
+    enum enforcement lives at the API boundary (ReplayRecordingCreate/
+    Update's own Literal type), not the DB.
+
+    Deliberately a flat scalar column, not a blob -- this is what a later
+    fault-injection/simulation feature can build on without any migration
+    risk to existing data: attaching richer ground truth (fault_type/
+    target/parameters) later is just another additive ALTER TABLE ADD
+    COLUMN following this exact same pattern, whenever that feature
+    actually exists. Nothing here anticipates its shape."""
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(replay_recordings)")}
+    if "condition" not in existing_cols:
+        conn.execute("ALTER TABLE replay_recordings ADD COLUMN condition TEXT")
+
+
+def _migration_026_replay_recording_tags(conn: sqlite3.Connection) -> None:
+    """Replaces the single free-text `category` column with a real list --
+    multiple independent scenario/tag labels per recording (e.g. "hot-day",
+    "fan-test"), not one categorical value. `category` itself is left in
+    place but frozen: no code writes to it after this migration, nothing
+    reads it any more (both consumers -- database.py and
+    training_export.py -- move to this table). Not dropped: ALTER TABLE
+    DROP COLUMN support varies by SQLite version and no migration here has
+    ever dropped a column; an unused column costs nothing left in place.
+
+    The backfill below is one-time and idempotent (INSERT OR IGNORE, plus
+    the UNIQUE(recording_id, tag) constraint): every existing recording's
+    single category string becomes a one-element tag list, so no
+    classification data is lost. A recording with no category gets zero
+    tag rows, same as before.
+
+    Deliberately metadata-only going forward -- see the plan this migration
+    accompanies for why the old category -> input_category training-
+    feature injection is retired outright here, not adapted to a
+    multi-tag-aware version: a training feature is a separate, later
+    decision, not implied by giving recordings real tags."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS replay_recording_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL REFERENCES replay_recordings(id) ON DELETE CASCADE,
+            tag TEXT NOT NULL,
+            UNIQUE(recording_id, tag)
+        );
+        CREATE INDEX IF NOT EXISTS idx_replay_recording_tags_recording
+            ON replay_recording_tags(recording_id);
+        """
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO replay_recording_tags (recording_id, tag) "
+        "SELECT id, category FROM replay_recordings WHERE category IS NOT NULL AND category != ''"
+    )
+
+
+def _migration_027_objects_source_object_id(conn: sqlite3.Connection) -> None:
+    """Per-object live-value linking -- an object with source_object_id set
+    is "linked": its Present_Value is periodically synced from the
+    referenced object (see mirror_sync_loop's extension in
+    simulation/runtime.py) instead of being driven by its own behavior,
+    independent of what simulation_mode its OWN device has. This is the
+    per-object sibling of devices.source_device_id (migration 14)'s
+    whole-device Mirror mechanism -- same ALTER TABLE shape, same
+    plain-FK-no-ON-DELETE-clause choice: deleting a still-linked-to source
+    object is rejected at the API layer (see get_link_consumers, mirroring
+    get_aggregate_membership_owner's existing pattern) rather than being
+    silently unlinked, so FK enforcement (PRAGMA foreign_keys=ON) backs
+    that guard up as a safety net exactly the way it already does for
+    aggregate-mapping membership.
+
+    NULL (the default, every pre-existing row) means "an ordinary, locally
+    -driven object" -- unchanged behavior, no backfill needed."""
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(objects)")}
+    if "source_object_id" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE objects ADD COLUMN source_object_id INTEGER REFERENCES objects(id)"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_objects_source_object_id ON objects(source_object_id)"
+    )
+
+
+def _migration_028_dashboards(conn: sqlite3.Connection) -> None:
+    """Evolves the existing Custom Graphs feature (`custom_graphs`) into a
+    dashboard/widget system, in place -- deliberately NOT a second, parallel
+    table: a saved graph already *is* a widget, it just didn't have a
+    dashboard to belong to or a grid position yet. Adds a small `dashboards`
+    table (just a name -- no content of its own) and four/five new columns
+    on `custom_graphs`: `dashboard_id` (which dashboard it's on),
+    `widget_type` ('chart', unchanged rendering, or 'kpi', a new
+    single-value tile whose `definition_json` holds
+    {device_id, object_id, decimals?} instead of a series list), and
+    `grid_x/grid_y/grid_w/grid_h` (position/size on that dashboard's grid).
+
+    `dashboard_id` is intentionally nullable at the SQL level (no NOT NULL,
+    even though every row conceptually belongs to exactly one dashboard) --
+    same "enum/requiredness enforced at the API boundary, not the DB" choice
+    already used for `replay_recordings.condition` (migration 25) and
+    `custom_graphs`'s own definition shape: a NOT NULL column referencing a
+    table that doesn't have any rows yet at ALTER TABLE time can't be added
+    with a real default (SQLite requires a constant default for a NOT NULL
+    ADD COLUMN, and there's no dashboard id to point at until the backfill
+    below runs). `Database.create_custom_graph`/the API layer are what
+    actually guarantee every row has a dashboard going forward.
+
+    Backfill (idempotent: only runs when there's at least one custom_graphs
+    row with no dashboard_id yet): creates one "My Dashboard" row and
+    attaches every such pre-existing graph to it, stacked in a single
+    column in their original order (grid_y = index * grid_h) -- so nothing
+    a user already saved disappears or duplicates, it just gains a position
+    on the new grid."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS dashboards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
+    )
+
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(custom_graphs)")}
+    if "dashboard_id" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE custom_graphs ADD COLUMN dashboard_id INTEGER REFERENCES dashboards(id) ON DELETE CASCADE"
+        )
+    if "widget_type" not in existing_cols:
+        conn.execute("ALTER TABLE custom_graphs ADD COLUMN widget_type TEXT NOT NULL DEFAULT 'chart'")
+    if "grid_x" not in existing_cols:
+        conn.execute("ALTER TABLE custom_graphs ADD COLUMN grid_x INTEGER NOT NULL DEFAULT 0")
+    if "grid_y" not in existing_cols:
+        conn.execute("ALTER TABLE custom_graphs ADD COLUMN grid_y INTEGER NOT NULL DEFAULT 0")
+    if "grid_w" not in existing_cols:
+        conn.execute("ALTER TABLE custom_graphs ADD COLUMN grid_w INTEGER NOT NULL DEFAULT 6")
+    if "grid_h" not in existing_cols:
+        conn.execute("ALTER TABLE custom_graphs ADD COLUMN grid_h INTEGER NOT NULL DEFAULT 4")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_custom_graphs_dashboard_id ON custom_graphs(dashboard_id)")
+
+    orphans = [
+        row[0] for row in conn.execute(
+            "SELECT id FROM custom_graphs WHERE dashboard_id IS NULL ORDER BY id"
+        )
+    ]
+    if orphans:
+        cur = conn.execute("INSERT INTO dashboards (name) VALUES ('My Dashboard')")
+        dashboard_id = cur.lastrowid
+        for index, graph_id in enumerate(orphans):
+            conn.execute(
+                "UPDATE custom_graphs SET dashboard_id=?, grid_x=0, grid_y=? WHERE id=?",
+                (dashboard_id, index * 4, graph_id),
+            )
+
+
+def _migration_029_recordings_rename(conn: sqlite3.Connection) -> None:
+    """Renames the "replay_recordings" family of tables (and the
+    devices.replay_recording_id FK column) to just "recording(s)" --
+    "replay" was legacy naming: this feature now serves Training,
+    Calibration, and general trend inspection at least as much as it
+    serves the actual Replay-mode device playback it was originally built
+    for. "replay" stays only on the things genuinely about playing a
+    recording back to a device (devices.simulation_mode='replay',
+    replay_playback_loop, engine.py's replay_play/pause/seek/... section,
+    src/api/routers/replay_playback.py) -- this migration touches none of
+    those.
+
+    SQLite's ALTER TABLE ... RENAME TO / RENAME COLUMN are both online,
+    in-place, and foreign-key-safe: SQLite automatically rewrites the
+    REFERENCES clauses stored in every dependent table's own SQL text when
+    the table/column they point at is renamed (recording_points/
+    recording_samples/recording_tags/recording_input_constants all
+    reference recordings(id); devices.active_recording_id references
+    recordings(id) too) -- unlike migration 8's device rebuild, nothing
+    structural is changing here, so the far simpler rename-in-place form
+    applies, not a create-new/copy/drop-old rebuild.
+
+    Indexes aren't touched by a table RENAME TO the way REFERENCES clauses
+    are, so they're recreated under the new names below -- purely cosmetic
+    (nothing in the codebase looks an index up by name), done anyway for
+    consistency. Every statement here is independently idempotent (IF
+    EXISTS/IF NOT EXISTS, or an existing-columns check), so re-running this
+    against an already-renamed database is a safe no-op."""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    if "replay_recordings" in tables and "recordings" not in tables:
+        conn.execute("ALTER TABLE replay_recordings RENAME TO recordings")
+    if "replay_recording_points" in tables and "recording_points" not in tables:
+        conn.execute("ALTER TABLE replay_recording_points RENAME TO recording_points")
+    if "replay_samples" in tables and "recording_samples" not in tables:
+        conn.execute("ALTER TABLE replay_samples RENAME TO recording_samples")
+    if "replay_recording_tags" in tables and "recording_tags" not in tables:
+        conn.execute("ALTER TABLE replay_recording_tags RENAME TO recording_tags")
+    if "replay_recording_input_constants" in tables and "recording_input_constants" not in tables:
+        conn.execute("ALTER TABLE replay_recording_input_constants RENAME TO recording_input_constants")
+
+    device_cols = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
+    if "replay_recording_id" in device_cols and "active_recording_id" not in device_cols:
+        conn.execute("ALTER TABLE devices RENAME COLUMN replay_recording_id TO active_recording_id")
+
+    # Recreate indexes under the new names -- must run after the table
+    # renames above, since CREATE INDEX ... ON recordings(...) needs that
+    # table to already exist under its new name.
+    conn.execute("DROP INDEX IF EXISTS idx_replay_recordings_device")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_recordings_device ON recordings(source_device_id)")
+    conn.execute("DROP INDEX IF EXISTS idx_replay_recording_points_recording")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_recording_points_recording ON recording_points(recording_id)")
+    conn.execute("DROP INDEX IF EXISTS idx_replay_samples_recording_index")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recording_samples_recording_index "
+        "ON recording_samples(recording_id, sample_index)"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_replay_samples_recording_ts")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recording_samples_recording_ts "
+        "ON recording_samples(recording_id, timestamp)"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_replay_samples_point_index")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recording_samples_point_index "
+        "ON recording_samples(recording_point_id, sample_index)"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_replay_recording_input_constants_recording")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recording_input_constants_recording "
+        "ON recording_input_constants(recording_id)"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_replay_recording_tags_recording")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_recording_tags_recording ON recording_tags(recording_id)")
+
+
+def _migration_030_recordings_fault_type(conn: sqlite3.Connection) -> None:
+    """Second axis of a recording's ground-truth classification, alongside
+    `condition` (severity: normal/degraded/fault, migration 025) -- what
+    KIND of problem, not just how bad. Real-world HVAC FDD practice
+    (ASHRAE RP-1312 and labeled fault datasets) splits classification
+    exactly this way: severity and fault type as two independent
+    dimensions, not one longer enum. Nullable, no CHECK constraint, same
+    "enforced at the API layer only" choice `condition` already made --
+    and exactly the additive column migration 025's own docstring
+    anticipated ("a future fault-injection feature would add its own
+    additive column(s)... not extend [condition]").
+
+    Deliberately NOT free text -- a classifier needs a small, known, closed
+    set of classes to predict from; open text can't work as a
+    classification target (see this feature's own plan for the reasoning).
+    Independent of `condition` -- no cross-field validation here, editable
+    after the fact, same flexibility condition/tags already have. The UI
+    only shows/edits this when condition isn't 'normal' (nothing to
+    classify for a normal recording), but nothing stops it being set
+    regardless at the DB/API layer -- same "labels are just labels, safe to
+    correct" spirit as condition and tags."""
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(recordings)")}
+    if "fault_type" not in existing_cols:
+        conn.execute("ALTER TABLE recordings ADD COLUMN fault_type TEXT")
+
+
+def _migration_031_objects_state_text(conn: sqlite3.Connection) -> None:
+    """Optional BACnet State_Text list for a multi-state object, stored as a
+    JSON-encoded array (one entry per state, index 0 = state 1). Nullable --
+    every multi-state object before this migration keeps working exactly as
+    before (a real client just sees the raw 1-based integer with no state
+    text). Primary producer is the classifier attach flow: a promoted
+    classifier model's `class_labels` (see iot-models' ModelMetadata) size
+    and label the multi-state point auto-created/wired to it, so a value of
+    2 reads as "sensor_bias" rather than a bare integer a human has to
+    cross-reference against the model's own documentation."""
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(objects)")}
+    if "state_text" not in existing_cols:
+        conn.execute("ALTER TABLE objects ADD COLUMN state_text TEXT")
+
+
+def _migration_032_devices_protocol(conn: sqlite3.Connection) -> None:
+    """BACnet was the only protocol until now; `protocol` lets SimEngine dispatch each device to
+    the right ProtocolAdapter (see src/simulation/protocols/) instead of assuming BACnet
+    unconditionally. Every existing row defaults to 'bacnet' -- no behavior change for any
+    project that predates this column."""
+    existing_dev_cols = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
+    if "protocol" not in existing_dev_cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN protocol TEXT NOT NULL DEFAULT 'bacnet'")
+
+
+def _migration_033_calibration_runs(conn: sqlite3.Connection) -> None:
+    """Makes the BACnet Simulator the durable system-of-record for FMU calibration
+    *workflow* history -- the piece the flow had no home for. Models Runtime still owns
+    the compute record (uploaded datasets, HEBO run, validation replay, logs, raw result
+    artifacts, transient job state) in its own file store; this table is the reconstruct/
+    audit summary, keyed to a Models-Runtime `runtime_job_id`, that answers "which exact
+    FMU + model.json + recording + point mapping produced this, was it validated, was it
+    applied, and to which simulation model".
+
+    Design choices, consistent with the rest of this file:
+
+    * All foreign ids are plain INTEGER -- no SQL `REFERENCES`. `simulation_model_configs`
+      is created outside the migration system (store.py::ensure_simulation_model_schema),
+      and this codebase already enforces enum/requiredness/referential rules at the API
+      layer rather than the DB (migrations 25/28/30). `ON DELETE` behaviour would only
+      matter for a hard FK anyway.
+    * JSON blobs as TEXT NOT NULL DEFAULT '{}' / '[]', decoded/encoded by
+      src/db/database.py's calibration_run helpers.
+    * `schema_version` (=1) so a later shape change to this row is explicit rather than
+      guessed from which columns happen to be populated.
+    * `validation_status` is a lifecycle INDEPENDENT of `status`: a calibration can be
+      COMPLETED while its held-out validation is `failed` or was never requested. Only
+      `completed` here means "the held-out replay actually ran and produced metrics" --
+      never merely "a validation dataset was uploaded".
+    * Partial unique index on `runtime_job_id`: one row per Models-Runtime compute job,
+      but the row exists (job id still NULL) before that job is created, so NULLs are
+      exempt.
+
+    Idempotent: CREATE TABLE / CREATE INDEX IF NOT EXISTS throughout, and the column
+    top-up loop re-checks PRAGMA table_info so a re-run against a partially-created table
+    is a no-op."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS calibration_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+
+            runtime_job_id TEXT,
+            runtime_dataset_id TEXT,
+            runtime_validation_dataset_id TEXT,
+
+            model_id TEXT NOT NULL,
+            simulation_model_id INTEGER,
+
+            recording_id INTEGER,
+            validation_recording_id INTEGER,
+
+            fmu_sha256 TEXT,
+            metadata_sha256 TEXT,
+            tuner_names TEXT NOT NULL DEFAULT '[]',
+
+            status TEXT NOT NULL DEFAULT 'pending',
+            failure_stage TEXT,
+            error_summary TEXT,
+
+            mapping_json TEXT NOT NULL DEFAULT '{}',
+
+            objective_metric TEXT,
+            baseline_metric REAL,
+            calibration_metric REAL,
+            improvement_pct REAL,
+
+            validation_status TEXT NOT NULL DEFAULT 'not_requested',
+            validation_cv_rmse REAL,
+            validation_nmbe REAL,
+            validation_rmse REAL,
+            validation_mae REAL,
+            validation_r2 REAL,
+
+            g14_interval TEXT,
+            g14_based_on TEXT,
+            g14_applicable INTEGER,
+            g14_pass INTEGER,
+
+            best_parameters_json TEXT NOT NULL DEFAULT '{}',
+            fmu_defaults_json TEXT NOT NULL DEFAULT '{}',
+
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            started_at TEXT,
+            completed_at TEXT,
+            applied_at TEXT,
+            applied_to_simulation_model_id INTEGER
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_calibration_runs_runtime_job_unique
+            ON calibration_runs(runtime_job_id) WHERE runtime_job_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_calibration_runs_model
+            ON calibration_runs(model_id);
+        CREATE INDEX IF NOT EXISTS idx_calibration_runs_sim_model
+            ON calibration_runs(simulation_model_id);
+        CREATE INDEX IF NOT EXISTS idx_calibration_runs_recording
+            ON calibration_runs(recording_id);
+        """
+    )
+
+    # Top-up for any database that somehow has an older partial calibration_runs table
+    # (e.g. a dev build that pre-dates a column). Additive only.
+    expected_columns = {
+        "schema_version": "INTEGER NOT NULL DEFAULT 1",
+        "runtime_job_id": "TEXT",
+        "runtime_dataset_id": "TEXT",
+        "runtime_validation_dataset_id": "TEXT",
+        "simulation_model_id": "INTEGER",
+        "recording_id": "INTEGER",
+        "validation_recording_id": "INTEGER",
+        "fmu_sha256": "TEXT",
+        "metadata_sha256": "TEXT",
+        "tuner_names": "TEXT NOT NULL DEFAULT '[]'",
+        "status": "TEXT NOT NULL DEFAULT 'pending'",
+        "failure_stage": "TEXT",
+        "error_summary": "TEXT",
+        "mapping_json": "TEXT NOT NULL DEFAULT '{}'",
+        "objective_metric": "TEXT",
+        "baseline_metric": "REAL",
+        "calibration_metric": "REAL",
+        "improvement_pct": "REAL",
+        "validation_status": "TEXT NOT NULL DEFAULT 'not_requested'",
+        "validation_cv_rmse": "REAL",
+        "validation_nmbe": "REAL",
+        "validation_rmse": "REAL",
+        "validation_mae": "REAL",
+        "validation_r2": "REAL",
+        "g14_interval": "TEXT",
+        "g14_based_on": "TEXT",
+        "g14_applicable": "INTEGER",
+        "g14_pass": "INTEGER",
+        "best_parameters_json": "TEXT NOT NULL DEFAULT '{}'",
+        "fmu_defaults_json": "TEXT NOT NULL DEFAULT '{}'",
+        "started_at": "TEXT",
+        "completed_at": "TEXT",
+        "applied_at": "TEXT",
+        "applied_to_simulation_model_id": "INTEGER",
+    }
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(calibration_runs)")}
+    for column, decl in expected_columns.items():
+        if column not in existing_cols:
+            conn.execute(f"ALTER TABLE calibration_runs ADD COLUMN {column} {decl}")
+
+
 class Migration(NamedTuple):
     version: int
     name: str
@@ -1100,4 +1576,15 @@ MIGRATIONS: list[Migration] = [
     Migration(20, "equipment_manufacturer_model", _migration_020_equipment_manufacturer_model),
     Migration(21, "ai_suggestion_acceptances", _migration_021_ai_suggestion_acceptances),
     Migration(22, "templates", _migration_022_templates),
+    Migration(23, "replay_recordings_category", _migration_023_replay_recordings_category),
+    Migration(24, "replay_recording_input_constants", _migration_024_replay_recording_input_constants),
+    Migration(25, "replay_recordings_condition", _migration_025_replay_recordings_condition),
+    Migration(26, "replay_recording_tags", _migration_026_replay_recording_tags),
+    Migration(27, "objects_source_object_id", _migration_027_objects_source_object_id),
+    Migration(28, "dashboards", _migration_028_dashboards),
+    Migration(29, "recordings_rename", _migration_029_recordings_rename),
+    Migration(30, "recordings_fault_type", _migration_030_recordings_fault_type),
+    Migration(31, "objects_state_text", _migration_031_objects_state_text),
+    Migration(32, "devices_protocol", _migration_032_devices_protocol),
+    Migration(33, "calibration_runs", _migration_033_calibration_runs),
 ]

@@ -11,8 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from ..bacnet.packet_capture import CapturedPacket
-from ..api.routers.packet_capture import resolve_packet_simulator_context
+from ..network.models import CapturedTraffic
 from ..core.logging import log
 from .metrics import broadcast_metrics
 
@@ -64,28 +63,17 @@ async def broadcast_state() -> None:
 
 # ─── Packet capture stream broadcaster ─────────────────────────────────────────
 
-async def broadcast_captured_packet(packet: CapturedPacket) -> None:
+async def broadcast_captured_packet(packet: CapturedTraffic) -> None:
     dependencies = _dependencies()
     packet_stream_ws_clients = dependencies.packet_stream_ws_clients
     if not packet_stream_ws_clients:
         return
 
     try:
-        payload = packet.to_dict(include_hex=True)
-
-        # Cheap, in-memory device-only association (I-Am / directed Who-Is /
-        # device-object) -- see plan notes. The no-op resolver skips the
-        # expensive per-object DB/O(N) path entirely for live packets;
-        # ordinary point-level traffic stays unassociated until the next
-        # REST fetch.
-        engine = dependencies.engine
-        resolve_packet_simulator_context(
-            payload,
-            devices_by_instance=(
-                engine.get_devices_by_instance() if engine else {}
-            ),
-            resolve_object=lambda *_args, **_kwargs: None,
-        )
+        # Live events use bounded, in-memory enrichment. REST reconciles full
+        # request/response and point associations from the capture snapshot.
+        payload = dependencies.packet_capture.serialize(packets=[packet],
+            context={'live': True, 'engine': dependencies.engine})[0]
 
         data = json.dumps(payload)
     except Exception as exc:
@@ -107,7 +95,7 @@ async def broadcast_captured_packet(packet: CapturedPacket) -> None:
             packet_stream_ws_clients.remove(websocket)
 
 
-def _on_packet_captured(packet: CapturedPacket) -> None:
+def _on_packet_captured(packet: CapturedTraffic) -> None:
     if _dependencies().packet_stream_ws_clients:  # skip task creation with nobody listening
         asyncio.create_task(broadcast_captured_packet(packet))
 

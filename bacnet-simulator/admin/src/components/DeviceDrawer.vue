@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { ExperimentOutlined, UploadOutlined } from '@ant-design/icons-vue'
+import { UploadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import type { SimulationProviderCatalogEntry, SimulationProviderType } from '../api'
 import { buildLocationTreeOptions } from '../locationTree'
@@ -38,7 +38,6 @@ const emit = defineEmits<{
    * actually just created, instead of leaving selection wherever it was. */
   saved: [deviceId?: number]
   'draft-saved': [data: Record<string, any>]
-  'simulation-model': [device: Device]
 }>()
 
 // Single source of truth for a new device's default Vendor/Model -- also
@@ -49,6 +48,7 @@ const DEFAULT_MODEL_NAME = 'Model'
 const loading = ref(false)
 const deleting = ref(false)
 const form = reactive({
+  protocol: 'bacnet',
   device_instance: 1001,
   name: '',
   description: '',
@@ -122,14 +122,6 @@ const selectedSimulationProvider = computed(() =>
     provider => provider.provider_type === simulationProviderType.value,
   )
 )
-const simulationSummary = computed(() => {
-  if (activeProviderTypesForController.value.length === 0) return 'Built-in point behaviors'
-  const labels = activeProviderTypesForController.value.map(type =>
-    simulationProviders.value.find(provider => provider.provider_type === type)?.label ?? type,
-  )
-  return labels.join(', ')
-})
-
 async function loadSimulationProviderState() {
   simulationProvidersLoading.value = true
 
@@ -423,6 +415,7 @@ watch(() => props.open, (v) => {
   if (src) {
     Object.assign(form, {
       device_instance: src.device_instance,
+      protocol: src.protocol ?? 'bacnet',
       name: src.name,
       description: src.description ?? '',
       vendor_name: src.vendor_name,
@@ -449,6 +442,7 @@ watch(() => props.open, (v) => {
       : null
     Object.assign(form, {
       device_instance: nextFreeInstance(props.existingInstances ?? []),
+      protocol: 'bacnet',
       name: lockedEquipment ? `${lockedEquipment.name} Controller` : '',
       description: lockedLocationName ? `${lockedLocationName} BACnet router` : '',
       vendor_name: DEFAULT_VENDOR_NAME, model_name: DEFAULT_MODEL_NAME, enabled: true,
@@ -751,17 +745,6 @@ function doDelete() {
       </a-form-item>
 
 
-      <a-form-item v-if="!isExternal && device" label="Simulation Model">
-        <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--surface-alt)">
-          <ExperimentOutlined style="color:#52c41a" />
-          <div style="flex:1;min-width:0">
-            <div style="font-size:12px;font-weight:600">{{ simulationSummary }}</div>
-            <div style="font-size:11px;color:var(--text-muted)">Provider, model, parameters, defaults, and point mappings are configured in Simulation Model.</div>
-          </div>
-          <a-button size="small" @click="emit('simulation-model', device)">Configure</a-button>
-        </div>
-      </a-form-item>
-
       <a-form-item label="Event Notification Reception">
         <a-select
           v-model:value="form.can_receive_event_notifications"
@@ -776,7 +759,7 @@ function doDelete() {
         </div>
       </a-form-item>
 
-      <a-collapse v-if="!isExternal" ghost style="margin-top:16px">
+      <a-collapse v-if="!isExternal" ghost expand-icon-position="end" class="device-info-collapse" style="margin-top:16px">
         <a-collapse-panel key="device-info" header="BACnet Device Info (advanced)">
           <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
             Informational/cosmetic Device object properties some BACnet clients check — not enforced by the simulator itself.
@@ -847,3 +830,13 @@ function doDelete() {
     </template>
   </a-drawer>
 </template>
+
+<style scoped>
+/* Flush-left with every form-item's label/input above it -- ghost collapse
+   panels otherwise reserve left padding for the expand icon even with
+   expand-icon-position="end" (the icon moves, the header's own padding
+   doesn't shrink to match). */
+.device-info-collapse :deep(.ant-collapse-header) {
+  padding-left: 0;
+}
+</style>

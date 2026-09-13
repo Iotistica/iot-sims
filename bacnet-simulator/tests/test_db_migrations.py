@@ -236,6 +236,22 @@ def test_migrations_bring_old_schema_up_to_current(tmp_path):
     # Migration 17: energy_model_configs gained instance_key.
     assert "instance_key" in _table_columns(conn, "energy_model_configs")
 
+    # Migration 23: recordings gained category (table itself didn't
+    # exist in the old schema fixture, so migration 1's own CREATE TABLE IF
+    # NOT EXISTS creates it fresh -- migration 23 still runs its ALTER
+    # branch against that freshly-created table, same as it would against a
+    # real pre-migration-23 database that already had the table).
+    assert "category" in _table_columns(conn, "recordings")
+
+    # Migration 24: recording_input_constants exists.
+    assert "recording_input_constants" in _all_tables(conn)
+
+    # Migration 25: recordings gained condition.
+    assert "condition" in _table_columns(conn, "recordings")
+
+    # Migration 26: recording_tags exists.
+    assert "recording_tags" in _all_tables(conn)
+
     # Baseline-only tables (never existed in the old DB) were created fresh.
     for table in ("equipment", "custom_graphs", "profiles", "users", "settings"):
         assert table in _all_tables(conn)
@@ -253,6 +269,131 @@ def test_migrations_are_idempotent_on_second_run(tmp_path):
 
     assert first_rows == second_rows
     conn.close()
+
+
+# ─── Migration 26's own backfill (category -> tags) ──────────────────────
+
+def test_migration_026_backfills_existing_category_into_tags(tmp_path):
+    """The concrete claim migration 026's own docstring makes: a recording
+    with an old single `category` string becomes a one-element tag list,
+    and a recording with no category gets no tags -- neither loses nor
+    invents data.
+
+    Built against a bare connection migrated only up through 25, not the
+    `client`/`database` fixtures -- those are already fully migrated
+    through 29's rename (replay_recordings -> recordings), but migration
+    026's own SQL still says `replay_recordings`/`replay_recording_tags`
+    (correctly preserved -- it's a historical, frozen migration, see
+    migration 29's own docstring for why those names stay put there), so
+    it can only run against a database still at that point in the
+    sequence, same as a real upgrade would encounter it. Continues on
+    through the rest of MIGRATIONS afterward (including 29's rename) to
+    confirm the backfilled tags survive into the current-named
+    recording_tags table too -- not just that migration 026 alone works in
+    isolation."""
+    conn = sqlite3.connect(str(tmp_path / "migration_026.db"))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    for m in MIGRATIONS:
+        if m.version <= 25:
+            m.apply(conn)
+    conn.commit()
+
+    device_id = conn.execute(
+        "INSERT INTO devices (device_instance, name) VALUES (9601, 'Backfill Device')"
+    ).lastrowid
+    legacy_id = conn.execute(
+        "INSERT INTO replay_recordings (source_device_id, name, category, status, "
+        "sample_interval_seconds, maximum_samples, buffer_mode) "
+        "VALUES (?, 'Legacy Recording', 'Faulty', 'completed', 5.0, 10, 'stop')",
+        (device_id,),
+    ).lastrowid
+    no_category_id = conn.execute(
+        "INSERT INTO replay_recordings (source_device_id, name, category, status, "
+        "sample_interval_seconds, maximum_samples, buffer_mode) "
+        "VALUES (?, 'No Category Recording', NULL, 'completed', 5.0, 10, 'stop')",
+        (device_id,),
+    ).lastrowid
+    conn.commit()
+
+    next(m for m in MIGRATIONS if m.version == 26).apply(conn)
+    conn.commit()
+
+    tags_by_recording: dict[int, list[str]] = {}
+    for row in conn.execute("SELECT recording_id, tag FROM replay_recording_tags"):
+        tags_by_recording.setdefault(row["recording_id"], []).append(row["tag"])
+    assert tags_by_recording.get(legacy_id) == ["Faulty"]
+    assert tags_by_recording.get(no_category_id, []) == []
+
+    for m in MIGRATIONS:
+        if m.version > 26:
+            m.apply(conn)
+    conn.commit()
+
+    final_tags: dict[int, list[str]] = {}
+    for row in conn.execute("SELECT recording_id, tag FROM recording_tags"):
+        final_tags.setdefault(row["recording_id"], []).append(row["tag"])
+    assert final_tags.get(legacy_id) == ["Faulty"]
+    assert final_tags.get(no_category_id, []) == []
+    conn.close()
+
+
+def test_migration_028_backfills_orphaned_custom_graphs_onto_one_dashboard(client, database):
+    """The concrete claim migration 028's own docstring makes: pre-existing
+    custom_graphs rows with no dashboard_id (dashboard_id is nullable at
+    the SQL level even post-migration, see the migration's own docstring)
+    all land on ONE newly-created "My Dashboard", stacked in their original
+    (id) order -- not one dashboard per row, and nothing is lost. Inserted
+    directly, bypassing Database.create_custom_graph (which always resolves
+    a dashboard_id itself), to stand in for a row that predates this
+    migration -- same technique test_migration_026_... above uses."""
+    from src.db.migrations.registry import _migration_028_dashboards
+
+    with database._conn() as conn:
+        first_id = conn.execute(
+            "INSERT INTO custom_graphs (name, definition_json) VALUES ('Legacy A', '{}')"
+        ).lastrowid
+        second_id = conn.execute(
+            "INSERT INTO custom_graphs (name, definition_json) VALUES ('Legacy B', '{}')"
+        ).lastrowid
+        conn.commit()
+
+        _migration_028_dashboards(conn)
+        conn.commit()
+
+    graphs = {g["id"]: g for g in database.get_custom_graphs()}
+    dashboard_id = graphs[first_id]["dashboard_id"]
+    assert dashboard_id is not None
+    assert graphs[second_id]["dashboard_id"] == dashboard_id
+    assert graphs[first_id]["grid_y"] < graphs[second_id]["grid_y"]
+
+    dashboards = database.get_dashboards()
+    assert [d["id"] for d in dashboards] == [dashboard_id]
+    assert dashboards[0]["name"] == "My Dashboard"
+
+
+def test_migration_028_is_idempotent_and_leaves_assigned_rows_untouched(database):
+    """Re-running the migration (e.g. against a DB that's already been
+    upgraded) must not create a second "My Dashboard" or move a widget
+    that's already properly assigned."""
+    from src.db.migrations.registry import _migration_028_dashboards
+
+    dashboard = database.create_dashboard("Existing")
+    widget = database.create_custom_graph({
+        "name": "Already placed",
+        "definition": {"version": 1, "series": [], "time_range": "live"},
+        "dashboard_id": dashboard["id"],
+        "grid_x": 3, "grid_y": 7,
+    })
+
+    with database._conn() as conn:
+        _migration_028_dashboards(conn)
+        conn.commit()
+
+    reloaded = database.get_custom_graph(widget["id"])
+    assert reloaded["dashboard_id"] == dashboard["id"]
+    assert (reloaded["grid_x"], reloaded["grid_y"]) == (3, 7)
+    assert len(database.get_dashboards()) == 1
 
 
 # ─── The de-risking claim: a no-op against an already-migrated DB ────────
@@ -325,11 +466,119 @@ def test_fresh_database_setup_matches_migrated_old_schema(tmp_path):
     assert fresh_object_cols == migrated_object_cols
 
 
+def test_migration_033_creates_calibration_runs_table(tmp_path):
+    """Migration 033 stands up the calibration_runs workflow/audit table -- the piece the
+    FMU calibration flow had no durable home for. Fresh from CREATE TABLE it must carry
+    every column database.py's create_/update_calibration_run() may write, the
+    validation-status default, and the partial-unique index on runtime_job_id."""
+    conn = sqlite3.connect(str(tmp_path / "migration_033.db"))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    for m in MIGRATIONS:
+        if m.version <= 32:
+            m.apply(conn)
+    conn.commit()
+    assert "calibration_runs" not in _all_tables(conn)
+
+    next(m for m in MIGRATIONS if m.version == 33).apply(conn)
+    conn.commit()
+
+    cols = _table_columns(conn, "calibration_runs")
+    for expected in (
+        "schema_version", "runtime_job_id", "runtime_dataset_id",
+        "runtime_validation_dataset_id", "model_id", "simulation_model_id",
+        "recording_id", "validation_recording_id", "fmu_sha256", "metadata_sha256",
+        "tuner_names", "status", "failure_stage", "error_summary", "mapping_json",
+        "objective_metric", "baseline_metric", "calibration_metric", "improvement_pct",
+        "validation_status", "validation_cv_rmse", "validation_nmbe", "validation_rmse",
+        "validation_mae", "validation_r2", "g14_interval", "g14_based_on",
+        "g14_applicable", "g14_pass", "best_parameters_json", "fmu_defaults_json",
+        "created_at", "started_at", "completed_at", "applied_at",
+        "applied_to_simulation_model_id",
+    ):
+        assert expected in cols, expected
+
+    run_id = conn.execute(
+        "INSERT INTO calibration_runs (model_id) VALUES ('rtu-guid')"
+    ).lastrowid
+    conn.commit()
+    row = conn.execute("SELECT * FROM calibration_runs WHERE id=?", (run_id,)).fetchone()
+    assert row["status"] == "pending"
+    assert row["validation_status"] == "not_requested"
+    assert row["schema_version"] == 1
+    assert row["tuner_names"] == "[]" and row["mapping_json"] == "{}"
+
+    # Partial unique index: two NULL runtime_job_id rows are fine, two equal non-NULL
+    # values collide.
+    conn.execute("INSERT INTO calibration_runs (model_id) VALUES ('rtu-guid')")
+    conn.execute(
+        "UPDATE calibration_runs SET runtime_job_id='cal_dup' WHERE id=?", (run_id,)
+    )
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO calibration_runs (model_id, runtime_job_id) VALUES ('x', 'cal_dup')"
+        )
+    conn.close()
+
+
+def test_migration_033_is_idempotent(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "migration_033_idem.db"))
+    conn.row_factory = sqlite3.Row
+    for m in MIGRATIONS:
+        m.apply(conn)
+    conn.commit()
+    before = _table_columns(conn, "calibration_runs")
+    next(m for m in MIGRATIONS if m.version == 33).apply(conn)  # re-run
+    conn.commit()
+    assert _table_columns(conn, "calibration_runs") == before
+    conn.close()
+
+
+def test_migration_032_devices_default_to_bacnet_protocol(tmp_path):
+    """The concrete claim migration 032's own docstring makes: a device row that already
+    existed BEFORE this migration ran (pre-dates the `protocol` column entirely) ends up with
+    `protocol == 'bacnet'` after upgrade, not NULL/missing -- BACnet was the only protocol until
+    now, and this column exists so SimEngine can dispatch each device to the right
+    ProtocolAdapter (src/simulation/protocols/) instead of assuming BACnet unconditionally. Same
+    technique test_migration_026_... above uses: build an old-schema fixture with plain sqlite3,
+    apply MIGRATIONS up through the version immediately before, insert a row, then apply just the
+    migration under test and assert."""
+    conn = sqlite3.connect(str(tmp_path / "migration_032.db"))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    for m in MIGRATIONS:
+        if m.version <= 31:
+            m.apply(conn)
+    conn.commit()
+
+    device_id = conn.execute(
+        "INSERT INTO devices (device_instance, name) VALUES (9701, 'Pre-Migration Device')"
+    ).lastrowid
+    conn.commit()
+
+    next(m for m in MIGRATIONS if m.version == 32).apply(conn)
+    conn.commit()
+
+    row = conn.execute("SELECT protocol FROM devices WHERE id = ?", (device_id,)).fetchone()
+    assert row["protocol"] == "bacnet"
+    conn.close()
+
+
 # ─── Migration ordering sanity ───────────────────────────────────────────
 
-def test_migration_versions_are_sequential_starting_at_one():
+def test_migration_versions_start_at_one_strictly_increase_and_are_unique():
+    """Versions must start at 1 and strictly increase (so the runner applies them in a
+    well-defined order and never re-applies), but the sequence is allowed to have gaps:
+    version 18 was permanently retired (see registry.py's note -- it was reused in an
+    earlier branch and had already been recorded applied in real databases), so
+    `replay_recording_tables` took 19 and everything after is shifted by one."""
     versions = [m.version for m in MIGRATIONS]
-    assert versions == list(range(1, len(MIGRATIONS) + 1))
+    assert versions[0] == 1
+    assert versions == sorted(versions)
+    assert all(b > a for a, b in zip(versions, versions[1:]))  # strictly increasing
+    assert len(versions) == len(set(versions))  # unique
+    assert 18 not in versions  # the one intentional gap
 
 
 def test_migration_names_are_unique():

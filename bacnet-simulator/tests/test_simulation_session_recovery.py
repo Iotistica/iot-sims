@@ -137,7 +137,7 @@ def test_point_input_resolves_live_value_before_registration(
     monkeypatch.setattr(model_runtime, "FMUSimulationProvider", _FakeFMUProvider)
     _FakeFMUProvider.created.clear()
 
-    device = client.post("/devices", json={"device_instance": 2501, "name": "AHU-1"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 2501, "name": "AHU-1"}).json()
     sat_point = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-input",
         "object_instance": 5,
@@ -173,7 +173,7 @@ def test_unresolvable_point_is_omitted_from_initial_inputs(
     monkeypatch.setattr(model_runtime, "FMUSimulationProvider", _FakeFMUProvider)
     _FakeFMUProvider.created.clear()
 
-    device = client.post("/devices", json={"device_instance": 2502, "name": "AHU-2"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 2502, "name": "AHU-2"}).json()
     sat_point = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-input",
         "object_instance": 5,
@@ -374,6 +374,41 @@ def test_recovery_sweep_only_reloads_unhealthy_providers(
     assert reload_calls == [broken["id"]]
     assert result["recovered"] == [broken_id]
     assert result["runtime_unreachable"] is False
+
+
+def test_recovery_sweep_does_not_reload_a_paused_provider(
+    database,
+    monkeypatch,
+) -> None:
+    """The exact bug this guards against, confirmed live: a model paused
+    via POST .../pause (SimEngine.pause_provider, "locally_paused") got
+    silently un-paused by the very next recovery sweep, because reload_
+    model() unregisters-then-reregisters the provider, and unregister_
+    simulation_provider() clears the locally_paused flag as a side effect.
+    "paused" (local or global) must be treated as healthy, same as
+    "running" -- not something to tear down and rebuild."""
+    monkeypatch.setattr(model_runtime, "FMURuntimeClient", _FakeHealthyRuntimeClient)
+
+    paused = _create_fmu_model(database, name="Paused VAV")
+    paused_id = model_runtime.provider_runtime_id(paused)
+
+    engine = _FakeEngine()
+    engine.registrations[paused_id] = {}
+    engine.statuses[paused_id] = "paused"
+
+    reload_calls: list[int] = []
+    monkeypatch.setattr(
+        model_runtime,
+        "reload_model",
+        lambda _db, _engine, model_id: reload_calls.append(model_id),
+    )
+
+    result = model_runtime.recover_unhealthy_simulation_models(database, engine)
+
+    assert reload_calls == []
+    assert result["recovered"] == []
+    # Still registered, still paused -- completely untouched.
+    assert engine.statuses[paused_id] == "paused"
 
 
 def test_recovery_sweep_does_not_reload_twice_once_healthy(

@@ -17,7 +17,11 @@ time (Database._conn() opens a brand-new connection every call).
 """
 from __future__ import annotations
 
-from src.simulation.models.store import ensure_simulation_model_schema, reconcile_provider_owned_raw_behavior
+from src.simulation.models.store import (
+    ensure_simulation_model_schema,
+    reconcile_provider_owned_raw_behavior,
+    reconcile_unowned_raw_behavior,
+)
 
 
 def _make_device_and_point(database, *, instance: int, behavior: str = "constant"):
@@ -179,3 +183,85 @@ def test_setup_reconciles_provider_owned_points(database):
     database.setup()
 
     assert _behavior_of(database, point_id) == "raw"
+
+
+# --- reconcile_unowned_raw_behavior: the mirror-image direction ------------
+#
+# A point can end up with behavior='raw' without being genuinely
+# provider-owned (its mapping was removed, its model was disabled, or --
+# before the scaffold-points endpoint stopped defaulting new points to
+# "raw" -- it was scaffolded but never mapped). This keeps "raw" meaning
+# exactly one thing everywhere: genuinely, currently provider-owned.
+
+
+def test_unmapped_raw_point_becomes_constant(database):
+    # Like the real world: the simulation-model schema only exists once a
+    # model has actually been used on this device -- see the "Deliberately
+    # does NOT call ensure_simulation_model_schema()" note on the sibling
+    # function above for why the reconcile functions skip entirely without it.
+    ensure_simulation_model_schema(database)
+    _device_id, point_id = _make_device_and_point(database, instance=7101, behavior="raw")
+
+    reconcile_unowned_raw_behavior(database)
+
+    assert _behavior_of(database, point_id) == "constant"
+
+
+def test_mapped_raw_point_is_left_alone(database):
+    _device_id, point_id = _make_device_and_point(database, instance=7102, behavior="raw")
+    _make_output_mapping(database, point_id)
+
+    reconcile_unowned_raw_behavior(database)
+
+    assert _behavior_of(database, point_id) == "raw"
+
+
+def test_input_exposure_owned_raw_point_is_left_alone(database):
+    _device_id, point_id = _make_device_and_point(database, instance=7103, behavior="raw")
+    _make_input_exposure(database, point_id)
+
+    reconcile_unowned_raw_behavior(database)
+
+    assert _behavior_of(database, point_id) == "raw"
+
+
+def test_disabled_model_output_raw_point_becomes_constant(database):
+    """A DISABLED model's output mapping doesn't make the point provider-
+    owned today -- mirrors test_disabled_model_output_is_not_touched above."""
+    _device_id, point_id = _make_device_and_point(database, instance=7104, behavior="raw")
+    _make_output_mapping(database, point_id, enabled=False)
+
+    reconcile_unowned_raw_behavior(database)
+
+    assert _behavior_of(database, point_id) == "constant"
+
+
+def test_system_provider_type_raw_point_becomes_constant(database):
+    _device_id, point_id = _make_device_and_point(database, instance=7105, behavior="raw")
+    _make_output_mapping(database, point_id, provider_type="system")
+
+    reconcile_unowned_raw_behavior(database)
+
+    assert _behavior_of(database, point_id) == "constant"
+
+
+def test_non_raw_behavior_is_left_alone_by_unowned_reconcile(database):
+    """Only a point currently at exactly 'raw' is touched -- an operator's
+    deliberate override (e.g. 'constant'/'manual'/'sine' on top of an
+    otherwise-unmapped point) is never matched."""
+    _device_id, point_id = _make_device_and_point(database, instance=7106, behavior="manual")
+
+    reconcile_unowned_raw_behavior(database)
+
+    assert _behavior_of(database, point_id) == "manual"
+
+
+def test_setup_reconciles_unowned_raw_points(database):
+    """Database.setup() itself calls this on every boot -- exercise it
+    through the real entry point, not just the function directly."""
+    ensure_simulation_model_schema(database)
+    _device_id, point_id = _make_device_and_point(database, instance=7107, behavior="raw")
+
+    database.setup()
+
+    assert _behavior_of(database, point_id) == "constant"

@@ -421,7 +421,7 @@ def _make_rtu_device(client, *, count=3, instance=4101):
     """One device with `count` zone-temp (value) points, `count` VAV-
     airflow (weight) points, an output point, and a spare analog point to
     use as the input-exposure target (RTU-1-Return-Air-Temp)."""
-    device = client.post("/devices", json={"device_instance": instance, "name": "RTU-1"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": "RTU-1"}).json()
     value_points = [
         client.post(f"/devices/{device['id']}/objects", json={
             "object_type": "analog-input", "object_instance": i + 1,

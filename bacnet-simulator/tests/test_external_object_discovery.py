@@ -36,7 +36,7 @@ def _points_from_validate_result(result: dict) -> list[dict]:
 @pytest.mark.asyncio
 async def test_discovered_objects_persist_associated_with_correct_device(database):
     devices = database.sync_external_devices([
-        {"device_instance": 1001, "name": "ahu", "host": "10.0.0.10", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1001, "name": "ahu", "host": "10.0.0.10", "port": 47808, "metadata": {}},
     ])
     device_id = devices[0]["id"]
 
@@ -64,7 +64,7 @@ async def test_discovered_objects_persist_associated_with_correct_device(databas
 @pytest.mark.asyncio
 async def test_second_discover_upserts_not_duplicates(database):
     devices = database.sync_external_devices([
-        {"device_instance": 1001, "name": "ahu", "host": "10.0.0.10", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1001, "name": "ahu", "host": "10.0.0.10", "port": 47808, "metadata": {}},
     ])
     device_id = devices[0]["id"]
 
@@ -96,7 +96,7 @@ async def test_object_with_failed_optional_property_still_persists(database):
     """A point whose Units read fails must still appear in the persisted
     inventory -- only Object_Name failures (structural) drop an object."""
     devices = database.sync_external_devices([
-        {"device_instance": 1001, "name": "ahu", "host": "10.0.0.10", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1001, "name": "ahu", "host": "10.0.0.10", "port": 47808, "metadata": {}},
     ])
     device_id = devices[0]["id"]
 
@@ -124,7 +124,7 @@ async def test_object_with_failed_optional_property_still_persists(database):
 @pytest.mark.asyncio
 async def test_refresh_only_updates_present_value_not_persisted_row(database):
     devices = database.sync_external_devices([
-        {"device_instance": 1001, "name": "ahu", "host": "10.0.0.10", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1001, "name": "ahu", "host": "10.0.0.10", "port": 47808, "metadata": {}},
     ])
     device_id = devices[0]["id"]
     persisted = database.sync_external_objects(device_id, [

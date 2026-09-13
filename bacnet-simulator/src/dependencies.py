@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from fastapi import WebSocket
 
-from .bacnet.packet_capture import PacketCapture
+from .network.registration import create_capture
 from .core.config import JWT_EXPIRE_HOURS
 from .db import Database
 from .energy import EnergyEngine
@@ -47,13 +47,13 @@ class AppContext:
 # ─── Cadence / live-reloadable settings ────────────────────────────────────────
 TICK_SECONDS = 5.0  # cadence of the engine tick loop; see tick_loop()/tick()
 MIRROR_POLL_SECONDS = 3.0  # cadence of mirror_sync_loop; matches frontend 3 s external-device poll
-# replay_recording_loop doesn't poll at a fixed cadence -- it sleeps until the
+# recording_loop doesn't poll at a fixed cadence -- it sleeps until the
 # next recording's own sample_interval_seconds is actually due (see
-# _next_replay_recording_sleep_seconds in simulation/runtime.py). This is only
+# _next_recording_sleep_seconds in simulation/runtime.py). This is only
 # the fallback re-check ceiling for when nothing is currently due (e.g. no
 # active recordings yet), so a newly-started recording is still picked up
 # promptly without the loop needing to be woken explicitly.
-REPLAY_RECORDING_IDLE_CEILING_SECONDS = 5.0
+RECORDING_IDLE_CEILING_SECONDS = 5.0
 # cadence of replay_playback_loop -- independent of TICK_SECONDS since a
 # recording's sample_interval_seconds (and playback speed) can be much finer
 # than the 5s tick.
@@ -61,6 +61,10 @@ REPLAY_PLAYBACK_POLL_SECONDS = 0.2
 SIMULATION_RECOVERY_SECONDS = 30.0  # cadence of simulation_recovery_loop(); deliberately coarser
 # than TICK_SECONDS -- each recovery attempt can involve a real ~300s-simulated FMU warmup
 # (measured 250-800ms wall-clock per model), so this must not compete with tick timing.
+# cadence of recording_retention_loop() -- a day-granularity policy (retention is measured in
+# days), so hourly is already far more frequent than it needs to be, not a tight budget like the
+# other loops above.
+RECORDING_RETENTION_SWEEP_SECONDS = 3600.0
 OBJECT_HISTORY_MAXLEN = 720  # per-object value-history ring buffer length; see tick()
 
 
@@ -90,7 +94,7 @@ ws_clients: list[WebSocket] = []
 fault_detection_engine: FaultDetectionEngine | None = None
 energy_engine: EnergyEngine | None = None
 
-packet_capture = PacketCapture(
+packet_capture = create_capture(
     max_packets=10_000,
     max_payload_bytes=65_535,
 )

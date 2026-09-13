@@ -3,8 +3,10 @@ import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
-import type { SimObject, Meta, NotificationClass, PriorityArrayInfo } from '../types'
+import type { SimObject, Meta, NotificationClass, PriorityArrayInfo, PointRef, PointRow } from '../types'
 import { formatPresentValue } from '../format'
+import PointPicker from './PointPicker.vue'
+import BooleanToggle from './BooleanToggle.vue'
 
 const props = defineProps<{
   open: boolean
@@ -32,7 +34,7 @@ const DEFAULT_PARAMS: Record<string, any> = {
   random_walk: { value: 50, step: 1, min: 0, max: 100 },
   schedule:    { default: 18, blocks: [{ start: '07:00', value: 22 }, { start: '18:00', value: 18 }] },
   ramp:        { from: 0, to: 100, duration_minutes: 60, repeat: true },
-  fault:       { base_behavior: 'constant', base_params: { value: 22 }, fault_type: 'spike', fault_value: 999, mtbf_minutes: 60, fault_duration_seconds: 30 },
+  fault:       { base_behavior: 'constant', base_params: { value: 22 }, fault_type: 'spike', fault_value: 999, activation_mode: 'intermittent', mtbf_minutes: 60, fault_duration_seconds: 30, drift_rate_per_minute: 0.1, maximum_drift: 2.0, delay_seconds: 30 },
 }
 
 const loading = ref(false)
@@ -49,8 +51,56 @@ const form = reactive({
   reliability: 'no-fault-detected',
   polarity: 'normal',
   point_type: null as string | null,
+  state_text: null as string[] | null,
 })
 const params = ref<any>({ value: 0 })
+
+// ── Link Existing Point (add mode only) — see POST .../objects/link ──
+// A linked object's own value is a live pass-through of another object
+// (same device, another simulated device, or a live external one),
+// synced by mirror_sync_loop's per-object pass -- its own Behavior stays
+// stored but inactive, same as a whole-device Mirror device. Toggled off
+// (and reset) whenever the drawer reopens for a fresh "add" -- see the
+// existing open/object watcher below.
+// String-valued, not boolean -- every other <a-segmented> in this codebase
+// uses string option values (SimulationModelDrawer.vue's input-source/
+// aggregate-operation segments); matching that avoids relying on
+// ant-design-vue's Segmented preserving a literal `false`/`true` round
+// -trip through its own internal value handling.
+const linkMode = ref<'new' | 'link'>('new')
+const isLinking = computed(() => linkMode.value === 'link')
+const linkTarget = ref<PointRef | null>(null)
+const allPoints = ref<PointRow[]>([])
+const linking = ref(false)
+const isLinkedObject = computed(() => !!props.object?.source_object_id)
+
+watch(linkMode, async (mode) => {
+  // Always refetch, not just once per component lifetime -- a point/device
+  // added, discovered, or synced (e.g. an external controller's own
+  // "Discover Objects") after an earlier open would otherwise stay
+  // invisible here for the rest of the page session.
+  if (mode !== 'link') return
+  try {
+    allPoints.value = await api.points.list()
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to load points')
+  }
+})
+
+async function saveLink() {
+  if (!linkTarget.value || !props.deviceId) return
+  linking.value = true
+  try {
+    await api.objects.linkFromExisting(props.deviceId, linkTarget.value.object_id)
+    message.success('Point linked')
+    emit('update:open', false)
+    emit('saved')
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to link point')
+  } finally {
+    linking.value = false
+  }
+}
 
 // ── Intrinsic Reporting (alarm) config — editing only, needs a real object id ──
 
@@ -252,6 +302,85 @@ function onFaultBaseChange() {
   }
   params.value = { ...params.value, base_params: defaults[params.value.base_behavior] ?? { value: 0 } }
 }
+// Seeds drift_rate_per_minute/maximum_drift with sane defaults the first time an object being
+// edited (whose stored behavior_params predates `drift` entirely, or was last saved as some
+// other fault_type) is switched to Fault Type = drift -- without this the two new fields would
+// render blank/undefined instead of a usable starting point. Never overwrites an already-set
+// value (e.g. flipping fault_type away from drift and back).
+function onFaultTypeChange() {
+  if (params.value.fault_type === 'drift') {
+    params.value = {
+      ...params.value,
+      drift_rate_per_minute: params.value.drift_rate_per_minute ?? 0.1,
+      maximum_drift: params.value.maximum_drift ?? 2.0,
+    }
+  }
+  if (params.value.fault_type === 'delay') {
+    params.value = { ...params.value, delay_seconds: params.value.delay_seconds ?? 30 }
+  }
+  // "Always Active" is disabled for spike (see the Fault Activation select below) -- a
+  // momentary one-tick excursion has no meaningful "continuously active" reading, and would
+  // just degenerate into stuck's own behavior (see FaultBehavior's class docstring). Reset
+  // back to Intermittent so switching TO spike never leaves a stale, no-longer-selectable
+  // "always" silently stored underneath the disabled option.
+  if (params.value.fault_type === 'spike' && params.value.activation_mode === 'always') {
+    params.value = { ...params.value, activation_mode: 'intermittent' }
+  }
+}
+
+// Displays a signed offset (Bias / Offset, Drift Rate) as "+2.0" rather than bare "2.0" --
+// negative values already read fine ("-2.0"), it's specifically the positive case that's
+// ambiguous with a plain "Fault Value" field otherwise. parser strips the "+" back off so
+// typing/editing works normally; both are display-only, the stored value is a plain number
+// either way.
+function formatSignedOffset(value: string | number | undefined): string {
+  if (value === undefined || value === null || value === '') return ''
+  const n = typeof value === 'number' ? value : parseFloat(value)
+  if (!Number.isFinite(n)) return String(value)
+  return n > 0 ? `+${n}` : `${n}`
+}
+function parseSignedOffset(displayValue: string | undefined): string {
+  return (displayValue ?? '').replace(/^\+/, '')
+}
+
+// Help text scoped to the CURRENTLY selected fault type + activation mode, rather than one
+// dense paragraph listing every fault type at once -- doesn't scale as the fault library grows.
+// `kind` picks which activation-mode clause reads naturally for that transformation (an
+// additive offset vs. a frozen value vs. becoming unavailable); `spike` has no activation
+// clause at all since Always Active is disabled for it (see the Fault Activation select above)
+// and its own MTBF-driven timing is already visible right below.
+const FAULT_TYPE_HELP: Record<string, { description: string; kind: 'offset' | 'freeze' | 'unavailable' | 'delay' | 'reading' }> = {
+  spike: { description: 'Spike reports a single abnormal reading, then returns to normal.', kind: 'reading' },
+  stuck: { description: 'Stuck freezes the reported value at the configured Fault Value.', kind: 'freeze' },
+  offline: { description: 'Offline simulates the point becoming unavailable or unreliable to a BACnet client.', kind: 'unavailable' },
+  bias: { description: 'Bias adds the configured offset to the base value.', kind: 'offset' },
+  drift: { description: 'Drift gradually adds an offset (up to Maximum Drift) to the base value.', kind: 'offset' },
+  delay: { description: 'Delay reports the base value from the configured number of seconds ago, instead of the current value.', kind: 'delay' },
+}
+function faultActivationClause(mode: string, kind: 'offset' | 'freeze' | 'unavailable' | 'delay'): string {
+  if (mode === 'always') {
+    return {
+      offset: 'With Always Active selected, the offset is applied continuously.',
+      freeze: 'With Always Active selected, the value stays frozen continuously.',
+      unavailable: 'With Always Active selected, the point stays unavailable continuously.',
+      delay: 'With Always Active selected, the delayed value is applied continuously.',
+    }[kind]
+  }
+  return 'With Intermittent selected, this occurs periodically using MTBF and Fault Duration.'
+}
+// drift (Drift Rate + Maximum Drift) and delay (Delay) each get their own dedicated row above
+// instead of sharing the generic Fault Value field, so that field/column is hidden for both.
+// offline has no numeric parameter at all (see behaviors.py's FaultBehavior class docstring --
+// it's a BACnet Reliability/Status_Flags fault, not a value fault), so Fault Value is
+// irrelevant there too. All three cases give Fault Activation the full-width column instead.
+const hideGenericFaultValueField = computed(() => (
+  params.value.fault_type === 'drift' || params.value.fault_type === 'delay' || params.value.fault_type === 'offline'
+))
+const faultTypeHelp = computed(() => {
+  const entry = FAULT_TYPE_HELP[params.value.fault_type] ?? FAULT_TYPE_HELP.spike
+  if (entry.kind === 'reading') return entry.description
+  return `${entry.description} ${faultActivationClause(params.value.activation_mode, entry.kind)}`
+})
 
 // Guard: prevents the behavior watcher from resetting params during a programmatic load.
 let skipBehaviorReset = false
@@ -273,6 +402,8 @@ watch(() => form.object_type, (type) => {
 // drawer is already open (open stays true, object prop changes).
 watch([() => props.open, () => props.object, () => props.draftObject], ([open]) => {
   if (!open) return
+  linkMode.value = 'new'
+  linkTarget.value = null
   skipBehaviorReset = true
   const src = props.draftMode ? props.draftObject : props.object
   if (src) {
@@ -287,18 +418,31 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
       reliability: src.reliability ?? 'no-fault-detected',
       polarity: src.polarity ?? 'normal',
       point_type: src.point_type ?? null,
+      // No manual editor for this yet -- round-tripped unchanged so an
+      // otherwise-unrelated edit (e.g. renaming a classifier's Detection
+      // Point) doesn't silently wipe state text auto-populated by the
+      // Fault Detection Model attach flow (see ClassifierTrainingFlow.vue).
+      state_text: src.state_text ?? null,
     })
     try {
       const raw = src.behavior_params
       params.value = { ...(typeof raw === 'string' ? JSON.parse(raw) : raw) }
     } catch { params.value = { value: 0 } }
+    // Same backward-compat default FaultBehavior itself applies (params.get("activation_mode")
+    // or "intermittent") -- a fault object saved before this feature existed has no
+    // activation_mode key at all, and without this the Fault Activation select would render
+    // with nothing highlighted instead of visibly showing "Intermittent" (its actual runtime
+    // behavior).
+    if (form.behavior === 'fault' && !params.value.activation_mode) {
+      params.value = { ...params.value, activation_mode: 'intermittent' }
+    }
   } else {
     const type = props.meta.object_types[0] ?? 'analog-input'
     Object.assign(form, {
       object_type: type,
       object_instance: nextInstanceFor(type), name: '', units: 'no-units', behavior: 'constant', enabled: true,
       number_of_states: 2, reliability: 'no-fault-detected', polarity: 'normal',
-      point_type: null,
+      point_type: null, state_text: null,
     })
     params.value = { value: 0 }
   }
@@ -315,6 +459,7 @@ watch([() => props.open, () => props.object, () => props.draftObject], ([open]) 
 })
 
 async function save() {
+  if (isLinking.value && !props.object) { await saveLink(); return }
   if (!form.name.trim()) { message.error('Name is required'); return }
   if (props.draftMode) {
     emit('draft-saved', { ...form, behavior_params: JSON.stringify(params.value) })
@@ -395,6 +540,48 @@ function doDelete() {
     @close="emit('update:open', false)"
   >
     <a-form layout="vertical" :colon="false">
+      <a-form-item v-if="!object" label="Source">
+        <a-segmented
+          v-model:value="linkMode"
+          :options="[{ label: 'New Object', value: 'new' }, { label: 'Link Existing Point', value: 'link' }]"
+        />
+      </a-form-item>
+
+      <template v-if="isLinking && !object">
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">
+          Creates a new point on this device whose value is a live pass-through of an existing
+          point elsewhere (same device, another simulated device, or a live external one) —
+          kept in sync automatically. Its own Behavior stays inactive.
+        </div>
+        <a-form-item label="Point" required>
+          <PointPicker v-model="linkTarget" :points="allPoints" :meta="meta" placeholder="Select a point to link…" />
+        </a-form-item>
+      </template>
+
+      <template v-else-if="isLinkedObject">
+        <a-form-item label="Linked From">
+          <a-tag color="blue">Linked</a-tag>
+          <span v-if="object?.link_source" style="font-size:12px;color:var(--text-secondary)">
+            {{ object.link_source.device_name }} / {{ object.link_source.name }} — its own Behavior stays inactive.
+          </span>
+          <span v-else style="font-size:12px;color:var(--text-secondary)">
+            This point's value follows another point elsewhere — its own Behavior stays inactive.
+          </span>
+        </a-form-item>
+        <a-form-item label="Name" required>
+          <a-input v-model:value="form.name" />
+        </a-form-item>
+        <a-form-item v-if="isMultistate" label="Number of States" required>
+          <a-input-number v-model:value="form.number_of_states" :min="1" :max="254" style="width:100%" />
+        </a-form-item>
+        <a-form-item v-else label="Units">
+          <a-select v-model:value="form.units" show-search>
+            <a-select-option v-for="u in meta.units" :key="u" :value="u">{{ u }}</a-select-option>
+          </a-select>
+        </a-form-item>
+      </template>
+
+      <template v-else>
       <a-row :gutter="12">
         <a-col :span="14">
           <a-form-item label="Object Type" required>
@@ -643,10 +830,13 @@ function doDelete() {
             </a-col>
             <a-col :span="12">
               <a-form-item label="Fault Type">
-                <a-select v-model:value="params.fault_type">
-                  <a-select-option value="spike">spike</a-select-option>
-                  <a-select-option value="stuck">stuck</a-select-option>
-                  <a-select-option value="offline">offline (→ 0)</a-select-option>
+                <a-select v-model:value="params.fault_type" @change="onFaultTypeChange">
+                  <a-select-option value="spike">Spike</a-select-option>
+                  <a-select-option value="stuck">Stuck</a-select-option>
+                  <a-select-option value="offline">Offline</a-select-option>
+                  <a-select-option value="bias" :disabled="!isAnalog">Bias</a-select-option>
+                  <a-select-option value="drift" :disabled="!isAnalog">Drift</a-select-option>
+                  <a-select-option value="delay">Delay</a-select-option>
                 </a-select>
               </a-form-item>
             </a-col>
@@ -708,27 +898,86 @@ function doDelete() {
             </template>
           </div>
 
-          <a-row :gutter="12">
+          <a-row v-if="params.fault_type === 'drift'" :gutter="12">
             <a-col :span="12">
-              <a-form-item label="Fault Value" style="margin-bottom:0">
-                <a-input-number v-model:value="params.fault_value" style="width:100%" :step="1" />
+              <a-form-item label="Drift Rate" style="margin-bottom:0">
+                <a-input-number
+                  v-model:value="params.drift_rate_per_minute" style="width:100%" :step="0.05"
+                  :formatter="formatSignedOffset" :parser="parseSignedOffset"
+                  :addon-after="form.units !== 'no-units' ? `${form.units}/min` : '/min'"
+                />
               </a-form-item>
             </a-col>
             <a-col :span="12">
-              <a-form-item
-                label="MTBF (minutes)"
-                style="margin-bottom:0"
-                tooltip="Mean Time Between Failures — the average number of minutes between fault injections. Each is random (not fixed-interval), so actual gaps vary; lower values mean more frequent faults."
-              >
-                <a-input-number v-model:value="params.mtbf_minutes" :min="0.1" :step="5" style="width:100%" />
+              <a-form-item label="Maximum Drift" style="margin-bottom:0" tooltip="The offset stops growing once it reaches this magnitude, in either direction -- prevents a long-running fault from producing an unrealistic, unbounded value.">
+                <a-input-number
+                  v-model:value="params.maximum_drift" :min="0" style="width:100%" :step="0.1"
+                  :addon-after="form.units !== 'no-units' ? form.units : undefined"
+                />
               </a-form-item>
             </a-col>
           </a-row>
-          <a-form-item v-if="params.fault_type !== 'spike'" label="Fault Duration (seconds)" style="margin-top:10px;margin-bottom:0">
-            <a-input-number v-model:value="params.fault_duration_seconds" :min="1" :step="5" style="width:100%" />
-          </a-form-item>
+          <a-row v-else-if="params.fault_type === 'delay'" :gutter="12">
+            <a-col :span="12">
+              <a-form-item label="Delay" style="margin-bottom:0" tooltip="How far in the past the reported value comes from -- a pure time shift, not a frozen value: the underlying signal keeps changing, just delayed.">
+                <a-input-number
+                  v-model:value="params.delay_seconds" :min="0" style="width:100%" :step="5"
+                  addon-after="seconds"
+                />
+              </a-form-item>
+            </a-col>
+          </a-row>
+          <a-row :gutter="12" :style="hideGenericFaultValueField ? 'margin-top:10px' : undefined">
+            <a-col :span="12" v-if="!hideGenericFaultValueField">
+              <a-form-item :label="params.fault_type === 'bias' ? 'Bias / Offset' : 'Fault Value'" style="margin-bottom:0">
+                <a-input-number
+                  v-model:value="params.fault_value" style="width:100%"
+                  :step="params.fault_type === 'bias' ? 0.1 : 1"
+                  :formatter="params.fault_type === 'bias' ? formatSignedOffset : undefined"
+                  :parser="params.fault_type === 'bias' ? parseSignedOffset : undefined"
+                  :addon-after="params.fault_type === 'bias' && form.units !== 'no-units' ? form.units : undefined"
+                />
+              </a-form-item>
+            </a-col>
+            <a-col :span="hideGenericFaultValueField ? 24 : 12">
+              <a-form-item label="Fault Activation" style="margin-bottom:0">
+                <a-select v-model:value="params.activation_mode">
+                  <a-select-option value="intermittent">
+                    <a-tooltip title="The fault occurs periodically using MTBF and Fault Duration." placement="left">
+                      Intermittent
+                    </a-tooltip>
+                  </a-select-option>
+                  <a-select-option value="always" :disabled="params.fault_type === 'spike'">
+                    <a-tooltip
+                      :title="params.fault_type === 'spike'
+                        ? 'Not available for spike -- a spike is a single momentary bad reading, so there is nothing meaningful to keep continuously active.'
+                        : 'The fault remains active continuously while this fault behavior is enabled.'"
+                      placement="left"
+                    >
+                      Always Active
+                    </a-tooltip>
+                  </a-select-option>
+                </a-select>
+              </a-form-item>
+            </a-col>
+          </a-row>
+          <template v-if="params.activation_mode !== 'always'">
+            <a-form-item
+              label="MTBF (minutes)"
+              style="margin-top:10px;margin-bottom:0"
+              tooltip="Mean Time Between Failures — the average number of minutes between fault injections. Each is random (not fixed-interval), so actual gaps vary; lower values mean more frequent faults."
+            >
+              <a-input-number v-model:value="params.mtbf_minutes" :min="0.1" :step="5" style="width:100%" />
+            </a-form-item>
+            <a-form-item v-if="params.fault_type !== 'spike'" label="Fault Duration (seconds)" style="margin-top:10px;margin-bottom:0">
+              <a-input-number v-model:value="params.fault_duration_seconds" :min="1" :step="5" style="width:100%" />
+            </a-form-item>
+          </template>
+          <div v-else style="font-size:11px;color:var(--text-secondary);margin-top:10px">
+            The fault stays continuously active while this object's Behavior is Fault — MTBF and Fault Duration don't apply while Always Active is selected (your existing values are kept, so switching back to Intermittent restores them).
+          </div>
           <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">
-            spike = one bad reading; stuck = freeze at fault value; offline = drop to zero
+            {{ faultTypeHelp }}
           </div>
           <div v-if="simulationOutputOwner" style="font-size:11px;color:var(--text-secondary);margin-top:2px">
             Outside a fault window, Present Value follows the model's live output directly.
@@ -801,10 +1050,7 @@ function doDelete() {
             </template>
             <template v-else>
               <a-form-item label="Alarm when value is">
-                <a-radio-group v-model:value="alarmCfg.alarm_value">
-                  <a-radio-button :value="true">Active</a-radio-button>
-                  <a-radio-button :value="false">Inactive</a-radio-button>
-                </a-radio-group>
+                <BooleanToggle v-model:value="alarmCfg.alarm_value" />
               </a-form-item>
             </template>
 
@@ -877,10 +1123,7 @@ function doDelete() {
               </a-col>
               <a-col :span="isBinary ? 9 : 11">
                 <a-input-number v-if="!isBinary" v-model:value="paWriteValue" style="width:100%" :step="isMultistate ? 1 : 0.1" placeholder="Value" />
-                <a-radio-group v-else v-model:value="paWriteActive" style="width:100%">
-                  <a-radio-button :value="true" style="width:50%;text-align:center">Active</a-radio-button>
-                  <a-radio-button :value="false" style="width:50%;text-align:center">Inactive</a-radio-button>
-                </a-radio-group>
+                <BooleanToggle v-else v-model:value="paWriteActive" />
               </a-col>
               <a-col :span="isBinary ? 8 : 6">
                 <a-button block :loading="paWriting !== null" @click="submitPriorityWrite">Write</a-button>
@@ -888,6 +1131,7 @@ function doDelete() {
             </a-row>
           </div>
         </a-spin>
+      </template>
       </template>
     </a-form>
 
@@ -907,8 +1151,13 @@ function doDelete() {
         <div v-else />
         <a-space>
           <a-button @click="emit('update:open', false)">Cancel</a-button>
-          <a-button type="primary" :loading="loading" @click="save">
-            {{ object ? 'Save' : 'Create' }}
+          <a-button
+            type="primary"
+            :loading="isLinking && !object ? linking : loading"
+            :disabled="isLinking && !object && !linkTarget"
+            @click="save"
+          >
+            {{ isLinking && !object ? 'Link' : object ? 'Save' : 'Create' }}
           </a-button>
         </a-space>
       </div>

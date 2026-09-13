@@ -13,8 +13,8 @@ from src.simulation.mapping.suggestions import (
     discover_candidates,
     suggest_mapping_for_variable,
 )
+from src.semantics.contract import SemanticContract
 from src.simulation.models.registry import (
-    MappingHints,
     ModelDefinition,
     VariableDefinition,
 )
@@ -35,12 +35,10 @@ VAV_DEFINITION = ModelDefinition(
         VariableDefinition(
             "supply_air_temp_c", "Supply Air Temperature", "input",
             unit="°C",
-            suggested_point_types=("Supply_Air_Temperature_Sensor",),
-            # A VAV's supply air physically comes from its upstream AHU --
-            # test_topology_upstream_preference/test_missing_topology_graceful_fallback
-            # both exercise this (upstream-preferring, with graceful fallback when no
-            # `feeds` relationship exists), unlike zone_temp_c below (self-scope).
-            mapping_hints=MappingHints(equipment_scope="upstream"),
+            # A VAV's supply air physically comes from its upstream AHU -- topology now
+            # lives in the semantic contract (scope/relationship), not mapping_hints.
+            semantic=SemanticContract(id="supply_air_temperature", role="sensor",
+                                      scope="upstream", relationship="feeds"),
         ),
         # zone_temp_c is a model OUTPUT (the VAV's computed zone temperature), not an input --
         # confirmed against the real SimpleVAVZone.fmu (test_vav_initialize_step checks it as
@@ -49,7 +47,7 @@ VAV_DEFINITION = ModelDefinition(
         VariableDefinition(
             "zone_temp_c", "Zone Temperature", "output",
             unit="°C",
-            suggested_point_types=("Zone_Air_Temperature_Sensor",),
+            semantic=SemanticContract(id="zone_air_temperature", role="sensor"),
         ),
     ),
     factory=lambda parameters: None,
@@ -59,7 +57,7 @@ SAT_INPUT = next(v for v in VAV_DEFINITION.variables if v.name == "supply_air_te
 
 def _set_equipment_type(client, device: dict, equipment_type: str) -> dict:
     resp = client.put(f"/devices/{device['id']}", json={
-        "device_instance": device["device_instance"], "name": device["name"],
+        "protocol": "bacnet", "device_instance": device["device_instance"], "name": device["name"],
         "description": device.get("description", ""), "vendor_name": device.get("vendor_name", "Iotistica"),
         "model_name": device.get("model_name", "BACnet Simulator"), "enabled": device.get("enabled", True),
         "firmware_revision": device.get("firmware_revision", "N/A"),
@@ -80,7 +78,7 @@ def _equipment_entity_id(database, device_id: int) -> int:
 
 
 def _make_ahu(client, instance: int, name: str) -> dict:
-    device = client.post("/devices", json={"device_instance": instance, "name": name}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name}).json()
     device = _set_equipment_type(client, device, "Air_Handling_Unit")
     client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "SAT", "units": "degrees-celsius",
@@ -89,16 +87,16 @@ def _make_ahu(client, instance: int, name: str) -> dict:
 
 
 def _make_vav(client, instance: int, name: str) -> dict:
-    device = client.post("/devices", json={"device_instance": instance, "name": name}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name}).json()
     device = _set_equipment_type(client, device, "Variable_Air_Volume_Box")
     return device
 
 
-def test_brick_semantics_outranks_name_similarity_only(client, database):
+def test_semantic_identity_outranks_name_similarity_only(client, database):
     ahu = _make_ahu(client, 2001, "AHU-1")
     client.post(f"/devices/{ahu['id']}/objects", json={
-        # No Brick class, but its name ("SupplyTemp") is at least as
-        # name-similar to the variable as the classified "SAT" point.
+        # unclassified, but its name ("SupplyTemp") is at least as name-similar to the
+        # variable as the classified "SAT" point.
         "object_type": "analog-input", "object_instance": 2, "name": "SupplyTemp", "units": "degrees-celsius",
     })
     sat = client.get(f"/devices/{ahu['id']}/objects").json()[0]
@@ -109,7 +107,7 @@ def test_brick_semantics_outranks_name_similarity_only(client, database):
 
     suggestion = suggest_mapping_for_variable(SAT_INPUT, ahu["id"], database)
     assert suggestion.suggested_point_id == sat["id"]
-    assert any(r.startswith("Brick:") for r in suggestion.reasons)
+    assert any("Semantic identity match" in r for r in suggestion.reasons)
 
 
 def test_unit_conflict_lowers_score(client, database):
@@ -191,8 +189,8 @@ def test_topology_correct_equipment_wins_over_unrelated_same_class(client, datab
 
 
 def test_self_scope_preference(client, database):
-    device_a = client.post("/devices", json={"device_instance": 2008, "name": "VAV-A"}).json()
-    device_b = client.post("/devices", json={"device_instance": 2009, "name": "VAV-B"}).json()
+    device_a = client.post("/devices", json={"protocol": "bacnet", "device_instance": 2008, "name": "VAV-A"}).json()
+    device_b = client.post("/devices", json={"protocol": "bacnet", "device_instance": 2009, "name": "VAV-B"}).json()
 
     local_point = client.post(f"/devices/{device_a['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "ZoneTemp", "units": "degrees-celsius",
@@ -212,7 +210,7 @@ def test_self_scope_preference(client, database):
     })
 
     setpoint_variable = next(v for v in VAV_DEFINITION.variables if v.name == "zone_temp_c")
-    assert setpoint_variable.mapping_hints is None  # defaults to self scope
+    assert setpoint_variable.semantic.scope == "self"  # no upstream/downstream hint
 
     suggestion = suggest_mapping_for_variable(setpoint_variable, device_a["id"], database)
     assert suggestion.equipment_scope_used == "self"
@@ -276,11 +274,9 @@ def test_build_shortlist_returns_existing_points_only(client, database):
     assert all(isinstance(c.id, int) for c in candidates)
 
 
-def test_mapping_hints_default_to_self_scope():
+def test_variable_without_semantic_defaults_to_self_scope():
     definition = VariableDefinition("x", "X", "input")
-    assert definition.mapping_hints is None
-
-    hints = MappingHints()
-    assert hints.equipment_scope == "self"
-    assert hints.preferred_equipment_types == ()
-    assert hints.relationship is None
+    assert definition.semantic is None
+    # discovery treats a contract-less variable as self scope (covered by
+    # test_self_scope_preference); SemanticContract's own default is "self".
+    assert SemanticContract(id="x_y").scope == "self"

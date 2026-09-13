@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 
 from src.api.routers.devices import router as devices_router
 from src.api.routers.packet_capture import router as packet_capture_router
-from src.bacnet.packet_capture import PacketCapture
+from src.network.registration import create_capture
+from src.network.models import Endpoint
 from src.db import Database
 
 
@@ -62,7 +63,7 @@ def client_factory(tmp_path):
         app.state.engine = engine
         app.state.device_names = {}
 
-        capture = PacketCapture(max_packets=1000)
+        capture = create_capture(max_packets=1000)
         capture.start()
         app.state.packet_capture = capture
 
@@ -77,14 +78,12 @@ def client_factory(tmp_path):
 def test_device_id_filter_returns_only_matching_packets(client_factory):
     client, _db, capture = client_factory(engine=_FakeEngine())
 
-    ahu1 = client.post("/devices", json={"device_instance": 1001, "name": "AHU-1"}).json()
-    client.post("/devices", json={"device_instance": 1002, "name": "AHU-2"})
+    ahu1 = client.post("/devices", json={"protocol": "bacnet", "device_instance": 1001, "name": "AHU-1"}).json()
+    client.post("/devices", json={"protocol": "bacnet", "device_instance": 1002, "name": "AHU-2"})
 
-    capture.record_inbound(
-        _build_i_am(1001), source=("10.0.0.5", 47810), destination=("255.255.255.255", 47808),
+    capture.record(protocol="bacnet", transport="udp", direction="inbound", payload=_build_i_am(1001), source=Endpoint("10.0.0.5", 47810), destination=Endpoint("255.255.255.255", 47808),
     )
-    capture.record_inbound(
-        _build_i_am(1002), source=("10.0.0.6", 47810), destination=("255.255.255.255", 47808),
+    capture.record(protocol="bacnet", transport="udp", direction="inbound", payload=_build_i_am(1002), source=Endpoint("10.0.0.6", 47810), destination=Endpoint("255.255.255.255", 47808),
     )
 
     resp = client.get(f"/packet-capture/packets?device_id={ahu1['id']}")
@@ -92,26 +91,24 @@ def test_device_id_filter_returns_only_matching_packets(client_factory):
 
     items = resp.json()["items"]
     assert len(items) == 1
-    assert items[0]["simulator_device_id"] == ahu1["id"]
+    assert items[0]["simulator"]["device_id"] == ahu1["id"]
 
 
 def test_unassociated_filter_excludes_resolved_packets(client_factory):
     client, _db, capture = client_factory(engine=_FakeEngine())
 
-    client.post("/devices", json={"device_instance": 1001, "name": "AHU-1"})
+    client.post("/devices", json={"protocol": "bacnet", "device_instance": 1001, "name": "AHU-1"})
 
-    capture.record_inbound(
-        _build_i_am(1001), source=("10.0.0.5", 47810), destination=("255.255.255.255", 47808),
+    capture.record(protocol="bacnet", transport="udp", direction="inbound", payload=_build_i_am(1001), source=Endpoint("10.0.0.5", 47810), destination=Endpoint("255.255.255.255", 47808),
     )
-    capture.record_inbound(
-        BROADCAST_WHO_IS, source=("10.0.0.9", 47810), destination=("255.255.255.255", 47808),
+    capture.record(protocol="bacnet", transport="udp", direction="inbound", payload=BROADCAST_WHO_IS, source=Endpoint("10.0.0.9", 47810), destination=Endpoint("255.255.255.255", 47808),
     )
 
     resp = client.get("/packet-capture/packets?unassociated=true")
     items = resp.json()["items"]
 
     assert len(items) == 1
-    assert items[0]["simulator_device_id"] is None
+    assert items[0]["simulator"]["device_id"] is None
 
 
 def test_pagination_correct_under_device_filter(client_factory):
@@ -120,15 +117,13 @@ def test_pagination_correct_under_device_filter(client_factory):
     # silently return a short/empty page and a wrong `total`.
     client, _db, capture = client_factory(engine=_FakeEngine())
 
-    ahu1 = client.post("/devices", json={"device_instance": 1001, "name": "AHU-1"}).json()
-    client.post("/devices", json={"device_instance": 1002, "name": "AHU-2"})
+    ahu1 = client.post("/devices", json={"protocol": "bacnet", "device_instance": 1001, "name": "AHU-1"}).json()
+    client.post("/devices", json={"protocol": "bacnet", "device_instance": 1002, "name": "AHU-2"})
 
     for _ in range(5):
-        capture.record_inbound(
-            _build_i_am(1001), source=("10.0.0.5", 47810), destination=("255.255.255.255", 47808),
+        capture.record(protocol="bacnet", transport="udp", direction="inbound", payload=_build_i_am(1001), source=Endpoint("10.0.0.5", 47810), destination=Endpoint("255.255.255.255", 47808),
         )
-        capture.record_inbound(
-            _build_i_am(1002), source=("10.0.0.6", 47810), destination=("255.255.255.255", 47808),
+        capture.record(protocol="bacnet", transport="udp", direction="inbound", payload=_build_i_am(1002), source=Endpoint("10.0.0.6", 47810), destination=Endpoint("255.255.255.255", 47808),
         )
 
     resp = client.get(f"/packet-capture/packets?device_id={ahu1['id']}&offset=2&limit=2")
@@ -136,36 +131,30 @@ def test_pagination_correct_under_device_filter(client_factory):
 
     assert data["total"] == 5
     assert len(data["items"]) == 2
-    assert all(item["simulator_device_id"] == ahu1["id"] for item in data["items"])
+    assert all(item["simulator"]["device_id"] == ahu1["id"] for item in data["items"])
 
 
 def test_list_and_detail_return_identical_simulator_fields(client_factory):
     client, _db, capture = client_factory(engine=_FakeEngine())
 
-    ahu1 = client.post("/devices", json={"device_instance": 1001, "name": "AHU-1"}).json()
+    ahu1 = client.post("/devices", json={"protocol": "bacnet", "device_instance": 1001, "name": "AHU-1"}).json()
 
-    capture.record_inbound(
-        _build_i_am(1001), source=("10.0.0.5", 47810), destination=("255.255.255.255", 47808),
+    capture.record(protocol="bacnet", transport="udp", direction="inbound", payload=_build_i_am(1001), source=Endpoint("10.0.0.5", 47810), destination=Endpoint("255.255.255.255", 47808),
     )
 
     list_item = client.get("/packet-capture/packets").json()["items"][0]
     detail = client.get(f"/packet-capture/packets/{list_item['packet_id']}").json()
 
-    for field in (
-        "simulator_device_id", "simulator_device_instance", "simulator_device_name",
-        "simulator_object_id", "simulator_object_type",
-        "simulator_object_instance", "simulator_object_name",
-    ):
-        assert list_item[field] == detail[field]
+    assert list_item["simulator"] == detail["simulator"]
 
-    assert list_item["simulator_device_id"] == ahu1["id"]
+
+    assert list_item["simulator"]["device_id"] == ahu1["id"]
 
 
 def test_works_with_no_database_or_engine(client_factory):
     client, _db, capture = client_factory(engine=None, use_database=False)
 
-    capture.record_inbound(
-        _build_i_am(1001), source=("10.0.0.5", 47810), destination=("255.255.255.255", 47808),
+    capture.record(protocol="bacnet", transport="udp", direction="inbound", payload=_build_i_am(1001), source=Endpoint("10.0.0.5", 47810), destination=Endpoint("255.255.255.255", 47808),
     )
 
     resp = client.get("/packet-capture/packets")
@@ -173,5 +162,22 @@ def test_works_with_no_database_or_engine(client_factory):
 
     items = resp.json()["items"]
     assert len(items) == 1
-    assert items[0]["simulator_device_id"] is None
-    assert items[0]["service_name"] == "I-Am"  # existing decode still works
+    assert items[0]["simulator"]["device_id"] is None
+    assert items[0]["operation"] == "I-Am"  # existing decode still works
+
+def test_generic_contract_and_explicit_export(client_factory):
+    client, _, capture = client_factory(engine=None, use_database=False)
+    capture.record(protocol='bacnet', transport='udp', direction='inbound',
+        payload=BROADCAST_WHO_IS, source=Endpoint('10.0.0.5', 47810), destination=Endpoint('255.255.255.255', 47808))
+    result = client.get('/packet-capture/packets?protocol=bacnet&operation=Who-Is').json()
+    packet = result['items'][0]
+    assert packet['protocol'] == 'bacnet'
+    assert packet['transport'] == 'udp'
+    assert packet['source'] == {'address': '10.0.0.5', 'port': 47810}
+    assert packet['destination'] == {'address': '255.255.255.255', 'port': 47808}
+    assert client.get('/packet-capture/packets?protocol=unknown').status_code == 400
+    assert client.get('/packet-capture/export').status_code == 422
+    assert client.get('/packet-capture/export?protocol=unknown').status_code == 400
+    exported = client.get('/packet-capture/export?protocol=bacnet')
+    assert exported.status_code == 200
+    assert exported.content[:4] == bytes.fromhex('d4 c3 b2 a1')

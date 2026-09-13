@@ -11,7 +11,7 @@ from src.simulation.engine import SimEngine
 
 def _make_external_device(database, *, instance: int, name: str) -> dict:
     return database.sync_external_devices([{
-        "device_instance": instance,
+        "protocol": "bacnet", "device_instance": instance,
         "name": name,
         "host": "127.0.0.1",
         "port": 47808,
@@ -30,18 +30,18 @@ def _make_point(database, device_id: int, *, instance: int, name: str) -> dict:
 
 def _make_replay_device(database, *, instance: int, recording_id: int) -> dict:
     return database.create_device({
-        "device_instance": instance, "name": "Replay Copy", "description": "",
+        "protocol": "bacnet", "device_instance": instance, "name": "Replay Copy", "description": "",
         "vendor_name": "Iotistica", "model_name": "BACnet Simulator", "enabled": True,
         "firmware_revision": "N/A", "protocol_revision": 22, "max_apdu_length_accepted": 1024,
         "segmentation_supported": "segmented-both", "simulation_mode": "replay",
-        "replay_recording_id": recording_id,
+        "active_recording_id": recording_id,
     })
 
 
 def _seed_three_sample_recording(database):
     source = _make_external_device(database, instance=9001, name="Playback Source")
     point = _make_point(database, source["id"], instance=0, name="Zone Temp")
-    recording = database.create_replay_recording(source["id"], {
+    recording = database.create_recording(source["id"], {
         "name": "Playback Test",
         "point_ids": [point["id"]],
         "sample_interval_seconds": 1.0,
@@ -50,8 +50,8 @@ def _seed_three_sample_recording(database):
     })
     point_id = recording["points"][0]["id"]
     for value in (10, 20, 30):
-        database.add_replay_sample(recording["id"], {point_id: {"value": value}})
-    database.stop_replay_recording(recording["id"])
+        database.add_recording_sample(recording["id"], {point_id: {"value": value}})
+    database.stop_recording(recording["id"])
     return recording
 
 

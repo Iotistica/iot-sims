@@ -16,10 +16,10 @@ def build_calibration_dataset(database: Any, recording_id: int, mapping: dict[st
     """`mapping` is {variable_name: recording_point_id}, one entry per model
     input the caller chose to map plus the one required calibration goal
     variable. Pivots the recording's long-format samples
-    (get_replay_recording_all_samples) into one CSV row per sample_index,
+    (get_recording_all_samples) into one CSV row per sample_index,
     columns in `mapping`'s own order (dict insertion order -- the caller
     controls this, e.g. inputs first then the goal last)."""
-    rows = database.get_replay_recording_all_samples(recording_id)
+    rows = database.get_recording_all_samples(recording_id)
 
     # point_id -> {sample_index: (timestamp, value)}
     by_point: dict[int, dict[int, tuple[str, Any]]] = {}

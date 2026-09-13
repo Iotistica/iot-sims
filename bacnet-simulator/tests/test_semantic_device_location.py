@@ -31,14 +31,14 @@ def _classify_location(client, location, kind):
 
 def _create_boiler(client, location_id=None, equipment_type=None):
     resp = client.post("/devices", json={
-        "device_instance": 1002, "name": "Boiler-1", "location_id": location_id, "equipment_type": equipment_type,
+        "protocol": "bacnet", "device_instance": 1002, "name": "Boiler-1", "location_id": location_id, "equipment_type": equipment_type,
     })
     assert resp.status_code == 201, resp.text
     return resp.json()
 
 
 def _update_device(client, device, **overrides):
-    body = {"device_instance": device["device_instance"], "name": device["name"],
+    body = {"protocol": "bacnet", "device_instance": device["device_instance"], "name": device["name"],
             "location_id": device.get("location_id"), "equipment_type": device.get("equipment_type")}
     body.update(overrides)
     resp = client.put(f"/devices/{device['id']}", json=body)

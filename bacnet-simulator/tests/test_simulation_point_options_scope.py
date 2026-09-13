@@ -24,7 +24,7 @@ from src.simulation.models.registry import VariableDefinition
 
 
 def _controller_device(client, instance: int, name: str) -> dict:
-    device = client.post("/devices", json={"device_instance": instance, "name": name}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name}).json()
     resp = client.post(f"/devices/{device['id']}/controller")
     assert resp.status_code == 200, resp.text
     return device
@@ -137,19 +137,37 @@ def test_point_options_endpoint_scoped_by_device_id(client, database):
     assert ids == {ctx["rtu_sat"]["id"], ctx["vav1_zone_temp"]["id"]}
 
 
-def test_point_options_endpoint_falls_back_when_no_controller_entity(client, database):
+def test_point_options_endpoint_falls_back_to_own_device_when_no_controller_entity(client, database):
     """A device with no Controller role at all -- get_controller_topology_point_ids
-    returns None, and the endpoint must fall back to the full unscoped list,
-    exactly like calling it with no device_id at all."""
-    plain_device = client.post("/devices", json={"device_instance": 3005, "name": "Legacy Device"}).json()
-    _build_rtu_vav_topology(client, database)
+    returns None, and the endpoint falls back to just this device's own
+    points, NOT the full unscoped project list (confirmed live: an
+    unclassified RTU's manual mapping picker was listing points from
+    completely unrelated equipment before this fix)."""
+    plain_device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3005, "name": "Legacy Device"}).json()
+    own_point = _point(database, plain_device["id"], 1, "Own-Point")
+    ctx = _build_rtu_vav_topology(client, database)
 
     unscoped = client.get("/simulation/points/options").json()
     scoped_but_unresolvable = client.get(
         "/simulation/points/options", params={"device_id": plain_device["id"]},
     ).json()
-    assert {p["id"] for p in scoped_but_unresolvable} == {p["id"] for p in unscoped}
+    scoped_ids = {p["id"] for p in scoped_but_unresolvable}
+
     assert database.get_controller_topology_point_ids(plain_device["id"]) is None
+    assert scoped_ids == {own_point["id"]}
+    assert scoped_ids != {p["id"] for p in unscoped}
+    assert ctx["rtu_sat"]["id"] not in scoped_ids
+    assert ctx["vav1_zone_temp"]["id"] not in scoped_ids
+
+
+def test_point_options_endpoint_returns_empty_for_a_device_with_no_points_and_no_topology(client, database):
+    """The fallback's own edge case: a device with no Controller role AND
+    no objects of its own at all -- correctly empty, not the unscoped
+    list either."""
+    empty_device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3011, "name": "Empty Device"}).json()
+    resp = client.get("/simulation/points/options", params={"device_id": empty_device["id"]})
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 def test_location_fed_by_anchor_contributes_its_own_points_only(client, database):
@@ -194,7 +212,7 @@ def test_location_fed_by_anchor_contributes_its_own_points_only(client, database
 
 
 def test_no_controller_role_returns_none_not_empty_set(client, database):
-    device = client.post("/devices", json={"device_instance": 3007, "name": "No Role"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3007, "name": "No Role"}).json()
     assert database.get_controller_topology_point_ids(device["id"]) is None
 
 
@@ -204,7 +222,7 @@ def test_controller_controlling_no_equipment_returns_none(client, database):
 
 
 def test_discover_candidates_allowed_point_ids_filters_result(client, database):
-    ahu = client.post("/devices", json={"device_instance": 3009, "name": "AHU-Filter"}).json()
+    ahu = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3009, "name": "AHU-Filter"}).json()
     keep = _point(database, ahu["id"], 1, "Keep")
     drop = _point(database, ahu["id"], 2, "Drop")
 
@@ -221,7 +239,7 @@ def test_discover_candidates_allowed_point_ids_filters_result(client, database):
 
 
 def test_discover_candidates_allowed_point_ids_none_is_passthrough(client, database):
-    ahu = client.post("/devices", json={"device_instance": 3010, "name": "AHU-Passthrough"}).json()
+    ahu = client.post("/devices", json={"protocol": "bacnet", "device_instance": 3010, "name": "AHU-Passthrough"}).json()
     _point(database, ahu["id"], 1, "Pt")
     variable = VariableDefinition("x", "X", "input")
 

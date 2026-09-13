@@ -151,7 +151,7 @@ def _effective_mappings(config: dict) -> list[dict]:
         mapping
         for mapping in config.get("mappings", [])
         if not (
-            str(config.get("provider_type")) == "fmu"
+            str(config.get("provider_type")) in ("fmu", "ai", "classifier")
             and mapping.get("direction") == "input"
             and input_sources.get(mapping.get("variable")) == "constant"
         )
@@ -188,12 +188,16 @@ def _build_fmu_provider(
     settings = config.get("_settings") or {}
     definition = get_remote_model_definition(settings, str(config["model_type"]))
 
-    if definition.provider_type not in ("fmu", "ai"):
+    if definition.provider_type not in ("fmu", "ai", "classifier"):
         raise ValueError(
-            f"Model {config['model_type']!r} is not an FMU or AI model"
+            f"Model {config['model_type']!r} is not an FMU, AI, or Classifier model"
         )
 
-    parameters = dict(config.get("parameters") or {})
+    # The full SimulationModelConfig.parameters blob -- named config_parameters
+    # here (not `parameters`) to keep it visually distinct from the resolved
+    # FMI String-parameter value dict built below, which is itself called
+    # `parameters` to match FMUSimulationProvider's own constructor kwarg.
+    config_parameters = dict(config.get("parameters") or {})
     mappings = _effective_mappings(config)
     runtime_url, timeout_s, runtime_api_key = get_runtime_settings(settings)
     runtime_model = definition.runtime_model or normalize_remote_model_id(
@@ -317,20 +321,35 @@ def _build_fmu_provider(
     initial_point_inputs = _resolve_initial_point_inputs(engine, inputs)
 
     # Session-lifetime FMI String parameter overrides (e.g. Weather's
-    # wea_filename) -- whatever the simulation model's own `parameters`
+    # wea_filename) -- whatever the simulation model's own config_parameters
     # blob holds under a name the catalog declared as type="string" or
-    # "file" (see remote_catalog.py's _string_parameter_definition -- both
+    # "file" (see remote_catalog.py's _parameter_definition -- both
     # are real FMI String parameters at the runtime level, "file" only
     # differs in how the drawer's Parameters UI renders the control for
     # it). Missing/blank values are simply omitted here rather than
     # substituted with param.default -- the FMU runtime already falls back
     # to the catalog default itself (manager.py's
-    # _make_string_parameter_payload), so duplicating that here would just
+    # _make_parameter_payload), so duplicating that here would just
     # be a second place to keep in sync.
-    string_parameters = {
-        param.name: str(parameters[param.name])
+    parameters = {
+        param.name: str(config_parameters[param.name])
         for param in definition.parameters
-        if param.type in ("string", "file") and parameters.get(param.name)
+        if param.type in ("string", "file") and config_parameters.get(param.name)
+    }
+
+    # Applied calibration results (see CalibrationFlow.vue's "Apply to
+    # Model" button) -- FMI causality="parameter" Real overrides, stored
+    # under `parameters.parameter_overrides` by simulation.py's save path
+    # and forwarded here as real_parameters, same session-lifetime-only
+    # shape as `parameters` above. Unlike `parameters`, this
+    # isn't filtered against the catalog's declared parameters here --
+    # the runtime's own _apply_real_parameters already silently ignores
+    # anything that isn't a declared calibration.tuners[].parameter for
+    # this model, so duplicating that filter here would just be a second
+    # place to keep in sync (same reasoning as input_defaults above).
+    real_parameters = {
+        str(name): float(value)
+        for name, value in (config_parameters.get("parameter_overrides") or {}).items()
     }
 
     # "month" parameters (currently only Weather's playback_start_month --
@@ -346,7 +365,7 @@ def _build_fmu_provider(
     for param in definition.parameters:
         if param.type != "month":
             continue
-        selected_month = parameters.get(param.name)
+        selected_month = config_parameters.get(param.name)
         if selected_month is None:
             continue
         warmup_seconds = start_hour_of_year(date(2001, int(selected_month), 1)) * 3600.0
@@ -358,7 +377,7 @@ def _build_fmu_provider(
         bindings=bindings,
         aggregate_inputs=aggregate_inputs,
         input_exposures=input_exposures,
-        input_defaults=dict(parameters.get("input_defaults") or {}),
+        input_defaults=dict(config_parameters.get("input_defaults") or {}),
         timeout_s=timeout_s,
         api_key=runtime_api_key,
         input_variables={
@@ -373,13 +392,19 @@ def _build_fmu_provider(
         },
     )
     # Only passed when non-empty -- keeps the exact old constructor call
-    # shape for every model with no string_parameters (the overwhelming
+    # shape for every model with no parameters (the overwhelming
     # majority), so existing test doubles standing in for
     # FMUSimulationProvider that predate this kwarg keep working unchanged.
-    if string_parameters:
-        provider_kwargs["string_parameters"] = string_parameters
+    if parameters:
+        provider_kwargs["parameters"] = parameters
+    if real_parameters:
+        provider_kwargs["real_parameters"] = real_parameters
     if warmup_seconds is not None:
         provider_kwargs["warmup_seconds"] = warmup_seconds
+    # Only for a promoted ML model that carries an input contract -- keeps the old
+    # constructor shape for every FMU model, so test doubles predating this kwarg work.
+    if getattr(definition, "ml_input_contract", ()):
+        provider_kwargs["ml_input_contract"] = list(definition.ml_input_contract)
     provider = FMUSimulationProvider(**provider_kwargs)
 
     aggregate_member_bindings_metadata = [
@@ -487,13 +512,17 @@ def register_model_config(
     config = dict(config)
     provider_type = str(config["provider_type"])
 
-    if provider_type in ("fmu", "ai"):
-        # Same builder for both -- an AI-backed model answers the exact
-        # same iot-models REST API shape (/initialize, /step, /terminate)
-        # an FMU-backed one does, so there's no separate integration to
-        # build; "ai" vs "fmu" is a catalog/UI categorization, not a
-        # different runtime protocol. See _build_fmu_provider's own
-        # provider_type check for the corresponding widened guard.
+    if provider_type in ("fmu", "ai", "classifier"):
+        # Same builder for all three -- an AI-backed or Classifier-backed
+        # model answers the exact same iot-models REST API shape
+        # (/initialize, /step, /terminate) an FMU-backed one does, so
+        # there's no separate integration to build; "ai"/"classifier" vs
+        # "fmu" is a catalog/UI categorization, not a different runtime
+        # protocol -- a classifier's richer step() response (prediction_
+        # index/label/confidence/probabilities, see classifier_manager.py)
+        # is just additional keys the FMU protocol already tolerates.
+        # See _build_fmu_provider's own provider_type check for the
+        # corresponding widened guard.
         provider, context, inputs, outputs = _build_fmu_provider(config, engine)
     else:
         raise ValueError(f"Unsupported provider type: {provider_type}")
@@ -665,6 +694,16 @@ def recover_unhealthy_simulation_models(database: Any, engine: Any) -> dict[str,
     session for an already-working model, and never interrupts a legitimate
     long warmup either.
 
+    PAUSED (no HTTP error) is left untouched too, for the same reason --
+    confirmed live: a model paused via POST .../pause (SimEngine.
+    pause_provider, "locally_paused") got reloaded by the very next sweep,
+    which unregisters-then-reregisters the provider and silently resumed
+    it, since unregister_simulation_provider() clears the locally_paused
+    flag. PAUSED is not a failure state (a provider paused as a side effect
+    of the global clock being paused looks identical here, same reasoning
+    applies) -- treating it as "needs recovery" was the bug, not a
+    deliberate choice.
+
     Does one cheap health() probe against the shared FMU runtime URL first;
     if it's unreachable, defers every candidate to the next sweep instead of
     attempting (and timing out on) a per-model reload -- this is the guard
@@ -674,11 +713,12 @@ def recover_unhealthy_simulation_models(database: Any, engine: Any) -> dict[str,
     persisted = [
         {**config, "_settings": settings}
         for config in list_enabled_simulation_models(database)
-        # AI-backed models talk to the exact same remote runtime (same
-        # FMURuntimeClient, same HTTP health semantics) via _build_fmu_provider
-        # -- they get the same auto-recovery benefit an FMU model already
-        # does, not just the FMU ones.
-        if str(config.get("provider_type")) in ("fmu", "ai")
+        # AI-backed and Classifier-backed models talk to the exact same
+        # remote runtime (same FMURuntimeClient, same HTTP health
+        # semantics) via _build_fmu_provider -- they get the same
+        # auto-recovery benefit an FMU model already does, not just the
+        # FMU ones.
+        if str(config.get("provider_type")) in ("fmu", "ai", "classifier")
     ]
     if not persisted:
         return {"recovered": [], "skipped": [], "errors": [], "runtime_unreachable": False}
@@ -732,7 +772,9 @@ def recover_unhealthy_simulation_models(database: Any, engine: Any) -> dict[str,
         diagnostics = provider_info.get("diagnostics") or {}
         last_http_status = diagnostics.get("last_http_status")
         provider_has_error = last_http_status is not None and last_http_status >= 400
-        if status == "running" and not provider_has_error:
+        # "paused" (local or global) is an intentional, healthy state, not
+        # a failure to recover from -- see this function's own docstring.
+        if status in ("running", "paused") and not provider_has_error:
             _recovery_failure_counts.pop(failure_key, None)
             continue
 

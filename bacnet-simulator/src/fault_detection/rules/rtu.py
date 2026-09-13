@@ -99,6 +99,12 @@ from .base import FaultRule
 # ===========================================================================
 
 
+# FOLLOW-UP (not this phase): this table and its ahu.py sibling predate
+# src/semantics/providers/brick.py::CANONICAL_TO_BRICK, which is now the declared home for
+# canonical-role -> Brick translation. They express the same concept with different key
+# casing (PascalCase here, snake_case there); brick.py ships FDD_ROLE_TO_CANONICAL_ID as
+# the bridge. Converge FDD's _resolve_fan_role_points / _value onto the Brick provider once
+# its (large) test surface can be revisited.
 CANONICAL_SEMANTICS: dict[str, dict[str, object]] = {
     # "Supply_Fan_Command"/"Supply_Fan_Status" below are FDD-internal signal-
     # role names, not Brick classes themselves -- neither string is a real

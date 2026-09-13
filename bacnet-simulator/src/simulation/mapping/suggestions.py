@@ -17,7 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ...semantics.candidates import build_resolution_candidate_from_object
 from ...semantics.mirror import find_direct_equipment_entity
+from ...semantics.providers import get_semantic_provider
+from ...semantics.resolution import ResolutionContext, resolve as resolve_semantic
 from ...semantics.suggestions import confidence_for, tokens_for
 from ..models.store import get_output_owners_by_point
 from ..models.registry import ModelDefinition, VariableDefinition
@@ -80,6 +83,10 @@ class PointCandidate:
     point_type: str | None
     equipment_class: str | None
     location_match: bool = False
+    # "exact" | "class_only" | "unresolved" | None -- set by _annotate_semantic_quality
+    # from the (representation-agnostic) semantic provider when the variable carries a
+    # SemanticContract; None means "not evaluated" (no contract).
+    semantic_quality: str | None = None
 
 
 @dataclass(slots=True)
@@ -196,8 +203,10 @@ def _discover_candidates_unfiltered(
     created_from_device_id: int | None,
     database: Any,
 ) -> tuple[list[PointCandidate], EquipmentScope, str | None]:
-    hints = variable.mapping_hints
-    scope: str = hints.equipment_scope if hints else "self"
+    # Topology hints come from the semantic contract now (scope / relationship), not from
+    # mapping_hints. No contract -> plain "self".
+    semantic = variable.semantic
+    scope: str = semantic.scope if semantic else "self"
 
     if created_from_device_id is None:
         return _fleet_candidates(database), "any", None
@@ -215,8 +224,11 @@ def _discover_candidates_unfiltered(
             )
         return candidates, "self", None
 
-    # upstream / downstream
-    relationship = hints.relationship if hints and hints.relationship else "feeds"
+    # upstream / downstream. `isFedBy` is the inverse of `feeds` -- traverse the stored
+    # `feeds` edge with direction="in" (which upstream scope already implies).
+    relationship = semantic.relationship if semantic and semantic.relationship else "feeds"
+    if relationship == "isFedBy":
+        relationship = "feeds"
     direction = "in" if scope == "upstream" else "out"
 
     equipment_entity = _equipment_entity_for_device(database, created_from_device_id)
@@ -255,6 +267,33 @@ def _expanded_tokens(value: str | None) -> set[str]:
         expanded.update(_TOKEN_EXPANSIONS.get(token, ()))
     return expanded
 
+def _annotate_semantic_quality(
+    database: Any,
+    variable: VariableDefinition,
+    candidates: list[PointCandidate],
+    created_from_device_id: int | None,
+) -> None:
+    """Fan the representation-agnostic semantic provider's per-candidate verdict onto the
+    candidates. No-op when the variable has no SemanticContract. suggestions.py stays
+    unaware of which representation (Brick, Haystack, ...) answered -- it only reads the
+    neutral "exact"/"class_only" quality below."""
+    if variable.semantic is None or not candidates:
+        return
+    ctx = ResolutionContext(anchor_device_id=created_from_device_id)
+    provider = get_semantic_provider(database, ctx)
+    res_candidates = [
+        build_resolution_candidate_from_object(
+            {"id": c.id, "name": c.name, "units": c.units, "point_type": c.point_type}
+        )
+        for c in candidates
+    ]
+    resolution = resolve_semantic(
+        database, provider, variable.semantic, res_candidates, context=ctx,
+    )
+    for c in candidates:
+        c.semantic_quality = resolution.per_candidate.get(c.id)
+
+
 def _score_candidate(
     variable: VariableDefinition,
     candidate: PointCandidate,
@@ -264,10 +303,16 @@ def _score_candidate(
     reasons: list[str] = []
     score = 0.0
 
-    # 1. Brick point semantic compatibility.
-    if variable.suggested_point_types and candidate.point_type in variable.suggested_point_types:
-        score += 0.30
-        reasons.append(f"Brick: {candidate.point_type}")
+    # 0. Canonical semantic identity, resolved through the configured representation
+    # provider (Brick today). Highest priority -- this is stable domain meaning, not a
+    # vendor point name. "exact" == matching identity + verified equipment context;
+    # "class_only" == the point class matches but the equipment context is unconfirmed.
+    if candidate.semantic_quality == "exact":
+        score += 0.45
+        reasons.append("Semantic identity match")
+    elif candidate.semantic_quality == "class_only":
+        score += 0.20
+        reasons.append("Semantic identity match (class only)")
 
     # 2. Topology/relationship compatibility.
     if candidate.location_match:
@@ -278,14 +323,6 @@ def _score_candidate(
         else:
             reasons.append(f"Same device ({candidate.device_name})")
         score += 0.25
-
-    # 3. Preferred equipment type -- a scoring preference only, never a
-    # hard candidate filter (an unexpected-but-plausible equipment type
-    # still surfaces as a low/medium suggestion rather than disappearing).
-    hints = variable.mapping_hints
-    if hints and hints.preferred_equipment_types and candidate.equipment_class in hints.preferred_equipment_types:
-        score += 0.15
-        reasons.append(f"Equipment: {candidate.equipment_class}")
 
     # 4. Unit compatibility.
     if variable.unit:
@@ -302,20 +339,17 @@ def _score_candidate(
     if variable.direction == "output" and candidate.object_type in _WRITABLE_OBJECT_TYPES:
         score += 0.10
 
-    # 6. Point/object metadata + normalized name/alias similarity. When the
-    # variable declares no suggested_point_types at all (e.g. generic FMU
-    # signals like heating_setpoint_c that have no Brick-class expectation),
-    # signal #1's weight is structurally unusable for it -- so name
-    # similarity gets a larger allowance in that case specifically, instead
-    # of leaving an obviously-correct "Heating-SP" point stuck at "none"
-    # confidence just because it can't earn the Brick-match bonus.
+    # 6. Point/object metadata + normalized name/alias similarity -- an independent,
+    # explicitly name-based signal (its reason line always says "Name matched"; it is
+    # never presented as a semantic match). Weighted a little more generously when the
+    # variable has no semantic contract at all, since signal #0 can't fire for it.
     label_tokens = _expanded_tokens(variable.label) | _expanded_tokens(variable.name.replace("_", " "))
-    if hints and hints.signal_role:
-        label_tokens |= _expanded_tokens(hints.signal_role.replace("_", " "))
+    if variable.semantic and variable.semantic.id:
+        label_tokens |= _expanded_tokens(variable.semantic.id.replace("_", " "))
     point_tokens = _expanded_tokens(candidate.name) | _expanded_tokens(candidate.description)
     overlap = label_tokens & point_tokens
     if overlap:
-        if variable.suggested_point_types:
+        if variable.semantic is not None:
             score += min(0.14, 0.035 * len(overlap))
         else:
             score += min(0.20, 0.06 * len(overlap))
@@ -326,9 +360,9 @@ def _score_candidate(
 
 
 def _fallback_reason(variable: VariableDefinition, scope_used: str) -> str | None:
-    hints = variable.mapping_hints
-    if scope_used == "fallback" and hints and hints.equipment_scope in ("upstream", "downstream"):
-        return f"No {hints.equipment_scope} relationship found — searched device/fleet-wide"
+    semantic = variable.semantic
+    if scope_used == "fallback" and semantic and semantic.scope in ("upstream", "downstream"):
+        return f"No {semantic.scope} relationship found — searched device/fleet-wide"
     return None
 
 
@@ -356,6 +390,8 @@ def suggest_mapping_for_variable(
             excluding_model_id=excluding_model_id,
         )
         candidates = [c for c in candidates if c.id not in owners]
+
+    _annotate_semantic_quality(database, variable, candidates, created_from_device_id)
 
     scored = sorted(
         (
@@ -471,6 +507,8 @@ def build_shortlist(
         )
         candidates = [c for c in candidates if c.id not in owners]
 
+    _annotate_semantic_quality(database, variable, candidates, created_from_device_id)
+
     scored = sorted(
         candidates,
         key=lambda c: _score_candidate(variable, c, scope_used=scope_used)[0],
@@ -482,22 +520,21 @@ def build_shortlist(
 def relationship_context_string(
     variable: VariableDefinition, scope_used: str, related_name: str | None,
 ) -> str | None:
-    hints = variable.mapping_hints
+    semantic = variable.semantic
+    rel = semantic.relationship if semantic and semantic.relationship else "feeds"
     if scope_used in ("upstream", "downstream") and related_name:
         if scope_used == "upstream":
             return (
                 f"This variable expects a signal from an upstream equipment "
-                f"({related_name}), related via "
-                f"{(hints.relationship if hints and hints.relationship else 'feeds')}."
+                f"({related_name}), related via {rel}."
             )
         return (
             f"This variable expects a signal serving downstream equipment "
-            f"({related_name}), related via "
-            f"{(hints.relationship if hints and hints.relationship else 'feeds')}."
+            f"({related_name}), related via {rel}."
         )
-    if scope_used == "fallback" and hints and hints.equipment_scope in ("upstream", "downstream"):
+    if scope_used == "fallback" and semantic and semantic.scope in ("upstream", "downstream"):
         return (
-            f"No {hints.equipment_scope} relationship found for this device; "
+            f"No {semantic.scope} relationship found for this device; "
             "searched device/fleet-wide instead."
         )
     if scope_used == "self":

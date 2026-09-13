@@ -154,7 +154,7 @@ def test_mark_device_as_controller_idempotent(client, database):
     # than creating a second one.
     client.put(
         f"/devices/{device_id}",
-        json={"device_instance": 301, "name": "AHU-1 Renamed", "equipment_type": None},
+        json={"protocol": "bacnet", "device_instance": 301, "name": "AHU-1 Renamed", "equipment_type": None},
     )
     third = client.post(f"/devices/{device_id}/controller").json()
     assert third["id"] == first["id"]
@@ -190,7 +190,7 @@ def test_create_and_update_device_never_create_controller_entity(client, databas
     (see sync_controller_entity()'s docstring)."""
     resp = client.post(
         "/devices",
-        json={"device_instance": 501, "name": "Legacy Device", "equipment_type": "Chiller"},
+        json={"protocol": "bacnet", "device_instance": 501, "name": "Legacy Device", "equipment_type": "Chiller"},
     )
     assert resp.status_code == 201
     device_id = resp.json()["id"]
@@ -200,7 +200,7 @@ def test_create_and_update_device_never_create_controller_entity(client, databas
     for _ in range(3):
         client.put(
             f"/devices/{device_id}",
-            json={"device_instance": 501, "name": "Legacy Device Edited", "equipment_type": "Chiller"},
+            json={"protocol": "bacnet", "device_instance": 501, "name": "Legacy Device Edited", "equipment_type": "Chiller"},
         )
     assert database.get_semantic_entities(device_id=device_id, entity_kind="controller") == []
 
@@ -213,7 +213,7 @@ def test_create_and_update_device_never_create_controller_entity(client, databas
 
 def test_sync_external_devices_never_creates_controller_entity(database):
     database.sync_external_devices([{
-        "device_instance": 9001,
+        "protocol": "bacnet", "device_instance": 9001,
         "name": "ext_ahu_9001",
         "host": "172.22.0.99",
         "port": 47808,

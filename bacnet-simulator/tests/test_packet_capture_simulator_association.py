@@ -11,11 +11,35 @@ the request's object_type/object_instance BEFORE resolution runs, not via
 any new correlation mechanism of our own."""
 from __future__ import annotations
 
-from src.api.routers.packet_capture import (
-    make_object_resolver,
-    resolve_packet_simulator_context,
-)
-from src.bacnet.packet_capture import enrich_packet_context
+import pytest
+
+from src.network.enrichers.bacnet import make_object_resolver, BacnetTrafficEnricher, enrich_packet_context as correlate
+from src.network.models import CapturedTraffic, DecodedTraffic, Endpoint
+
+
+def resolve_packet_simulator_context(packet, *, devices_by_instance, resolve_object):
+    class Engine:
+        def resolve_wire_object(self, *, object_type, physical_instance):
+            return resolve_object(object_type, physical_instance)
+    packet.setdefault('packet_id', 'test')
+    packet.setdefault('protocol', 'bacnet')
+    packet.setdefault('details', {})
+    decoded = DecodedTraffic(decode_status='decoded', summary=packet['summary'])
+    traffic = CapturedTraffic(packet['packet_id'], 'session', 1.0, 'bacnet', 'udp', 'inbound', Endpoint('a'), Endpoint('b'), b'')
+    association = BacnetTrafficEnricher().enrich(traffic, decoded, {
+        'packets': [packet], 'devices': list(devices_by_instance.values()), 'engine': Engine(),
+    })
+    packet['simulator'] = association.as_dict()
+
+
+def enrich_packet_context(packets):
+    for p in packets:
+        p['session_id'] = 'session'
+        p['protocol'] = 'bacnet'
+        p['details'] = {'apdu': p.pop('apdu', {})}
+        for side in ('source', 'destination'):
+            p[side] = {'address': p.pop(side + '_ip'), 'port': p.pop(side + '_port')}
+    return correlate(packets)
 
 
 def _never_resolve(object_type, object_instance):
@@ -35,10 +59,9 @@ def test_i_am_resolves_known_device():
         packet, devices_by_instance=devices_by_instance, resolve_object=_never_resolve,
     )
 
-    assert packet["simulator_device_id"] == 5
-    assert packet["simulator_device_instance"] == 1003
-    assert packet["simulator_device_name"] == "AHU-1"
-    assert packet["simulator_object_id"] is None
+    assert packet["simulator"]["device_id"] == 5
+    assert packet["simulator"]["device_name"] == "AHU-1"
+    assert packet["simulator"]["point_id"] is None
 
 
 def test_object_specific_resolution():
@@ -56,9 +79,9 @@ def test_object_specific_resolution():
         packet, devices_by_instance={}, resolve_object=resolve_object,
     )
 
-    assert packet["simulator_device_id"] == 5
-    assert packet["simulator_object_id"] == 42
-    assert packet["simulator_object_name"] == "OAT"
+    assert packet["simulator"]["device_id"] == 5
+    assert packet["simulator"]["point_id"] == 42
+    assert packet["simulator"]["point_name"] == "OAT"
 
 
 def test_two_devices_sharing_local_instance_not_confused():
@@ -87,9 +110,9 @@ def test_two_devices_sharing_local_instance_not_confused():
     resolve_packet_simulator_context(packet_a, devices_by_instance={}, resolve_object=resolve_object)
     resolve_packet_simulator_context(packet_b, devices_by_instance={}, resolve_object=resolve_object)
 
-    assert packet_a["simulator_device_name"] == "AHU-1"
-    assert packet_b["simulator_device_name"] == "AHU-2"
-    assert packet_a["simulator_object_id"] != packet_b["simulator_object_id"]
+    assert packet_a["simulator"]["device_name"] == "AHU-1"
+    assert packet_b["simulator"]["device_name"] == "AHU-2"
+    assert packet_a["simulator"]["point_id"] != packet_b["simulator"]["point_id"]
 
 
 def test_device_object_type_resolves_via_devices_by_instance_directly():
@@ -105,8 +128,8 @@ def test_device_object_type_resolves_via_devices_by_instance_directly():
         packet, devices_by_instance=devices_by_instance, resolve_object=_never_resolve,
     )
 
-    assert packet["simulator_device_id"] == 5
-    assert packet["simulator_object_id"] is None
+    assert packet["simulator"]["device_id"] == 5
+    assert packet["simulator"]["point_id"] is None
 
 
 def test_no_evidence_leaves_all_fields_none():
@@ -116,8 +139,8 @@ def test_no_evidence_leaves_all_fields_none():
         packet, devices_by_instance={}, resolve_object=lambda t, i: None,
     )
 
-    assert packet["simulator_device_id"] is None
-    assert packet["simulator_object_id"] is None
+    assert packet["simulator"]["device_id"] is None
+    assert packet["simulator"]["point_id"] is None
 
 
 def test_rpm_request_and_response_stay_unassociated():
@@ -147,8 +170,8 @@ def test_rpm_request_and_response_stay_unassociated():
         resolve_packet_simulator_context(
             packet, devices_by_instance={}, resolve_object=lambda t, i: None,
         )
-        assert packet["simulator_device_id"] is None
-        assert packet["simulator_object_id"] is None
+        assert packet["simulator"]["device_id"] is None
+        assert packet["simulator"]["point_id"] is None
 
 
 def test_i_am_from_unknown_device_resolves_to_none():
@@ -160,7 +183,7 @@ def test_i_am_from_unknown_device_resolves_to_none():
         resolve_object=lambda t, i: None,
     )
 
-    assert packet["simulator_device_id"] is None
+    assert packet["simulator"]["device_id"] is None
 
 
 def test_correlated_response_inherits_request_simulator_context():
@@ -200,9 +223,9 @@ def test_correlated_response_inherits_request_simulator_context():
         )
 
     resolved = {p["packet_id"]: p for p in enriched}
-    assert resolved["req-1"]["simulator_object_id"] == 10
-    assert resolved["resp-1"]["simulator_object_id"] == 10
-    assert resolved["resp-1"]["simulator_device_name"] == "AHU-1"
+    assert resolved["req-1"]["simulator"]["point_id"] == 10
+    assert resolved["resp-1"]["simulator"]["point_id"] == 10
+    assert resolved["resp-1"]["simulator"]["device_name"] == "AHU-1"
 
 
 def test_stale_invoke_id_response_gets_no_inherited_context():
@@ -220,8 +243,8 @@ def test_stale_invoke_id_response_gets_no_inherited_context():
         enriched[0], devices_by_instance={}, resolve_object=lambda t, i: None,
     )
 
-    assert enriched[0]["simulator_device_id"] is None
-    assert enriched[0]["simulator_object_id"] is None
+    assert enriched[0]["simulator"]["device_id"] is None
+    assert enriched[0]["simulator"]["point_id"] is None
 
 
 def test_correlation_does_not_leak_between_independent_calls():
@@ -256,7 +279,7 @@ def test_correlation_does_not_leak_between_independent_calls():
         enriched_b[0], devices_by_instance={}, resolve_object=lambda t, i: None,
     )
 
-    assert enriched_b[0]["simulator_object_id"] is None
+    assert enriched_b[0]["simulator"]["point_id"] is None
 
 
 def test_resolution_uses_whichever_snapshot_is_passed():
@@ -277,8 +300,8 @@ def test_resolution_uses_whichever_snapshot_is_passed():
         resolve_object=lambda t, i: None,
     )
 
-    assert packet_before["simulator_device_name"] == "Old-AHU"
-    assert packet_after["simulator_device_name"] == "New-AHU"
+    assert packet_before["simulator"]["device_name"] == "Old-AHU"
+    assert packet_after["simulator"]["device_name"] == "New-AHU"
 
 
 def test_make_object_resolver_memoizes_per_key():
@@ -302,10 +325,24 @@ def test_make_object_resolver_handles_none_engine():
     assert resolve("analog-input", 8) is None
 
 
-def test_make_object_resolver_swallows_engine_exceptions():
+def test_make_object_resolver_propagates_engine_exceptions():
     class BrokenEngine:
         def resolve_wire_object(self, *, object_type, physical_instance):
             raise RuntimeError("boom")
 
     resolve = make_object_resolver(BrokenEngine())
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="boom"):
+            resolve("analog-input", 8)
+
+
+def test_make_object_resolver_caches_missing_object():
+    calls = []
+    class Engine:
+        def resolve_wire_object(self, **kwargs):
+            calls.append(kwargs)
+            return None
+    resolve = make_object_resolver(Engine())
     assert resolve("analog-input", 8) is None
+    assert resolve("analog-input", 8) is None
+    assert len(calls) == 1

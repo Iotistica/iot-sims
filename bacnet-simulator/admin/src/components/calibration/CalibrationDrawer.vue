@@ -28,7 +28,11 @@ function close() {
       </div>
       <!-- Keyed on the device so switching which device this drawer is open
            for fully resets the flow instead of reconciling it in place. -->
-      <CalibrationFlow :key="device.id" :model-id="device.active_simulation_model.model_type" />
+      <CalibrationFlow
+        :key="device.id"
+        :model-id="device.active_simulation_model.model_type"
+        :config-id="device.active_simulation_model.id"
+      />
     </template>
     <a-alert
       v-else

@@ -167,12 +167,12 @@ async def list_devices(
         get_devices_with_disabled_simulation_model,
         database,
     )
-    replay_recording_ids = [
-        int(d["replay_recording_id"]) for d in devices if d.get("replay_recording_id") is not None
+    active_recording_ids = [
+        int(d["active_recording_id"]) for d in devices if d.get("active_recording_id") is not None
     ]
-    replay_recording_names = await asyncio.to_thread(
-        database.get_replay_recording_names,
-        replay_recording_ids,
+    active_recording_names = await asyncio.to_thread(
+        database.get_recording_names,
+        active_recording_ids,
     )
 
     for device in devices:
@@ -188,10 +188,10 @@ async def list_devices(
         device["simulation_model_stopped"] = (
             active_model is None and device_id in stopped_simulation_device_ids
         )
-        recording_id = device.get("replay_recording_id")
-        device["active_replay_recording"] = (
-            {"id": recording_id, "name": replay_recording_names[recording_id]}
-            if recording_id is not None and recording_id in replay_recording_names
+        recording_id = device.get("active_recording_id")
+        device["active_recording"] = (
+            {"id": recording_id, "name": active_recording_names[recording_id]}
+            if recording_id is not None and recording_id in active_recording_names
             else None
         )
 
@@ -293,6 +293,18 @@ async def update_device(
 
     body_dict = body.model_dump()
     reject_external_source_mutation(existing, body_dict)
+
+    if body.simulation_mode in ("mirror", "replay") and body.simulation_mode != existing.get("simulation_mode"):
+        own_objects = await asyncio.to_thread(database.get_objects, device_id)
+        if any(o.get("source_object_id") is not None for o in own_objects):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Device {existing['name']!r} has one or more points linked "
+                    "from another device -- unlink them before switching this "
+                    "device to Mirror/Replay mode."
+                ),
+            )
 
     await validate_location(
         database,
@@ -400,6 +412,21 @@ async def delete_device(
     # simulator ownership, so it's allowed for external devices too --
     # unlike every object/value/priority/simulation mutation below, which
     # stays blocked.
+
+    own_objects = await asyncio.to_thread(database.get_objects, device_id)
+    for obj in own_objects:
+        consumers = await asyncio.to_thread(database.get_link_consumers, obj["id"])
+        if consumers:
+            names = ", ".join(f"{c['name']!r} on {c['device_name']!r}" for c in consumers)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Device {device['name']!r} cannot be deleted: its point "
+                    f"{obj['name']!r} is still linked from: {names}. Unlink "
+                    "them first."
+                ),
+            )
+
     log_event(
         request,
         device_id,

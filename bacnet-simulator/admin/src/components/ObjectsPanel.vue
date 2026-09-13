@@ -6,6 +6,7 @@ import {
   EditOutlined, CopyOutlined, LineChartOutlined, ApiOutlined, BulbOutlined, ExperimentOutlined,
   VideoCameraOutlined, DownOutlined, DownloadOutlined, UploadOutlined, AlertOutlined,
   CalendarOutlined, ScheduleOutlined, ThunderboltOutlined, ClusterOutlined, DeleteOutlined,
+  RobotOutlined, SaveOutlined, FileAddOutlined, ReloadOutlined, LoadingOutlined,
 } from '@ant-design/icons-vue'
 import { api } from '../api'
 import { formatPresentValue } from '../format'
@@ -13,6 +14,7 @@ import { coerceValueForObjectType } from '../objectValue'
 import type { Device, SimObject, Meta, PointRef, Location } from '../types'
 import { buildLocationTreeOptions, flattenLocationTree } from '../locationTree'
 import GridFilterToolbar from './GridFilterToolbar.vue'
+import BooleanToggle from './BooleanToggle.vue'
 import ObjectDrawer from './ObjectDrawer.vue'
 import SaveTemplateModal from './SaveTemplateModal.vue'
 import TemplatePickerModal from './TemplatePickerModal.vue'
@@ -47,7 +49,7 @@ const emit = defineEmits<{
   'external-device-seen': [deviceId: number, seenAt: string]
   'edit-device': [device: Device]
   'simulation-model': [device: Device]
-  'replay-recordings': [device: Device]
+  'recordings': [device: Device]
   // "More actions" menu (moved here from LeftSideView.vue's sidebar "..."
   // dropdown -- same items/icons/groups, same App.vue handlers, just
   // triggered from the header instead of the tree row).
@@ -60,6 +62,7 @@ const emit = defineEmits<{
   'trend-logs': [device: Device]
   'replay-playback': [device: Device]
   'calibration': [device: Device]
+  'training': [device: Device]
   'schedules': [device: Device]
   'calendars': [device: Device]
   'energy-model': [device: Device]
@@ -69,13 +72,17 @@ const emit = defineEmits<{
   'create-simulated-copy': [device: Device]
   'assign-device-location': [device: Device, locationId: number]
   'remove-external-device': [device: Device]
+  // Same event/shape EquipmentPanel.vue already uses for its own
+  // controller-tag navigation -- reuses App.vue's existing
+  // onSelectController(deviceId) handler as-is, no new App.vue logic.
+  'select-controller': [deviceId: number]
 }>()
 
 const isExternal = computed(() => props.device.source_type === 'external-bacnet')
 const isMirror = computed(() => props.device.simulation_mode === 'mirror')
 const isReplay = computed(() => props.device.simulation_mode === 'replay')
 const replayLabel = computed(() =>
-  props.device.active_replay_recording ? `Replay: ${props.device.active_replay_recording.name}` : 'Replay')
+  props.device.active_recording ? `Replay: ${props.device.active_recording.name}` : 'Replay')
 const isSimulationMode = computed(() => !isExternal.value && !isMirror.value && !isReplay.value)
 const canConfigureSimulation = computed(() => !isExternal.value)
 // Calibration needs a known FMU model to calibrate against -- gated on the
@@ -85,6 +92,11 @@ const calibrationModel = computed(() => {
   const model = props.device.active_simulation_model
   return model && model.provider_type === 'fmu' ? model : null
 })
+// Training covers both real cases: training a first ONNX model from an
+// FMU-running device's own recordings, or retraining/extending an
+// already-attached AI model from new recordings -- so any attached model
+// (fmu or ai) is eligible, not just 'ai'.
+const trainingModel = computed(() => props.device.active_simulation_model ?? null)
 // Strips the "{device name} " prefix that SimulationModelDrawer.vue's
 // buildPayload() always names a model with (`${device.name} ${model.label}`),
 // recovering just the model's own label for display on the badge -- falls
@@ -101,12 +113,14 @@ const simulationProviderLabel = computed(() => {
   if (!provider) return null
   if (provider === 'fmu') return simulationModelDisplayName.value ? `FMU: ${simulationModelDisplayName.value}` : 'FMU'
   if (provider === 'ai') return simulationModelDisplayName.value ? `AI: ${simulationModelDisplayName.value}` : 'AI'
+  if (provider === 'classifier') return simulationModelDisplayName.value ? `Fault Detection: ${simulationModelDisplayName.value}` : 'Fault Detection'
   return provider
 })
 const simulationProviderColor = computed(() => {
   const provider = props.device.active_simulation_model?.provider_type
   if (provider === 'fmu') return 'purple'
   if (provider === 'ai') return 'cyan'
+  if (provider === 'classifier') return 'gold'
   return 'default'
 })
 const simulationProviderTitle = computed(() => {
@@ -394,6 +408,29 @@ async function duplicateObject(obj: SimObject) {
   }
 }
 
+// Strips the known " (source device name)" suffix create_linked_object()
+// always appends (see database.py) so the Name column can render it as a
+// separate clickable link instead of plain trailing text. Falls back to
+// the full stored name unmodified if it doesn't end with that exact
+// suffix (e.g. an older linked object predating this naming convention,
+// or the rare numeric-disambiguation-suffixed case) -- never guesses.
+function objectBaseName(obj: SimObject): string {
+  const source = obj.link_source
+  if (!source) return obj.name
+  const suffix = ` (${source.device_name})`
+  return obj.name.endsWith(suffix) ? obj.name.slice(0, -suffix.length) : obj.name
+}
+
+async function unlinkObject(obj: SimObject) {
+  try {
+    await api.objects.unlink(props.device.id, obj.id)
+    await loadObjects()
+    message.success(`Unlinked "${obj.name}"`)
+  } catch (e: unknown) {
+    message.error((e as Error).message ?? 'Failed to unlink')
+  }
+}
+
 async function toggleObjectEnabled(obj: SimObject) {
   const nextEnabled = obj.enabled ? 0 : 1
   try {
@@ -559,33 +596,14 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
             <template #icon><EditOutlined /></template>
             Edit
           </a-button>
-          <a-button @click="openSimulationModel">
-            <template #icon><ExperimentOutlined /></template>
-            Simulation Model
-          </a-button>
-          <a-button :disabled="!objects.length" @click="saveTemplateOpen = true">Save as Template</a-button>
-          <a-button @click="templateModalOpen = true">From Template</a-button>
-          <a-button :disabled="!objects.length" @click="suggestModalOpen = true">
-            <template #icon><BulbOutlined /></template>
-            Suggest Semantics
-          </a-button>
           <a-dropdown :trigger="['click']">
             <a-button>
-              More actions
-              <template #icon><DownOutlined /></template>
+              <template #icon><ApiOutlined /></template>
+              BACnet
+              <DownOutlined />
             </a-button>
             <template #overlay>
               <a-menu>
-                <a-menu-item key="duplicate" @click="emit('duplicate-device', device)">
-                  <CopyOutlined /> Duplicate
-                </a-menu-item>
-                <a-menu-divider />
-                <a-menu-item key="export-ede" @click="emit('export-ede', device)">
-                  <DownloadOutlined /> Export EDE
-                </a-menu-item>
-                <a-menu-item key="import-ede" @click="emit('import-ede', device)">
-                  <UploadOutlined /> Import EDE
-                </a-menu-item>
                 <a-menu-item key="export-brick" @click="emit('export-brick', device)">
                   <DownloadOutlined /> Export Brick Schema (.ttl)
                 </a-menu-item>
@@ -599,18 +617,6 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
                 <a-menu-item key="trend-logs" @click="emit('trend-logs', device)">
                   <LineChartOutlined /> Trend Logs
                 </a-menu-item>
-                <a-menu-item key="recordings" @click="emit('replay-recordings', device)">
-                  <VideoCameraOutlined /> Record
-                </a-menu-item>
-                <a-menu-item
-                  key="calibration"
-                  :disabled="!calibrationModel"
-                  @click="calibrationModel && emit('calibration', device)"
-                >
-                  <a-tooltip :title="calibrationModel ? undefined : 'Attach a Simulation Model first'" placement="left">
-                    <ExperimentOutlined /> Calibration
-                  </a-tooltip>
-                </a-menu-item>
                 <a-menu-item v-if="isReplay" key="replay-playback" @click="emit('replay-playback', device)">
                   <VideoCameraOutlined /> Replay Playback
                 </a-menu-item>
@@ -621,11 +627,75 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
                   <ScheduleOutlined /> Calendars
                 </a-menu-item>
                 <a-menu-divider />
+                <a-menu-item key="view-traffic" @click="emit('view-traffic', device)">
+                  <ClusterOutlined /> View Traffic
+                </a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
+          <a-dropdown :trigger="['click']">
+            <a-button>
+              <template #icon><ExperimentOutlined /></template>
+              Simulation
+              <DownOutlined />
+            </a-button>
+            <template #overlay>
+              <a-menu>
+                <a-menu-item key="simulation-model" @click="openSimulationModel">
+                  <ExperimentOutlined /> Edit
+                </a-menu-item>
+                <a-menu-item
+                  key="calibration"
+                  :disabled="!calibrationModel"
+                  @click="calibrationModel && emit('calibration', device)"
+                >
+                  <a-tooltip :title="calibrationModel ? undefined : 'Attach a Simulation Model first'" placement="left">
+                    <ExperimentOutlined /> Calibrate
+                  </a-tooltip>
+                </a-menu-item>
+                <a-menu-item
+                  key="training"
+                  :disabled="!trainingModel"
+                  @click="trainingModel && emit('training', device)"
+                >
+                  <a-tooltip :title="trainingModel ? undefined : 'Attach a Simulation Model first'" placement="left">
+                    <RobotOutlined /> Train
+                  </a-tooltip>
+                </a-menu-item>
                 <a-menu-item key="energy-model" @click="emit('energy-model', device)">
                   <ThunderboltOutlined /> Energy Model
                 </a-menu-item>
-                <a-menu-item key="view-traffic" @click="emit('view-traffic', device)">
-                  <ClusterOutlined /> View Traffic
+              </a-menu>
+            </template>
+          </a-dropdown>
+          <a-dropdown :trigger="['click']">
+            <a-button>
+              More actions
+              <DownOutlined />
+            </a-button>
+            <template #overlay>
+              <a-menu>
+                <a-menu-item key="duplicate" @click="emit('duplicate-device', device)">
+                  <CopyOutlined /> Duplicate
+                </a-menu-item>
+                <a-menu-item key="save-as-template" :disabled="!objects.length" @click="saveTemplateOpen = true">
+                  <SaveOutlined /> Save as Template
+                </a-menu-item>
+                <a-menu-item key="from-template" @click="templateModalOpen = true">
+                  <FileAddOutlined /> From Template
+                </a-menu-item>
+                <a-menu-item key="suggest-semantics" :disabled="!objects.length" @click="suggestModalOpen = true">
+                  <BulbOutlined /> Semantics
+                </a-menu-item>
+                <a-menu-item key="recordings" @click="emit('recordings', device)">
+                  <VideoCameraOutlined /> Recordings
+                </a-menu-item>
+                <a-menu-divider />
+                <a-menu-item key="export-ede" @click="emit('export-ede', device)">
+                  <DownloadOutlined /> Export EDE
+                </a-menu-item>
+                <a-menu-item key="import-ede" @click="emit('import-ede', device)">
+                  <UploadOutlined /> Import EDE
                 </a-menu-item>
               </a-menu>
             </template>
@@ -640,28 +710,38 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
             <template #icon><EditOutlined /></template>
             Edit
           </a-button>
-          <a-button :loading="refreshing" @click="manualRefresh">Refresh</a-button>
-          <a-button @click="emit('create-simulated-copy', device)">
-            <template #icon><CopyOutlined /></template>
-            Create Simulation
-          </a-button>
-          <a-button :disabled="!objects.length" @click="suggestModalOpen = true">
-            <template #icon><BulbOutlined /></template>
-            Suggest Semantics
-          </a-button>
-          <a-button :loading="loading" @click="discoverObjects">
-            <template #icon><ApiOutlined /></template>
-            Rediscover Objects
-          </a-button>
           <a-dropdown :trigger="['click']">
             <a-button>
-              More actions
-              <template #icon><DownOutlined /></template>
+              <template #icon><ExperimentOutlined /></template>
+              Simulation
+              <DownOutlined />
             </a-button>
             <template #overlay>
               <a-menu>
-                <a-menu-item key="recordings" @click="emit('replay-recordings', device)">
-                  <VideoCameraOutlined /> Record
+                <a-menu-item key="create-simulated-copy" @click="emit('create-simulated-copy', device)">
+                  <CopyOutlined /> Create
+                </a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
+          <a-dropdown :trigger="['click']">
+            <a-button>
+              More actions
+              <DownOutlined />
+            </a-button>
+            <template #overlay>
+              <a-menu>
+                <a-menu-item key="refresh" :disabled="refreshing" @click="manualRefresh">
+                  <LoadingOutlined v-if="refreshing" /><ReloadOutlined v-else /> Refresh
+                </a-menu-item>
+                <a-menu-item key="rediscover" :disabled="loading" @click="discoverObjects">
+                  <LoadingOutlined v-if="loading" /><ApiOutlined v-else /> Rediscover Objects
+                </a-menu-item>
+                <a-menu-item key="suggest-semantics" :disabled="!objects.length" @click="suggestModalOpen = true">
+                  <BulbOutlined /> Semantics
+                </a-menu-item>
+                <a-menu-item key="recordings" @click="emit('recordings', device)">
+                  <VideoCameraOutlined /> Recordings
                 </a-menu-item>
                 <a-menu-divider />
                 <a-menu-item-group key="move-to" title="Move to">
@@ -701,12 +781,28 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
         </div>
       </template>
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'type'">
+        <template v-if="column.key === 'name'">
+          <span v-if="(record as SimObject).link_source">
+            {{ objectBaseName(record as SimObject) }}
+            (<a @click.stop="emit('select-controller', (record as SimObject).link_source!.device_id)">{{ (record as SimObject).link_source!.device_name }}</a>)
+          </span>
+          <span v-else>{{ (record as SimObject).name }}</span>
+          <a-tag
+            v-if="(record as SimObject).simulation_output_owner"
+            style="margin-left:6px;padding:0 4px;font-size:10px;line-height:16px"
+          >M</a-tag>
+        </template>
+        <template v-else-if="column.key === 'type'">
           <a-tag style="font-family:monospace;font-size:11px">{{ (record as SimObject).object_type }}</a-tag>
         </template>
         <template v-else-if="column.key === 'behavior'">
-          <a-tooltip v-if="(record as SimObject).simulation_output_owner" :title="`Driven by ${(record as SimObject).simulation_output_owner!.name} / ${(record as SimObject).simulation_output_owner!.variable}`">
-            <a-tag :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
+          <a-tooltip
+            v-if="(record as SimObject).source_object_id"
+            :title="(record as SimObject).link_source
+              ? `Linked from ${(record as SimObject).link_source!.device_name} / ${(record as SimObject).link_source!.name}`
+              : 'Linked from another point'"
+          >
+            <a-tag color="blue">linked</a-tag>
           </a-tooltip>
           <a-tag v-else-if="canConfigureSimulation && !isMirror" :color="BEHAVIOR_COLOR[(record as SimObject).behavior]">{{ (record as SimObject).behavior }}</a-tag>
           <span v-else style="color:var(--text-disabled)">—</span>
@@ -759,6 +855,11 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
             <a-button type="text" size="small" title="Duplicate" @click.stop="duplicateObject(record as SimObject)">
               <template #icon><CopyOutlined /></template>
             </a-button>
+            <a-button
+              v-if="(record as SimObject).source_object_id"
+              type="link" size="small"
+              @click.stop="unlinkObject(record as SimObject)"
+            >Unlink</a-button>
             <a-button
               v-if="!(record as SimObject).simulation_output_owner && (record as SimObject).behavior === 'manual'"
               type="link" size="small"
@@ -822,10 +923,7 @@ async function mirrorBehaviorGuard(): Promise<boolean> {
     @ok="doSetValue"
   >
     <div style="padding:8px 0">
-      <a-radio-group v-if="setValIsBinary" v-model:value="setValActive" style="width:100%">
-        <a-radio-button :value="true" style="width:50%;text-align:center">ON</a-radio-button>
-        <a-radio-button :value="false" style="width:50%;text-align:center">OFF</a-radio-button>
-      </a-radio-group>
+      <BooleanToggle v-if="setValIsBinary" v-model:value="setValActive" />
       <a-input-number
         v-else
         v-model:value="setValInput"

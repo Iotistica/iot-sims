@@ -10,7 +10,7 @@ def _by_instance(devices):
 def test_sync_creates_new_external_devices(database):
     persisted = database.sync_external_devices([
         {
-            "device_instance": 1000, "name": "bms_gateway_1000", "host": "172.22.0.21", "port": 47808,
+            "protocol": "bacnet", "device_instance": 1000, "name": "bms_gateway_1000", "host": "172.22.0.21", "port": 47808,
             "metadata": {"objectName": "BMS-Gateway", "vendorName": "Honeywell", "vendorId": 5},
         },
     ])
@@ -25,11 +25,11 @@ def test_sync_creates_new_external_devices(database):
 
 def test_sync_updates_existing_device_in_place_not_duplicated(database):
     first = database.sync_external_devices([
-        {"device_instance": 1000, "name": "d", "host": "172.22.0.21", "port": 47808,
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d", "host": "172.22.0.21", "port": 47808,
          "metadata": {"objectName": "Original-Name", "vendorName": "Honeywell"}},
     ])
     second = database.sync_external_devices([
-        {"device_instance": 1000, "name": "d", "host": "172.22.0.21", "port": 47808,
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d", "host": "172.22.0.21", "port": 47808,
          "metadata": {"objectName": "Renamed", "vendorName": "Honeywell"}},
     ])
     assert len(second) == 1
@@ -39,12 +39,12 @@ def test_sync_updates_existing_device_in_place_not_duplicated(database):
 
 def test_rediscover_missing_device_is_not_deleted(database):
     database.sync_external_devices([
-        {"device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
-        {"device_instance": 1001, "name": "d2", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1001, "name": "d2", "host": "172.22.0.21", "port": 47808, "metadata": {}},
     ])
     # Second run only sees 1000 -- 1001 is "temporarily offline".
     persisted = database.sync_external_devices([
-        {"device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
     ])
     instances = {d["device_instance"] for d in persisted}
     assert instances == {1000, 1001}
@@ -52,11 +52,11 @@ def test_rediscover_missing_device_is_not_deleted(database):
 
 def test_rediscover_adds_newly_seen_device_without_touching_others(database):
     database.sync_external_devices([
-        {"device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
     ])
     persisted = database.sync_external_devices([
-        {"device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
-        {"device_instance": 1002, "name": "d3", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1002, "name": "d3", "host": "172.22.0.21", "port": 47808, "metadata": {}},
     ])
     instances = {d["device_instance"] for d in persisted}
     assert instances == {1000, 1002}
@@ -64,7 +64,7 @@ def test_rediscover_adds_newly_seen_device_without_touching_others(database):
 
 def test_sync_external_objects_upserts_by_type_and_instance(database):
     devices = database.sync_external_devices([
-        {"device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
     ])
     device_id = devices[0]["id"]
 
@@ -84,7 +84,7 @@ def test_sync_external_objects_upserts_by_type_and_instance(database):
 
 def test_sync_external_objects_never_touches_manual_value(database):
     devices = database.sync_external_devices([
-        {"device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
     ])
     device_id = devices[0]["id"]
     rows = database.sync_external_objects(device_id, [
@@ -96,7 +96,7 @@ def test_sync_external_objects_never_touches_manual_value(database):
 
 def test_touch_external_device_last_seen(database):
     devices = database.sync_external_devices([
-        {"device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
+        {"protocol": "bacnet", "device_instance": 1000, "name": "d1", "host": "172.22.0.21", "port": 47808, "metadata": {}},
     ])
     assert devices[0]["external_last_seen_at"] is not None
     device_id = devices[0]["id"]

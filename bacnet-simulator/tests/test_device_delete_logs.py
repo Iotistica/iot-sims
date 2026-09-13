@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 def _create_device(client, *, instance=101, name="Test-Device"):
-    resp = client.post("/devices", json={"device_instance": instance, "name": name})
+    resp = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name})
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 

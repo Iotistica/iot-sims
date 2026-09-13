@@ -1,5 +1,6 @@
 export interface Device {
   id: number
+  protocol: string
   device_instance: number
   name: string
   description: string
@@ -28,20 +29,20 @@ export interface Device {
   simulation_mode?: 'simulation' | 'mirror' | 'replay'
   /** ID of the external source device for Twin/Replay modes; null for ordinary simulated devices. */
   source_device_id?: number | null
-  /** ID of the ReplayRecording driving this device's values; only set when simulation_mode==='replay'. */
-  replay_recording_id?: number | null
+  /** ID of the Recording driving this device's values; only set when simulation_mode==='replay'. */
+  active_recording_id?: number | null
   /** Server-computed summary of the enabled explicit simulation model driving this device's output points. */
   active_simulation_model?: {
     id: number
     name: string
-    provider_type: 'fmu' | 'ai'
+    provider_type: 'fmu' | 'ai' | 'classifier'
     model_type: string
     model_count?: number
   } | null
   /** Server-computed: true when this device has an explicit simulation model configured but currently disabled (stopped). */
   simulation_model_stopped?: boolean
   /** Server-computed: the recording driving this device's values, when simulation_mode==='replay'. */
-  active_replay_recording?: { id: number; name: string } | null
+  active_recording?: { id: number; name: string } | null
 }
 
 export interface Location {
@@ -116,11 +117,27 @@ export interface SimObject {
   polarity: string
   point_type?: string | null
   description?: string | null
+  /** Optional BACnet State_Text list for a multi-state object (see
+   * migration 031) -- one entry per state, index 0 = state 1. null means
+   * no state text configured (every multi-state object before this field
+   * existed). Primary producer is the Fault Detection Model attach flow
+   * (ClassifierTrainingFlow.vue), auto-populated from a promoted
+   * classifier's class_labels. */
+  state_text?: string[] | null
+  /** When present, this object's value is a live pass-through of another
+   * object elsewhere (same device, another simulated device, or a live
+   * external one) -- kept in sync by mirror_sync_loop's per-object link
+   * pass (see POST .../objects/link). Its own `behavior` stays stored but
+   * inactive, same as a whole-device Mirror. */
+  source_object_id?: number | null
+  /** Resolved display info for source_object_id -- attached by GET
+   * .../objects, null unless source_object_id is set. */
+  link_source?: { device_id: number; device_name: string; name: string } | null
   /** Explicit model output owner. When present, the provider (FMU/AI model) generates this point's raw value; `behavior` is applied on top of it every tick (see SimEngine._apply_fmu_behavior). */
   simulation_output_owner?: {
     id: number
     name: string
-    provider_type: 'fmu' | 'ai'
+    provider_type: 'fmu' | 'ai' | 'classifier'
     model_type: string
     variable: string
   } | null
@@ -221,6 +238,8 @@ export interface Settings {
   openai_compatible_base_url: string
   openai_compatible_api_key: string
   openai_compatible_model: string
+  recording_retention_enabled: boolean
+  recording_retention_days: number
 }
 
 export interface NotificationRecipient {
@@ -326,7 +345,7 @@ export interface TrendLogRecord {
   status_flags: string
 }
 
-export interface ReplayRecordingPoint {
+export interface RecordingPoint {
   id: number
   recording_id: number
   source_object_id: number | null
@@ -337,11 +356,48 @@ export interface ReplayRecordingPoint {
   units: string | null
 }
 
-export interface ReplayRecording {
+/** Second axis of a recording's ground-truth classification, alongside
+ * `condition` (severity) -- what KIND of problem, not how bad. Real-world
+ * HVAC FDD practice splits classification exactly this way. Fixed enum,
+ * not free text -- a classifier needs a small, known, closed set of
+ * classes to predict from. */
+export type FaultType =
+  // General -- any equipment with sensors/actuators/setpoints.
+  | 'sensor_bias' | 'sensor_stuck' | 'actuator_stuck' | 'actuator_leak'
+  | 'control_unstable' | 'incorrect_setpoint'
+  // Air-side -- AHU/RTU/VAV.
+  | 'simultaneous_heat_cool' | 'filter_fouling'
+  // Refrigeration cycle -- RTU/Chiller/heat-pump DX equipment.
+  | 'compressor_staging' | 'condenser_fouling' | 'evaporator_fouling'
+  | 'refrigerant_overcharge' | 'refrigerant_undercharge' | 'refrigerant_line_restriction'
+  // Hydronic/water-side -- Boiler/Chiller/Cooling Tower/Pump.
+  | 'heat_exchanger_fouling' | 'water_flow_restriction' | 'cavitation'
+  // Combustion -- Boiler-specific.
+  | 'ignition_failure' | 'low_water_cutoff_fault'
+  // Mechanical/rotating equipment -- Fan/Pump/Cooling Tower.
+  | 'belt_or_drive_fault'
+
+export interface Recording {
   id: number
   source_device_id: number
   name: string
   description: string
+  /** Structured ground-truth classification (severity) -- null means
+   * unclassified/legacy (a recording made before this field existed, or
+   * never classified), never guessed/backfilled. Separate from `tags`
+   * (Tags) below and from `fault_type` (what kind, not how bad). */
+  condition?: 'normal' | 'degraded' | 'fault' | null
+  /** What kind of problem, independent of condition's severity -- see
+   * FaultType's own doc comment. null means unset -- the UI only shows/
+   * edits this when condition isn't 'normal' (nothing to classify for a
+   * normal recording). */
+  fault_type?: FaultType | null
+  /** Independent scenario/tag labels (e.g. "hot-day", "fan-test") -- never
+   * read by replay playback, purely descriptive metadata. Not fed into any
+   * training feature (see src/simulation/training_export.py's own module
+   * docstring -- an earlier single-string `category` field did feed a
+   * training column; that was retired, not carried over to this list). */
+  tags: string[]
   status: 'recording' | 'completed'
   sample_interval_seconds: number
   maximum_samples: number
@@ -353,7 +409,7 @@ export interface ReplayRecording {
   sample_count: number
   sample_index_min: number | null
   sample_index_max: number | null
-  points?: ReplayRecordingPoint[]
+  points?: RecordingPoint[]
 }
 
 
@@ -384,6 +440,13 @@ export interface CalibrationRecordingSummary {
   device_name: string | null
   name: string
   description: string
+  /** Structured ground-truth classification -- null means unclassified/
+   * legacy, see Recording's own doc comment. */
+  condition?: 'normal' | 'degraded' | 'fault' | null
+  /** See FaultType's own doc comment. */
+  fault_type?: FaultType | null
+  /** See Recording.tags's own doc comment -- metadata only. */
+  tags: string[]
   status: 'recording' | 'completed'
   sample_interval_seconds: number
   point_count: number
@@ -408,6 +471,19 @@ export interface CalibrationMappingVariable {
   confidence: 'high' | 'medium' | 'low' | 'none' | string
   reasons: string[]
   alternatives: CalibrationMappingAlternative[]
+  /** How this row was resolved: which semantic representation answered ('brick' today)
+   * and how confidently ('exact' | 'class_only' | 'ambiguous' | 'unresolved').
+   * `suggested_point_id` is only ever set for 'exact' / 'class_only'. */
+  resolution?: { provider: string; quality: string }
+  /** A SEPARATE name/unit-based guess, offered only when semantics did not bind. It is
+   * never auto-applied and is never a semantic match -- the user must opt in. */
+  name_match?: {
+    mechanism: 'name'
+    point_id: number | null
+    point_name: string
+    confidence: string
+    reasons: string[]
+  } | null
 }
 
 export interface CalibrationRecordingPoint {
@@ -428,12 +504,52 @@ export interface CalibrationJob {
   model_id: string
   method: string
   dataset_id: string
+  validation_dataset_id?: string | null
   status: 'QUEUED' | 'VALIDATING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
   experiment_id: string | null
   created_at: number
   started_at: number | null
   completed_at: number | null
   error: string | null
+  /** The bacnet-simulator calibration_runs row this compute job belongs to -- present on
+   * POST /calibration/jobs and every GET /calibration/jobs/{id} response. */
+  calibration_run_id?: number
+}
+
+// The five fit statistics run_hebo_calibration.py's own metric_pack() computes for a candidate
+// -- surfaced in full (not just whichever one was the optimization objective), since they're
+// directly relevant to judging an experimentally-calibrated model independent of whether the
+// ASHRAE G14 check below applies at all. Any entry can be null (metric undefined for that
+// evaluation, e.g. a zero-mean goal variable, or the evaluation failed).
+export interface CalibrationMetrics {
+  cv_rmse: number | null
+  mae: number | null
+  nmbe: number | null
+  r2: number | null
+  rmse: number | null
+}
+
+// An OPTIONAL, complementary statistical reference check -- never the sole/universal definition
+// of "this model is calibrated" (see ashrae_g14.py's own module docstring in iot-models).
+// `applicable` is false (with `reason`) whenever a real PASS/FAIL can't be produced: no
+// calibration.validation.interval configured in model.json, an unrecognized interval value, or
+// a missing cv_rmse/nmbe -- never a guessed hourly-vs-monthly band.
+export interface AshraeG14Result {
+  applicable: boolean
+  reason?: string
+  interval?: 'hourly' | 'monthly'
+  cv_rmse?: number
+  cv_rmse_threshold?: number
+  cv_rmse_pass?: boolean
+  nmbe?: number
+  nmbe_threshold?: number
+  nmbe_pass?: boolean
+  pass?: boolean | null
+  /** The PRIMARY ashrae_g14 is held-out-validation-only: 'validation' when it was scored
+   * on a held-out replay, null when there was none (or it failed) -- in which case
+   * `applicable` is false and `reason` says why. Fit-period G14 is exposed separately as
+   * `CalibrationResult.calibration_fit_g14` and is a diagnostic, never a trust verdict. */
+  based_on?: 'validation' | null
 }
 
 export interface CalibrationResult {
@@ -447,13 +563,250 @@ export interface CalibrationResult {
     baseline: number | null
     best: number | null
     improvement_pct: number | null
+    metrics: CalibrationMetrics | null
+    baseline_metrics: CalibrationMetrics | null
   }
+  /** Explicit, non-conflatable names: how the model did on the data it was TUNED against
+   * vs. on HELD-OUT data. `validation_metrics` is null unless a held-out replay completed. */
+  calibration_metrics?: CalibrationMetrics | null
+  validation_metrics?: CalibrationMetrics | null
+  /** Best-effort declared tuner start values from the FMU modelDescription -- provenance
+   * only, may be partial or {}. Not the baseline (which is a no-override replay). */
+  fmu_defaults?: Record<string, number>
   best_parameters: Record<string, number>
   execution: {
     evaluations: number | null
     failed_evaluations: number
     duration_seconds: number
   }
+  /** PRIMARY verdict -- held-out validation only. */
+  ashrae_g14: AshraeG14Result
+  /** Fit-period G14 -- diagnostic ONLY, never presented as a trust verdict. */
+  calibration_fit_g14?: AshraeG14Result
+}
+
+/** One row of the bacnet-simulator `calibration_runs` table (migration 033) -- the
+ * durable workflow/audit record for a calibration. See src/api/routers/calibration.py. */
+export interface CalibrationRun {
+  id: number
+  schema_version: number
+  runtime_job_id: string | null
+  runtime_dataset_id: string | null
+  runtime_validation_dataset_id: string | null
+  model_id: string
+  simulation_model_id: number | null
+  recording_id: number | null
+  validation_recording_id: number | null
+  fmu_sha256: string | null
+  metadata_sha256: string | null
+  tuner_names: string[]
+  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  failure_stage: string | null
+  error_summary: string | null
+  mapping_json: Record<string, {
+    recording_point_id: number
+    semantic_id: string | null
+    selection_source: 'semantic_match' | 'user_override'
+    semantic_resolution: { provider: string; quality: string; alternatives: number[] } | null
+  }>
+  objective_metric: string | null
+  baseline_metric: number | null
+  calibration_metric: number | null
+  improvement_pct: number | null
+  validation_status: 'not_requested' | 'pending' | 'completed' | 'failed'
+  validation_cv_rmse: number | null
+  validation_nmbe: number | null
+  validation_rmse: number | null
+  validation_mae: number | null
+  validation_r2: number | null
+  g14_interval: string | null
+  g14_based_on: 'validation' | null
+  g14_applicable: number | null
+  g14_pass: number | null
+  best_parameters_json: Record<string, number>
+  fmu_defaults_json: Record<string, number>
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  applied_at: string | null
+  applied_to_simulation_model_id: number | null
+}
+
+// ── Training export (recordings -> iot-models training-job dataset) ──────
+// Sibling to the Calibration* types above, but scoped to MULTIPLE
+// recordings at once (every model input AND output, not just calibration's
+// narrower inputs + one goal output) -- see
+// src/api/routers/training_export.py for the exact response shapes these
+// mirror.
+
+// No scoring/guessing here -- a variable is either mapped on the device's
+// own active Simulation Model config or it isn't (see training_export.py's
+// get_training_mapping_suggestions own docstring for why Training stopped
+// guessing point mappings itself).
+export interface TrainingMappingVariable {
+  name: string
+  direction: 'input' | 'output'
+  unit: string | null
+  required: boolean
+  /** The model's own catalog default for this variable, if it has one --
+   * what the model uses when this variable is left out of training/runtime
+   * entirely. */
+  default: number | string | null
+  mapped: boolean
+  /** How `mapped` was satisfied -- 'point' (a live BACnet point, the usual
+   * case) or 'constant' (no point at all; this input's value came from
+   * what a recording itself snapshotted at record time -- see
+   * constant_values). null when unmapped. */
+  source: 'point' | 'constant' | null
+  object_id: number | null
+  point_name: string | null
+  point_units: string | null
+  /** Only set when source === 'constant' -- recording id -> the literal
+   * value THAT recording captured for this variable at record time (can
+   * differ between recordings if the device's config changed in between;
+   * never the device's current live value). */
+  constant_values: Record<number, number> | null
+  /** Only meaningful when mapped -- recording ids (from the request's own
+   * recording_ids) that can't supply this variable at all: for a
+   * point-sourced variable, one that never captured a point for its
+   * object_id; for a constant-sourced one, a recording made before
+   * constant-value snapshotting existed (or before this variable was
+   * constant-sourced). Including this variable will silently drop that
+   * recording's rows from the training set. */
+  missing_in_recordings: number[]
+  /** Auto Brick-resolution attempt for this variable's own object_id -- null when the variable
+   * isn't point-sourced at all (unmapped, or constant-sourced). See
+   * src/semantics/feature_contract.py's resolve_point_semantic_identity. */
+  semantic: { resolved: boolean; point_class: string | null; equipment_path: string[] | null } | null
+}
+
+export interface TrainingMappingSuggestions {
+  variables: TrainingMappingVariable[]
+  recording_ids: number[]
+}
+
+// ── Semantic feature contract (Brick-portable classifier features) ───────
+// See src/semantics/feature_contract.py. Three identity kinds, chosen per feature: "brick"
+// (auto-resolved, genuinely portable), "custom" (user-named, same-device-only this phase),
+// "device_specific" (raw point id, same-device-only, honest fallback -- never chosen silently).
+export type FeatureIdentityKind = 'brick' | 'custom' | 'device_specific'
+
+export interface SemanticFeatureSpec {
+  feature_name: string
+  identity_kind: FeatureIdentityKind
+  point_class?: string | null
+  equipment_path?: string[] | null
+  custom_label?: string | null
+  source_device_id?: number | null
+  source_object_id?: number | null
+  bacnet_object_type?: string | null
+  bacnet_object_instance?: number | null
+  object_name?: string | null
+  unit?: string | null
+  lag?: number
+}
+
+/** The user's explicit decision for a variable Brick couldn't auto-resolve -- see
+ * CreateTrainingExportJobRequest.feature_choices. Never a default; only ever set by an explicit
+ * UI action. */
+export type FeatureChoice =
+  | { kind: 'custom'; custom_label: string }
+  | { kind: 'device_specific' }
+
+export interface SemanticCompatibilityResult {
+  ok: boolean
+  portability: 'portable' | 'partial' | 'device_specific' | null
+  bound: Record<string, number>
+  missing: Record<string, string>
+  ambiguous: Record<string, number[]>
+}
+
+/** Result of promoting a completed training job -- a real, live,
+ * attachable catalog entry (ModelMetadata.summary() from iot-models),
+ * always a fresh model_id (see training_export.py's own docstring for
+ * why promotion never overwrites an existing one in place). */
+export interface PromotedModelSummary {
+  id: string
+  slug: string
+  label: string
+  runtime_type: 'onnx' | 'fmu' | 'classifier'
+  onnx_path: string | null
+  onnx_exists: boolean
+  /** Only set for runtime_type === 'classifier' -- the fixed, ordered set
+   * of class names this model's single output predicts, and which
+   * recording field it was trained against. See iot-models'
+   * ModelMetadata.class_labels/classifier_target. */
+  class_labels?: string[] | null
+  classifier_target?: 'condition' | 'fault_type' | null
+  /** Brick-portable feature identity contract this model was trained with -- see
+   * src/semantics/feature_contract.py. null for a model trained before this feature existed. */
+  semantic_features?: SemanticFeatureSpec[] | null
+  /** Least-portable identity kind present among semantic_features -- "portable" (every feature
+   * is brick, attachable to any equivalent equipment), "partial" (some custom features, this
+   * device only for those), "device_specific" (this device only, full stop). */
+  portability?: 'portable' | 'partial' | 'device_specific' | null
+  equipment_class?: string | null
+}
+
+export interface TrainingJob {
+  job_id: string
+  model_id: string
+  dataset_id: string
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  created_at: number
+  started_at: number | null
+  completed_at: number | null
+  error: string | null
+}
+
+export interface TrainingResult {
+  job_id: string
+  model_id: string
+  dataset_id: string
+  wall_clock_seconds: number
+  rows: { raw: number; supervised: number; train: number; test: number }
+  trajectories: { train: number; test: number }
+  aggregate: { mean_mae: number | null; mean_r2: number | null }
+  per_output_metrics: Record<string, { mae: number | null; r2: number | null; n: number }>
+  worst_outputs_by_r2: { output: string; r2: number | null }[]
+  typical_outputs: Record<string, number>
+  // train_baseline.py's own raw payload carries a few more fields (paths,
+  // configuration echo) not surfaced in this drawer -- passed through
+  // rather than dropped.
+  [key: string]: unknown
+}
+
+/** Result of a completed classification (task_type: "classification")
+ * training job -- iot-models' train_classifier.py result.json shape,
+ * distinctly shaped from TrainingResult (accuracy/confusion_matrix, not
+ * RÂ²/MAE). Detectable via "class_labels" in result, same convention
+ * iot-models' own promote route uses server-side. */
+export interface ClassificationResult {
+  job_id: string
+  model_id: string
+  dataset_id: string
+  wall_clock_seconds: number
+  classifier_target: 'condition' | 'fault_type'
+  class_labels: string[]
+  rows: { raw: number; supervised: number; train: number; test: number }
+  trajectories: { train: number; test: number }
+  /** Per-class counts by BOTH recording (trajectory) and sample count --
+   * never let one recording's many ticks read as many independent
+   * experiments. Keyed by class label. */
+  class_distribution: Record<string, { trajectories: number; samples: number }>
+  /** Classes present in training but with zero held-out test coverage
+   * (always the classes with only 1 recording) -- surfaced, not hidden;
+   * their accuracy/per_class_metrics entry isn't meaningful this run. */
+  untested_classes: string[]
+  accuracy: number
+  per_class_metrics: Record<string, { precision: number; recall: number; f1: number; support: number }>
+  confusion_matrix: number[][]
+  /** Brick-portable feature identity contract this run trained with -- null when no
+   * feature_choices/semantic resolution was submitted at all (see feature_contract.py). */
+  semantic_features?: SemanticFeatureSpec[] | null
+  portability?: 'portable' | 'partial' | 'device_specific' | null
+  equipment_class?: string | null
+  [key: string]: unknown
 }
 
 export interface ScheduleTimeValue {
@@ -767,29 +1120,20 @@ export interface CapturedPacket {
   session_id: string
   timestamp: number
   timestamp_utc: string
+  protocol: string
+  transport: string
   direction: PacketDirection
-
-  source_ip: string
-  source_port: number
-  destination_ip: string
-  destination_port: number
-
+  source: { address: string; port: number | null }
+  destination: { address: string; port: number | null }
   length: number
   raw_hex?: string
-  full_frame_hex?: string
-
   decode_status: 'decoded' | 'partial' | 'warning' | 'error' | 'unknown'
-  bvlc_function: string | null
-  service_name: string | null
+  operation: string | null
+  status: string | null
+  summary: Record<string, unknown>
+  details: Record<string, unknown>
   decode_error: string | null
-
-  simulator_device_id: number | null
-  simulator_device_instance: number | null
-  simulator_device_name: string | null
-  simulator_object_id: number | null
-  simulator_object_type: string | null
-  simulator_object_instance: number | null
-  simulator_object_name: string | null
+  simulator: { device_id: number | null; device_name: string | null; point_id: number | null; point_name: string | null }
 }
 
 export interface CapturedPacketPage {
@@ -801,9 +1145,8 @@ export interface CapturedPacketPage {
 
 export interface PacketCaptureFilters {
   direction?: PacketDirection
-  sourceIp?: string
-  destinationIp?: string
-  service?: string
+  protocol?: string
+  operation?: string
   deviceId?: number
   unassociated?: boolean
   offset?: number
@@ -829,7 +1172,7 @@ export interface PointRef {
 
 /** One row from GET /points -- the cross-device listing PointPicker.vue
  * searches/filters. Device/Point Name are the primary identity; semantic
- * type/object type·instance/units/live value are secondary/display-only. */
+ * type/object typeÂ·instance/units/live value are secondary/display-only. */
 export interface PointRow {
   object_id: number
   device_id: number
@@ -950,6 +1293,12 @@ export interface CustomGraphSeries {
   color: string
   axis: 'left' | 'right'
   visible: boolean
+  /** 'pv' (Process Variable, the default -- omitted/absent means this) or
+   * 'setpoint', rendered dashed instead of solid (see customGraphChart.ts's
+   * buildChartData) -- a real-controller-style trend, PV vs. its Setpoint.
+   * Sourced from a live point like any other series, never a typed-in
+   * constant -- see migration 28's docstring. */
+  role?: 'pv' | 'setpoint'
 }
 
 export interface CustomGraphDefinition {
@@ -963,10 +1312,52 @@ export interface CustomGraphDefinition {
   time_range: 'live'
 }
 
+/** widget_type='kpi' definition -- a single point's current value, no
+ * chart/series concept at all. See migration 28's docstring. */
+export interface KpiDefinition {
+  device_id: number
+  object_id: number
+  decimals?: number
+}
+
+/** widget_type='table' definition -- one point's raw history shown as a
+ * table. Time/Value are always shown; Min/Max/Avg are computed
+ * client-side over the same fetched /history buffer (no server-side
+ * aggregation exists) and toggled via `columns`. No "quality" column --
+ * nothing in this app maps to it (see the Table widget plan's Context). */
+export interface TableDefinition {
+  device_id: number
+  object_id: number
+  columns?: { time?: boolean; value?: boolean; min?: boolean; max?: boolean; avg?: boolean }
+  page_size?: number
+}
+
+export type WidgetType = 'chart' | 'kpi' | 'table'
+
 export interface SavedGraph {
   id: number
   name: string
-  definition: CustomGraphDefinition
+  /** 'chart' rows use CustomGraphDefinition; 'kpi'/'table' rows use
+   * KpiDefinition/TableDefinition (same one-point shape, different
+   * display) -- discriminate on widget_type, not on the shape of
+   * `definition` itself. */
+  definition: CustomGraphDefinition | KpiDefinition | TableDefinition
+  dashboard_id: number
+  widget_type: WidgetType
+  grid_x: number
+  grid_y: number
+  grid_w: number
+  grid_h: number
+  created_at: string
+  updated_at: string
+}
+
+/** Just a name to group SavedGraph (widget) rows under -- no content of
+ * its own. See migration 28's docstring for why widgets live on the
+ * existing custom_graphs table/SavedGraph type rather than a new one. */
+export interface Dashboard {
+  id: number
+  name: string
   created_at: string
   updated_at: string
 }

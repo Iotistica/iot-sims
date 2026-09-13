@@ -15,6 +15,14 @@ class ProviderStatus(str, Enum):
     ERROR = "error"
 
 
+class PointDataType(str, Enum):
+    BOOLEAN = "boolean"
+    INTEGER = "integer"
+    REAL = "real"
+    STRING = "string"
+    ENUM = "enum"
+
+
 @dataclass
 class ValidationResult:
     valid: bool
@@ -27,8 +35,8 @@ class PointConfig:
     point_id: int
     behavior: str
     behavior_params: str
+    data_type: PointDataType
     manual_value: Any = None
-    object_type: str = "analog-value"
 
 
 @dataclass

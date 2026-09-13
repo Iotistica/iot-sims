@@ -25,7 +25,7 @@ from src.bacnet import ede
 
 def _device_with_objects(*objects: dict) -> dict:
     return {
-        "device_instance": 100,
+        "protocol": "bacnet", "device_instance": 100,
         "name": "Test Device",
         "description": "",
         "objects": list(objects),
@@ -151,7 +151,7 @@ def test_live_mode_multiple_objects_independent():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _create_device_with_object(client, *, instance: int) -> tuple[dict, dict]:
-    device = client.post("/devices", json={"device_instance": instance, "name": "RTU-Test"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": "RTU-Test"}).json()
     obj = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-value",
         "object_instance": 1,

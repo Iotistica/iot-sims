@@ -4,14 +4,14 @@ import { message } from 'ant-design-vue'
 import { api } from '../api'
 import { nextFreeInstance } from '../deviceInstance'
 import { copyDeviceAndObjects, createReplayDevice } from '../deviceCopy'
-import type { Device, ExternalObjectRow, ReplayRecording } from '../types'
+import type { Device, ExternalObjectRow, Recording } from '../types'
 
 const props = defineProps<{
   open: boolean
   sourceDevice: Device | null
   existingInstances: number[]
   // Set when opened via a specific recording's "Create Replay" action
-  // (ReplayRecordingDrawer.vue) -- preselects Replay mode and that
+  // (RecordingsDrawer.vue) -- preselects Replay mode and that
   // recording, skipping the normal Standard default. Name/Device Instance
   // stay editable either way. null/undefined for the ordinary "Create
   // Simulation" entry point (device context menu), which still defaults
@@ -27,7 +27,7 @@ const loading = ref(false)
 const fetchingSource = ref(false)
 const sourceObjects = ref<ExternalObjectRow[]>([])
 const simulationMode = ref<'simulation' | 'mirror' | 'replay'>('simulation')
-const replayRecordings = ref<ReplayRecording[]>([])
+const recordings = ref<Recording[]>([])
 const selectedRecordingId = ref<number | null>(null)
 const form = reactive({
   name: '',
@@ -35,9 +35,9 @@ const form = reactive({
 })
 
 // Only a completed, non-empty recording can drive a Replay device -- see
-// ReplayRecordingDrawer.vue's own "Completed"/"Recording" status vocabulary.
+// RecordingsDrawer.vue's own "Completed"/"Recording" status vocabulary.
 const availableRecordings = computed(() =>
-  replayRecordings.value.filter(r => r.status === 'completed' && r.sample_count > 0))
+  recordings.value.filter(r => r.status === 'completed' && r.sample_count > 0))
 const replayAvailable = computed(() => availableRecordings.value.length > 0)
 
 // A fresh read at open-time rather than depending on whatever ObjectsPanel
@@ -50,16 +50,16 @@ watch(() => props.open, async (v) => {
   form.device_instance = nextFreeInstance(props.existingInstances)
   sourceObjects.value = []
   simulationMode.value = props.preselectedRecordingId != null ? 'replay' : 'simulation'
-  replayRecordings.value = []
+  recordings.value = []
   selectedRecordingId.value = null
   fetchingSource.value = true
   try {
-    const [result, recordings] = await Promise.all([
+    const [result, fetchedRecordings] = await Promise.all([
       api.externalObjects.refresh(source.id),
-      api.replayRecordings.list(source.id),
+      api.recordings.list(source.id),
     ])
     sourceObjects.value = result.objects
-    replayRecordings.value = recordings
+    recordings.value = fetchedRecordings
     if (props.preselectedRecordingId != null) {
       selectedRecordingId.value = props.preselectedRecordingId
     }
@@ -89,7 +89,7 @@ async function create() {
   try {
     if (simulationMode.value === 'replay') {
       if (selectedRecordingId.value == null) { message.error('Choose a recording'); return }
-      const recording = await api.replayRecordings.get(selectedRecordingId.value)
+      const recording = await api.recordings.get(selectedRecordingId.value)
       const { device, objectCount } = await createReplayDevice(props.sourceDevice, {
         name: form.name.trim(),
         deviceInstance: form.device_instance,

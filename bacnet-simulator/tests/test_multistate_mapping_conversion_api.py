@@ -42,7 +42,7 @@ def _patch_definition(monkeypatch) -> ModelDefinition:
 
 
 def _make_device_and_multistate_point(client, *, instance: int):
-    dev_resp = client.post("/devices", json={"device_instance": instance, "name": "RTU-Test"})
+    dev_resp = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": "RTU-Test"})
     assert dev_resp.status_code in (200, 201), dev_resp.text
     device = dev_resp.json()
     resp = client.post(f"/devices/{device['id']}/objects", json={

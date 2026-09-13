@@ -488,7 +488,7 @@ def _make_device_with_value_and_weight_points(client, *, count=3, instance=4001)
     `count` "VAV airflow" (weight) points -- the primary HVAC use case from
     the task spec (RTU return-air temp = weighted avg of zone temps by VAV
     airflow)."""
-    device = client.post("/devices", json={"device_instance": instance, "name": "RTU-Test"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": "RTU-Test"}).json()
     value_points = [
         client.post(f"/devices/{device['id']}/objects", json={
             "object_type": "analog-input", "object_instance": i + 1,

@@ -288,8 +288,8 @@ function simulationProviderLabel(device: Device): string | null {
   return provider
 }
 
-function replayRecordingLabel(device: Device): string {
-  return device.active_replay_recording ? `Replay: ${device.active_replay_recording.name}` : 'Replay'
+function activeRecordingLabel(device: Device): string {
+  return device.active_recording ? `Replay: ${device.active_recording.name}` : 'Replay'
 }
 
 function simulationProviderColor(device: Device): string {
@@ -536,7 +536,7 @@ const toggleTreeExpansion = () => {
                     </a-tooltip>
                     <a-tag v-else-if="!['mirror','replay'].includes(node.device.simulation_mode ?? 'simulation')" color="green" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Sim</a-tag>
                     <a-tag v-if="node.device.simulation_mode === 'mirror'" color="blue" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">Twin</a-tag>
-                    <a-tag v-if="node.device.simulation_mode === 'replay'" color="purple" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">{{ replayRecordingLabel(node.device) }}</a-tag>
+                    <a-tag v-if="node.device.simulation_mode === 'replay'" color="purple" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">{{ activeRecordingLabel(node.device) }}</a-tag>
                     <a-tooltip v-if="simulationProviderLabel(node.device)" :title="simulationProviderTitle(node.device)">
                       <a-tag :color="simulationProviderColor(node.device)" style="flex-shrink:0;font-size:10px;line-height:16px;padding:0 4px;margin:0">
                         {{ simulationProviderLabel(node.device) }}

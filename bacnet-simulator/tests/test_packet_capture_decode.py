@@ -6,7 +6,7 @@ associated with a simulator device. Pure decode tests: no DB, no engine,
 no simulator dependency (matches the module's own constraint)."""
 from __future__ import annotations
 
-from src.bacnet.packet_capture import decode_bacnet_summary
+from src.network.decoders.bacnet import decode_bacnet_summary
 
 
 # I-Am, device_instance=1003, max-apdu=1476, segmentation=no-segmentation(3),
@@ -66,3 +66,10 @@ def test_broadcast_who_is_decodes_no_range():
     assert result["service_name"] == "Who-Is"
     assert "device_instance_range_low" not in result["summary"]
     assert "device_instance_range_high" not in result["summary"]
+
+def test_forwarded_npdu_preserves_origin_decode():
+    payload = bytes.fromhex('81 04 00 0e 0a 00 00 05 ba c0 01 00 10 08')
+    decoded = decode_bacnet_summary(payload)
+    assert decoded['decode_status'] == 'decoded'
+    assert decoded['service_name'] == 'Who-Is'
+    assert decoded['decode_error'] is None

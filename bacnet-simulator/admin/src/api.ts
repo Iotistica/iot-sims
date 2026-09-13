@@ -20,13 +20,21 @@ import type {
   EventEnrollment,
   TrendLog,
   TrendLogRecord,
-  ReplayRecording,
+  Recording,
+  FaultType,
   ReplayPlaybackState,
   CalibrationModelSummary,
   CalibrationRecordingSummary,
   CalibrationMappingSuggestions,
   CalibrationJob,
   CalibrationResult,
+  TrainingMappingSuggestions,
+  TrainingJob,
+  TrainingResult,
+  ClassificationResult,
+  FeatureChoice,
+  SemanticCompatibilityResult,
+  PromotedModelSummary,
   Schedule,
   ScheduleEvaluation,
   PriorityArrayInfo,
@@ -53,7 +61,10 @@ import type {
   FunctionalTestRun,
   PointRow,
   CustomGraphDefinition,
+  KpiDefinition,
   SavedGraph,
+  Dashboard,
+  WidgetType,
   Template,
   TplObject,
 } from './types'
@@ -131,10 +142,19 @@ function errorMessageFromDetail(detail: unknown): string {
   if (detail && typeof detail === 'object') {
     const message = (detail as { message?: unknown }).message
     const runtimeError = (detail as { runtime_error?: unknown }).runtime_error
+    const missing = (detail as { missing?: unknown }).missing
     if (typeof message === 'string') {
+      let result = message
+      if (Array.isArray(missing) && missing.length) {
+        const names = missing
+          .map((m) => (m as { variable?: string })?.variable)
+          .filter((name): name is string => !!name)
+          .join(', ')
+        if (names) result = `${result}: ${names}`
+      }
       return typeof runtimeError === 'string' && runtimeError
-        ? `${message}: ${runtimeError}`
-        : message
+        ? `${result}: ${runtimeError}`
+        : result
     }
     if (typeof runtimeError === 'string') return runtimeError
   }
@@ -191,6 +211,7 @@ export type SimulationProviderType =
   | 'builtin'
   | 'fmu'
   | 'ai'
+  | 'classifier'
 
 export interface SimulationProviderCatalogEntry {
   provider_type: SimulationProviderType
@@ -212,11 +233,16 @@ export interface SimulationModelParameterDefinition {
   maximum?: number | null
 }
 
-export interface SimulationModelMappingHints {
-  equipment_scope: 'self' | 'upstream' | 'downstream' | 'any'
-  preferred_equipment_types?: string[]
-  relationship?: 'feeds' | 'isPartOf' | null
-  signal_role?: string | null
+/** The one authoritative provider-neutral semantic contract (see iot-models
+ * shared/semantic_contract.py) -- the ONLY signal-meaning metadata a model carries. No
+ * Brick/OPC UA class, no mapping_hints -- the simulator's semantic provider owns
+ * representation translation. */
+export interface SimulationModelSemanticContract {
+  id: string
+  role: 'sensor' | 'setpoint' | 'command' | 'status' | 'derived'
+  scope?: 'self' | 'upstream' | 'downstream' | 'any'
+  relationship?: 'feeds' | 'isFedBy' | 'isPartOf' | null
+  aggregation?: string
 }
 
 export interface SimulationModelVariableDefinition {
@@ -226,12 +252,7 @@ export interface SimulationModelVariableDefinition {
   unit?: string | null
   default?: unknown
   required?: boolean
-  suggested_point_types?: string[]
-  /** Already present in the backend catalog response (VariableDefinition's
-   * mapping_hints, asdict()'d) -- this type just declares it. Used to rank
-   * an Aggregate input's point picker (equipment_scope/preferred_equipment_types/
-   * signal_role), never to hard-code any specific variable in the UI. */
-  mapping_hints?: SimulationModelMappingHints | null
+  semantic?: SimulationModelSemanticContract | null
 }
 
 export interface SimulationModelCatalogEntry {
@@ -257,6 +278,14 @@ export interface SimulationModelMapping {
   object_instance?: number
   units?: string
   point_type?: string | null
+  /** Named, declarative value conversion applied at the FMU/AI/Classifier
+   * boundary before the value reaches the mapped point (see
+   * mapping/conversions.CONVERSIONS on the backend) -- e.g.
+   * 'zero_based_to_multistate' for a zero-based model output (compressor
+   * stage, or a classifier's own prediction_index) feeding a 1-based
+   * BACnet multi-state point. null/omitted is a no-op, same as every
+   * mapping before this field existed. */
+  conversion?: string | null
 }
 
 /** point_metadata keys are point_ids -- always strings once this crosses
@@ -306,6 +335,27 @@ export interface SimulationModelInputExposure {
   point_type?: string | null
 }
 
+/** engine.get_simulation_providers()'s per-provider diagnostic snapshot --
+ * status is a ProviderStatus value (ready/running/paused/stopped/error/
+ * not_configured); locally_paused distinguishes "paused because a user
+ * explicitly paused just this model" (Simulation -> Model's own Pause
+ * control) from merely being paused as a side effect of the global clock
+ * being paused -- only the former survives a global pause/resume cycle. */
+export interface SimulationProviderRuntime {
+  type: string
+  status: string
+  input_point_ids: number[]
+  output_point_ids: number[]
+  locally_paused: boolean
+  /** How much simulated time this model's own step advances per shared
+   * wall-clock tick, relative to every other model (1.0 = default, >1 =
+   * faster, <1 = slower) -- see set_provider_real_time_factor's own
+   * docstring for why this is numerically safe for every catalog model
+   * except EnergyPlusThermalZone (accepted, documented limitation). */
+  real_time_factor: number
+  diagnostics?: Record<string, unknown>
+}
+
 export interface SimulationModelConfig {
   id: number
   name: string
@@ -320,7 +370,7 @@ export interface SimulationModelConfig {
   mappings: Array<SimulationModelMapping | SimulationModelAggregateMapping>
   input_exposures?: SimulationModelInputExposure[]
   runtime_id?: string
-  runtime?: unknown
+  runtime?: SimulationProviderRuntime
 }
 
 export interface SimulationModelPayload {
@@ -330,7 +380,7 @@ export interface SimulationModelPayload {
   enabled: boolean
   parameters: Record<string, unknown>
   created_from_device_id?: number | null
-  mappings: Array<Pick<SimulationModelMapping, 'variable' | 'direction' | 'point_id'>>
+  mappings: Array<Pick<SimulationModelMapping, 'variable' | 'direction' | 'point_id' | 'conversion'>>
   aggregate_mappings: Array<Pick<SimulationModelAggregateMapping, 'variable' | 'direction' | 'operation' | 'point_ids' | 'weight_point_ids'>>
   input_exposures: Array<Pick<SimulationModelInputExposure, 'variable' | 'point_id'>>
 }
@@ -402,6 +452,23 @@ export interface VariableCandidatesResponse {
   candidates: VariableCandidateEntry[]
   equipment_scope_used: 'self' | 'upstream' | 'downstream' | 'any' | 'fallback'
   related_equipment_name: string | null
+}
+
+export interface ScaffoldedPoint {
+  variable: string
+  direction: 'input' | 'output'
+  point_id: number
+  name: string
+  object_type: string
+  object_instance: number
+  units: string
+  device_id: number
+  device_name: string
+}
+
+export interface ScaffoldPointsResponse {
+  created: ScaffoldedPoint[]
+  skipped: Array<{ variable: string; direction: 'input' | 'output'; reason: string }>
 }
 
 // Which real calendar year each month of a composite TMYx-style weather
@@ -490,6 +557,29 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
     del: (id: number) => req<{ ok: boolean; model_id: number; runtime_id: string }>(`/simulation/models/${id}`, { method: 'DELETE' }),
+    // Read-only status snapshot -- no side effects, unlike the actions
+    // below (viewing status must never itself pause/resume/reload).
+    getRuntime: (id: number) => req<{ model_id: number; runtime_id: string; runtime: SimulationProviderRuntime | null }>(
+      `/simulation/models/${id}/runtime`,
+    ),
+    // Per-device runtime controls -- freeze/resume/reset just THIS model
+    // while everything else keeps running, distinct from the global
+    // sim.start/pause/stop and from setEnabled (which fully unregisters/
+    // re-registers the provider rather than freezing an already-registered
+    // one in place). 404s if the model doesn't exist, or exists but has no
+    // live provider registered right now (e.g. currently disabled).
+    pause: (id: number) => req<{ ok: boolean; model_id: number; runtime_id: string; runtime: SimulationProviderRuntime }>(
+      `/simulation/models/${id}/pause`, { method: 'POST' },
+    ),
+    resume: (id: number) => req<{ ok: boolean; model_id: number; runtime_id: string; runtime: SimulationProviderRuntime }>(
+      `/simulation/models/${id}/resume`, { method: 'POST' },
+    ),
+    resetRuntime: (id: number) => req<{ ok: boolean; model_id: number; runtime_id: string; runtime: SimulationProviderRuntime }>(
+      `/simulation/models/${id}/reset`, { method: 'POST' },
+    ),
+    setRtf: (id: number, target: number) => req<{ ok: boolean; model_id: number; runtime_id: string; runtime: SimulationProviderRuntime }>(
+      `/simulation/models/${id}/rtf`, { method: 'POST', body: JSON.stringify({ target }) },
+    ),
     // deviceId scopes candidates to that device's one-hop Brick controller
     // topology (Controller -> controls -> Equipment -> feeds -> Equipment/
     // Location) server-side; omitted/undefined keeps the full project-wide
@@ -502,11 +592,17 @@ export const api = {
       req<MappingSuggestionEntry>('/simulation/models/mapping-suggestions/ai', { method: 'POST', body: JSON.stringify(body) }),
     variableCandidates: (body: { model_type: string; variable: string; created_from_device_id: number | null; current_model_id?: number | null; limit?: number }) =>
       req<VariableCandidatesResponse>('/simulation/models/variable-candidates', { method: 'POST', body: JSON.stringify(body) }),
+    // Creates one BACnet object on the source controller per model variable
+    // in `directions` (default outputs only) that has no same-named point
+    // yet -- additive only, never touches the model row/mappings. Caller
+    // wires `created[].point_id` into the drawer's output mappings.
+    scaffoldPoints: (body: { model_type: string; created_from_device_id: number; directions?: Array<'input' | 'output'> }) =>
+      req<ScaffoldPointsResponse>('/simulation/models/scaffold-points', { method: 'POST', body: JSON.stringify(body) }),
     reconcile: () => req<Record<string, unknown>>('/simulation/models/reconcile', { method: 'POST' }),
   },
 
   // Generic, model-agnostic file upload for any catalog model's "file"-type
-  // parameter (see remote_catalog.py's _string_parameter_definition on the
+  // parameter (see remote_catalog.py's _parameter_definition on the
   // backend) -- not scoped to weather or any one model.
   simulationResources: {
     upload: (file: File) =>
@@ -632,13 +728,37 @@ export const api = {
   },
 
   customGraphs: {
-    list:   ()                                                     => req<SavedGraph[]>('/custom-graphs'),
+    // dashboardId omitted lists every widget across every dashboard --
+    // SavedGraphsView.vue always passes the active dashboard's id.
+    list:   (dashboardId?: number) =>
+      req<SavedGraph[]>(`/custom-graphs${dashboardId != null ? `?dashboard_id=${dashboardId}` : ''}`),
     get:    (id: number)                                           => req<SavedGraph>(`/custom-graphs/${id}`),
-    create: (b: { name: string; definition: CustomGraphDefinition }) =>
+    create: (b: {
+      name: string
+      definition: CustomGraphDefinition | KpiDefinition
+      dashboard_id?: number
+      widget_type?: WidgetType
+      grid_x?: number; grid_y?: number; grid_w?: number; grid_h?: number
+    }) =>
       req<SavedGraph>('/custom-graphs', { method: 'POST', body: JSON.stringify(b) }),
-    update: (id: number, b: { name: string; definition: CustomGraphDefinition }) =>
+    update: (id: number, b: {
+      name: string
+      definition: CustomGraphDefinition | KpiDefinition
+      dashboard_id?: number
+      widget_type?: WidgetType
+      grid_x?: number; grid_y?: number; grid_w?: number; grid_h?: number
+    }) =>
       req<SavedGraph>(`/custom-graphs/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
     del:    (id: number)                                           => req<null>(`/custom-graphs/${id}`, { method: 'DELETE' }),
+  },
+
+  dashboards: {
+    list:   ()                     => req<Dashboard[]>('/dashboards'),
+    get:    (id: number)           => req<Dashboard>(`/dashboards/${id}`),
+    create: (b: { name: string })  => req<Dashboard>('/dashboards', { method: 'POST', body: JSON.stringify(b) }),
+    update: (id: number, b: { name: string }) =>
+      req<Dashboard>(`/dashboards/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    del:    (id: number)           => req<null>(`/dashboards/${id}`, { method: 'DELETE' }),
   },
 
   points: {
@@ -656,6 +776,13 @@ export const api = {
   objects: {
     list:     (did: number)                        => req<SimObject[]>(`/devices/${did}/objects`),
     create:   (did: number, b: object)             => req<SimObject>(`/devices/${did}/objects`, { method: 'POST', body: JSON.stringify(b) }),
+    // Creates a new object on `did` that's a live-value link to
+    // sourceObjectId (see POST .../objects/link) -- copies identity from
+    // the source, kept in sync by mirror_sync_loop's per-object pass.
+    linkFromExisting: (did: number, sourceObjectId: number) =>
+      req<SimObject>(`/devices/${did}/objects/link`, { method: 'POST', body: JSON.stringify({ source_object_id: sourceObjectId }) }),
+    unlink: (did: number, oid: number) =>
+      req<SimObject>(`/devices/${did}/objects/${oid}/unlink`, { method: 'POST' }),
     update:   (did: number, oid: number, b: object) => req<SimObject>(`/devices/${did}/objects/${oid}`, { method: 'PUT', body: JSON.stringify(b) }),
     del:      (did: number, oid: number)           => req<null>(`/devices/${did}/objects/${oid}`, { method: 'DELETE' }),
     setValue: (did: number, oid: number, value: unknown) =>
@@ -833,20 +960,22 @@ export const api = {
     trigger: (id: number) => req<{ ok: boolean; sequence_number: number; value: unknown }>(`/trend-logs/${id}/trigger`, { method: 'POST' }),
     clear:   (id: number) => req<{ ok: boolean }>(`/trend-logs/${id}/clear`, { method: 'POST' }),
   },
-  replayRecordings: {
-    list: (deviceId: number) => req<ReplayRecording[]>(`/devices/${deviceId}/replay-recordings`),
+  recordings: {
+    list: (deviceId: number) => req<Recording[]>(`/devices/${deviceId}/recordings`),
     create: (deviceId: number, b: {
       name: string; description?: string; point_ids?: number[] | null
+      condition?: 'normal' | 'degraded' | 'fault' | null; fault_type?: FaultType | null; tags?: string[]
       sample_interval_seconds: number; maximum_samples: number; buffer_mode: 'overwrite' | 'stop'
-    }) => req<ReplayRecording>(`/devices/${deviceId}/replay-recordings`, { method: 'POST', body: JSON.stringify(b) }),
-    get:  (id: number) => req<ReplayRecording>(`/replay-recordings/${id}`),
+    }) => req<Recording>(`/devices/${deviceId}/recordings`, { method: 'POST', body: JSON.stringify(b) }),
+    get:  (id: number) => req<Recording>(`/recordings/${id}`),
     update: (id: number, b: {
       name: string; description?: string
+      condition?: 'normal' | 'degraded' | 'fault' | null; fault_type?: FaultType | null; tags?: string[]
       sample_interval_seconds: number; maximum_samples: number; buffer_mode: 'overwrite' | 'stop'
-    }) => req<ReplayRecording>(`/replay-recordings/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
-    stop: (id: number) => req<ReplayRecording>(`/replay-recordings/${id}/stop`, { method: 'POST' }),
-    del:  (id: number) => req<null>(`/replay-recordings/${id}`, { method: 'DELETE' }),
-    exportSamples: (id: number, name: string) => downloadFile(`/replay-recordings/${id}/samples`, `${name}.csv`),
+    }) => req<Recording>(`/recordings/${id}`, { method: 'PUT', body: JSON.stringify(b) }),
+    stop: (id: number) => req<Recording>(`/recordings/${id}/stop`, { method: 'POST' }),
+    del:  (id: number) => req<null>(`/recordings/${id}`, { method: 'DELETE' }),
+    exportSamples: (id: number, name: string) => downloadFile(`/recordings/${id}/samples`, `${name}.csv`),
   },
   replayPlayback: {
     state: (deviceId: number) => req<ReplayPlaybackState>(`/devices/${deviceId}/replay/state`),
@@ -867,7 +996,15 @@ export const api = {
       req<CalibrationRecordingSummary[]>(`/calibration/recordings${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`),
     mappingSuggestions: (recordingId: number, modelId: string) =>
       req<CalibrationMappingSuggestions>(`/calibration/mapping-suggestions?recording_id=${recordingId}&model_id=${encodeURIComponent(modelId)}`),
-    createJob: (b: { recording_id: number; model_id: string; mapping: Record<string, number> }) =>
+    createJob: (b: {
+      recording_id: number
+      model_id: string
+      mapping: Record<string, number>
+      /** Optional held-out validation recording (must differ from recording_id). */
+      validation_recording_id?: number | null
+      /** Optional link to the simulation_model_configs row this calibration targets. */
+      simulation_model_id?: number | null
+    }) =>
       req<CalibrationJob>('/calibration/jobs', { method: 'POST', body: JSON.stringify(b) }),
     getJob: (jobId: string, modelId: string) =>
       req<CalibrationJob>(`/calibration/jobs/${jobId}?model_id=${encodeURIComponent(modelId)}`),
@@ -875,6 +1012,75 @@ export const api = {
       req<CalibrationResult>(`/calibration/jobs/${jobId}/results?model_id=${encodeURIComponent(modelId)}`),
     cancelJob: (jobId: string, modelId: string) =>
       req<CalibrationJob>(`/calibration/jobs/${jobId}/cancel?model_id=${encodeURIComponent(modelId)}`, { method: 'POST' }),
+    listRuns: (q: { model_id?: string; simulation_model_id?: number; recording_id?: number } = {}) => {
+      const p = new URLSearchParams()
+      if (q.model_id) p.set('model_id', q.model_id)
+      if (q.simulation_model_id != null) p.set('simulation_model_id', String(q.simulation_model_id))
+      if (q.recording_id != null) p.set('recording_id', String(q.recording_id))
+      const qs = p.toString()
+      return req<CalibrationRun[]>(`/calibration/runs${qs ? `?${qs}` : ''}`)
+    },
+    getRun: (runId: number) => req<CalibrationRun>(`/calibration/runs/${runId}`),
+    applyRun: (runId: number, simulationModelId: number) =>
+      req<{ calibration_run: CalibrationRun; simulation_model: unknown }>(
+        `/calibration/runs/${runId}/apply`,
+        { method: 'POST', body: JSON.stringify({ simulation_model_id: simulationModelId }) },
+      ),
+  },
+
+  training: {
+    // Deliberately its own route, stricter than calibration.listRecordings
+    // -- only recordings from devices currently running this exact model
+    // (see src/api/routers/training_export.py's own module docstring for
+    // the real, confirmed-live bug this guards against).
+    listRecordings: (modelId: string, deviceId: number) =>
+      req<CalibrationRecordingSummary[]>(
+        `/training/recordings?model_id=${encodeURIComponent(modelId)}&device_id=${deviceId}`,
+      ),
+    mappingSuggestions: (recordingIds: number[], modelId: string, deviceId: number) =>
+      req<TrainingMappingSuggestions>(
+        `/training/mapping-suggestions?recording_ids=${recordingIds.join(',')}&model_id=${encodeURIComponent(modelId)}&device_id=${deviceId}`,
+      ),
+    createJob: (b: {
+      model_id: string; recording_ids: number[]; mapping: Record<string, number>
+      history_window?: number; test_fraction?: number; seed?: number
+      // Additive -- omitted entirely for a plain regression job (see
+      // ClassifierTrainingFlow.vue for the only caller that sets these).
+      task_type?: 'regression' | 'classification'; classifier_target?: 'condition' | 'fault_type'
+      // Explicit user decisions for any variable Brick couldn't auto-resolve -- see
+      // src/semantics/feature_contract.py. Never a default; only variables the "Points Used by
+      // Model" picker actually collected a choice for should appear here.
+      feature_choices?: Record<string, FeatureChoice>
+    }) =>
+      req<TrainingJob>('/training/jobs', { method: 'POST', body: JSON.stringify(b) }),
+    // Every training job ever run for this model, newest first -- purely
+    // informational history (see training_export.py's own list route
+    // docstring: iot-models persists these across its own restarts too).
+    listJobs: (modelId: string) =>
+      req<TrainingJob[]>(`/training/jobs?model_id=${encodeURIComponent(modelId)}`),
+    getJob: (jobId: string, modelId: string) =>
+      req<TrainingJob>(`/training/jobs/${jobId}?model_id=${encodeURIComponent(modelId)}`),
+    getResults: (jobId: string, modelId: string) =>
+      req<TrainingResult>(`/training/jobs/${jobId}/results?model_id=${encodeURIComponent(modelId)}`),
+    // Same endpoint as getResults above -- iot-models returns whichever
+    // shape (regression or classifier) the job actually produced; this is
+    // just a differently-typed call site for ClassifierTrainingFlow.vue,
+    // not a different route.
+    getClassificationResults: (jobId: string, modelId: string) =>
+      req<ClassificationResult>(`/training/jobs/${jobId}/results?model_id=${encodeURIComponent(modelId)}`),
+    cancelJob: (jobId: string, modelId: string) =>
+      req<TrainingJob>(`/training/jobs/${jobId}/cancel?model_id=${encodeURIComponent(modelId)}`, { method: 'POST' }),
+    // "Equipment Compatibility" check -- resolves a promoted model's semantic feature contract
+    // against a target device, before the attach flow creates a simulation_model_configs row.
+    checkSemanticCompatibility: (modelId: string, deviceId: number) =>
+      req<SemanticCompatibilityResult>(
+        `/training/models/${encodeURIComponent(modelId)}/semantic-compatibility?device_id=${deviceId}`,
+      ),
+    promoteJob: (jobId: string, modelId: string, b: { slug?: string; label?: string } = {}) =>
+      req<PromotedModelSummary>(
+        `/training/jobs/${jobId}/promote?model_id=${encodeURIComponent(modelId)}`,
+        { method: 'POST', body: JSON.stringify(b) },
+      ),
   },
 
   schedules: {
@@ -924,17 +1130,8 @@ export const api = {
       params.set('direction', filters.direction)
     }
 
-    if (filters.sourceIp) {
-      params.set('source_ip', filters.sourceIp)
-    }
-
-    if (filters.destinationIp) {
-      params.set('destination_ip', filters.destinationIp)
-    }
-
-    if (filters.service) {
-      params.set('service', filters.service)
-    }
+    if (filters.protocol) params.set('protocol', filters.protocol)
+    if (filters.operation) params.set('operation', filters.operation)
 
     if (filters.deviceId !== undefined) {
       params.set('device_id', String(filters.deviceId))
@@ -966,7 +1163,7 @@ export const api = {
 
   exportPcap: () =>
     downloadFile(
-      '/packet-capture/export',
+      '/packet-capture/export?protocol=bacnet',
       `bacnet-capture-${new Date()
         .toISOString()
         .replace(/:/g, '-')

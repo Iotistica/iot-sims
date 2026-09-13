@@ -31,6 +31,11 @@ const pointRows = ref<PointRow[]>([])
 const unclassifiedRows = ref<PointRow[]>([])
 const showUnclassified = ref(false)
 
+// "Select all" deliberately stays scoped to never-classified points only --
+// an already-classified point (existing_class set) is still individually
+// checkable/editable (see the table's own `included` checkbox, no longer
+// disabled for these), just never swept up by a bulk Select all, so an
+// existing classification can't be silently mass-overwritten by one click.
 const selectablePointRows = computed(() =>
   pointRows.value.filter((row) => row.suggestion.existing_class === null && !!row.chosenClass),
 )
@@ -58,8 +63,11 @@ function onSelectAllChange(e: { target: { checked: boolean } }) {
 }
 
 // High/medium default checked; low defaults unchecked; an already-classified
-// record (existing_class set) always defaults unchecked -- existing
-// user-entered semantics are never silently replaced (requirement 20).
+// record (existing_class set) always defaults unchecked too -- existing
+// user-entered semantics are never silently replaced in bulk (requirement
+// 20). Default only, though: the row's own checkbox can still be checked
+// explicitly to deliberately update it -- see selectablePointRows's own
+// comment for why Select all doesn't do that automatically.
 function defaultIncluded(entry: SemanticSuggestionEntry): boolean {
   return entry.existing_class === null && (entry.confidence === 'high' || entry.confidence === 'medium')
 }
@@ -266,7 +274,7 @@ async function apply() {
           <template v-if="column.key === 'included'">
             <a-checkbox
               v-model:checked="(record as PointRow).included"
-              :disabled="(record as PointRow).suggestion.existing_class !== null || !(record as PointRow).chosenClass"
+              :disabled="!(record as PointRow).chosenClass"
             />
           </template>
           <template v-else-if="column.key === 'class'">

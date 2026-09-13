@@ -7,7 +7,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .registry import MappingHints, ModelDefinition, ParameterDefinition, VariableDefinition
+from ...semantics.contract import SemanticContract
+from .registry import ModelDefinition, ParameterDefinition, VariableDefinition
 
 
 _CACHE_TTL_SECONDS = 30.0
@@ -127,26 +128,22 @@ def _unit_label(unit: Any) -> str | None:
     return aliases.get(value, value)
 
 
-def _mapping_hints(data: dict[str, Any]) -> MappingHints | None:
-    raw = data.get("mapping_hints")
+def _semantic_contract(data: dict[str, Any]) -> SemanticContract | None:
+    """Built ONLY from the `semantic` block -- never synthesized from a legacy
+    `point_class` / `signal_role` / `suggested_point_types`."""
+    raw = data.get("semantic")
     if not isinstance(raw, dict):
         return None
-    return MappingHints(
-        equipment_scope=raw.get("equipment_scope") or "self",
-        preferred_equipment_types=tuple(raw.get("preferred_equipment_types") or ()),
+    canonical_id = str(raw.get("id") or "")
+    if not canonical_id:
+        return None
+    return SemanticContract(
+        id=canonical_id,
+        role=str(raw.get("role") or "sensor"),
+        scope=str(raw.get("scope") or "self"),
         relationship=raw.get("relationship"),
-        signal_role=raw.get("signal_role"),
+        aggregation=str(raw.get("aggregation") or "none"),
     )
-
-
-def _suggested_point_types(data: dict[str, Any]) -> tuple[str, ...]:
-    values = data.get("suggested_point_types")
-    if isinstance(values, list):
-        return tuple(str(value) for value in values if value)
-    semantic = data.get("semantic")
-    if isinstance(semantic, dict) and semantic.get("point_class"):
-        return (str(semantic["point_class"]),)
-    return ()
 
 
 def _variable(data: dict[str, Any], direction: str) -> VariableDefinition:
@@ -157,18 +154,34 @@ def _variable(data: dict[str, Any], direction: str) -> VariableDefinition:
         unit=_unit_label(data.get("unit")),
         default=data.get("default"),
         required=bool(data.get("required", False)),
-        suggested_point_types=_suggested_point_types(data),
-        mapping_hints=_mapping_hints(data),
+        semantic=_semantic_contract(data),
     )
 
 
-def _string_parameter_definition(data: dict[str, Any]) -> ParameterDefinition:
+def _allowed_values(data: dict[str, Any]) -> tuple[dict[str, Any], ...] | None:
+    """A genset's fuelType-style enumerated parameter: model.json's own
+    `allowed_values` (a list of {"value", "label"}) passed through verbatim so
+    SimulationModelDrawer.vue can render a select instead of a free-entry box.
+    Malformed/missing entries are dropped rather than raising -- an enumerated
+    parameter degrades to free entry, never a broken drawer."""
+    raw = data.get("allowed_values")
+    if not isinstance(raw, list) or not raw:
+        return None
+    values = tuple(
+        {"value": item["value"], "label": str(item.get("label", item["value"]))}
+        for item in raw
+        if isinstance(item, dict) and "value" in item
+    )
+    return values or None
+
+
+def _parameter_definition(data: dict[str, Any]) -> ParameterDefinition:
     # "file" (not plain "string") when the catalog flags this parameter's
     # value as a file path (e.g. Weather's wea_filename) -- tells
     # SimulationModelDrawer.vue to render an upload control (via
     # /simulation/resources, remote_resources.py's relay to iot-models'
     # generic /resources endpoint) instead of a free-text box. Any future
-    # string_parameters entry with is_file omitted/false stays a plain
+    # parameters entry with is_file omitted/false stays a plain
     # free-text "string" field, e.g. a text label rather than a file
     # reference.
     param_type = "file" if data.get("is_file") else "string"
@@ -179,6 +192,7 @@ def _string_parameter_definition(data: dict[str, Any]) -> ParameterDefinition:
         default=data.get("default"),
         required=bool(data.get("required", False)),
         advanced=bool(data.get("advanced", False)),
+        allowed_values=_allowed_values(data),
     )
 
 
@@ -219,20 +233,34 @@ def definition_from_metadata(metadata: dict[str, Any]) -> ModelDefinition:
     # free-text input for type="string") rather than a bespoke picker for
     # now. See _build_fmu_provider's own comment for how a value entered
     # here actually reaches the FMU runtime as an initialize()-time
-    # string_parameters override.
+    # parameters override.
     parameters = tuple(
-        _string_parameter_definition(item)
-        for item in metadata.get("string_parameters", [])
+        _parameter_definition(item)
+        for item in metadata.get("parameters", [])
         if isinstance(item, dict) and item.get("name")
     )
     if str(metadata.get("slug") or "") == _WEATHER_MODEL_SLUG:
         parameters = parameters + (_PLAYBACK_START_MONTH_PARAMETER,)
     # iot-models reports runtime_type per model (added alongside its ONNX
-    # surrogate backend) -- this is the one place that decides which
-    # provider category ("FMU" vs "AI") a given catalog model shows up
-    # under in this admin UI. Defaults to "fmu" for any model.json that
-    # predates runtime_type (every real FMU model to date).
-    provider_type = "ai" if metadata.get("runtime_type") == "onnx" else "fmu"
+    # surrogate backend, and later its classifier backend) -- this is the
+    # one place that decides which provider category ("FMU" vs "AI" vs
+    # "Classifier") a given catalog model shows up under in this admin UI.
+    # Defaults to "fmu" for any model.json that predates runtime_type
+    # (every real FMU model to date). "classifier" is kept distinct from
+    # "ai" (not lumped in) -- a classifier's single categorical output and
+    # BACnet multi-state wiring are handled differently downstream (see
+    # engine.py's classifier output path) from a regression AI model's
+    # continuous outputs, so the UI/engine need to be able to tell them
+    # apart from provider_type alone.
+    runtime_type = metadata.get("runtime_type")
+    if runtime_type == "classifier":
+        provider_type = "classifier"
+    elif runtime_type == "onnx":
+        provider_type = "ai"
+    else:
+        provider_type = "fmu"
+    class_labels = metadata.get("class_labels")
+    ml_input_contract = metadata.get("ml_input_contract")
     return ModelDefinition(
         model_type=model_id,
         label=str(metadata.get("label") or model_id),
@@ -242,6 +270,9 @@ def definition_from_metadata(metadata: dict[str, Any]) -> ModelDefinition:
         variables=tuple(variables),
         factory=lambda parameters: None,
         runtime_model=model_id,
+        class_labels=tuple(class_labels) if isinstance(class_labels, list) else (),
+        classifier_target=metadata.get("classifier_target"),
+        ml_input_contract=tuple(ml_input_contract) if isinstance(ml_input_contract, list) else (),
     )
 
 

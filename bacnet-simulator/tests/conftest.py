@@ -77,7 +77,9 @@ def _routers():
 
     try:
         from src.api.routers.custom_graphs import router as custom_graphs_router
+        from src.api.routers.dashboards import router as dashboards_router
         routers.append(custom_graphs_router)
+        routers.append(dashboards_router)
     except ImportError:
         pass
 
@@ -94,14 +96,22 @@ def _routers():
         pass
 
     try:
-        from src.api.routers.replay_recordings import router as replay_recordings_router
-        routers.append(replay_recordings_router)
+        from src.api.routers.recordings import router as recordings_router
+        from src.api.routers.replay_playback import router as replay_playback_router
+        routers.append(recordings_router)
+        routers.append(replay_playback_router)
     except ImportError:
         pass
 
     try:
         from src.api.routers.calibration import router as calibration_router
         routers.append(calibration_router)
+    except ImportError:
+        pass
+
+    try:
+        from src.api.routers.training_export import router as training_export_router
+        routers.append(training_export_router)
     except ImportError:
         pass
 

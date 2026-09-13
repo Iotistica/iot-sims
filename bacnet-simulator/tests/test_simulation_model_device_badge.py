@@ -18,7 +18,7 @@ from src.simulation.models.store import (
 
 
 def _make_device(client, *, instance: int, name: str) -> dict:
-    return client.post("/devices", json={"device_instance": instance, "name": name}).json()
+    return client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": name}).json()
 
 
 def test_active_model_shown_without_output_mappings(client, database):

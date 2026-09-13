@@ -7,6 +7,7 @@ GH #15 refactor, same "moved verbatim, no behavior changes" standard as the
 Database and API-router extractions.
 """
 from __future__ import annotations
+from ..network.models import Endpoint
 
 import asyncio
 import logging
@@ -720,10 +721,11 @@ def install_bacpypes_packet_capture_hooks(
             )
 
             if payload:
-                _dependencies().packet_capture.record_outbound(
-                    payload,
-                    source=source,
-                    destination=destination,
+                _dependencies().packet_capture.record(
+                    protocol="bacnet", transport="udp", direction="outbound",
+                    payload=payload,
+                    source=Endpoint(*source),
+                    destination=Endpoint(*destination),
                 )
         except Exception:
             # Capture must never interrupt BACnet communication.
@@ -753,10 +755,11 @@ def install_bacpypes_packet_capture_hooks(
             )
 
             if payload:
-                _dependencies().packet_capture.record_inbound(
-                    payload,
-                    source=source,
-                    destination=destination,
+                _dependencies().packet_capture.record(
+                    protocol="bacnet", transport="udp", direction="inbound",
+                    payload=payload,
+                    source=Endpoint(*source),
+                    destination=Endpoint(*destination),
                 )
         except Exception:
             log.exception(

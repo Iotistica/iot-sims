@@ -281,7 +281,7 @@ def _patch_definition(monkeypatch) -> ModelDefinition:
 
 def _make_provider_owned_point(client, monkeypatch, *, instance: int):
     _patch_definition(monkeypatch)
-    device = client.post("/devices", json={"device_instance": instance, "name": "RTU-Test"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": instance, "name": "RTU-Test"}).json()
     point = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "Duct-Static-Pressure", "units": "pascals",
     }).json()
@@ -339,7 +339,7 @@ def test_raw_provider_value_exposed_for_provider_owned_point(client, database, m
 
 
 def test_raw_provider_value_absent_for_plain_point(client, database):
-    device = client.post("/devices", json={"device_instance": 6203, "name": "Plain-Device"}).json()
+    device = client.post("/devices", json={"protocol": "bacnet", "device_instance": 6203, "name": "Plain-Device"}).json()
     point = client.post(f"/devices/{device['id']}/objects", json={
         "object_type": "analog-input", "object_instance": 1, "name": "Plain-Point", "units": "no-units",
     }).json()
