@@ -18,7 +18,7 @@ from typing import Any, Optional, Union
 
 TICK_SECONDS = 5.0  # cadence of the engine tick loop
 
-VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault"}
+VALID_BEHAVIORS = {"constant", "sine", "noise", "random_walk", "manual", "schedule", "ramp", "fault", "flicker"}
 
 
 @dataclass
@@ -188,6 +188,26 @@ class FaultBehavior(Behavior):
         return float(self._inner.compute(state))
 
 
+class FlickerBehavior(Behavior):
+    """Toggles a Boolean tag on a fixed real-time period. None of the other
+    behaviors can drive a genuinely-changing Boolean: _write_value() casts
+    every behavior's return value via bool(val) before writing, so e.g.
+    NoiseBehavior's small positive jitter around a base always casts to
+    True — the written node value never actually changes, so OPC-UA never
+    emits a change notification for it. This exists for Boolean points
+    (run status, alarms, overrides, etc.) that need to look genuinely live
+    rather than report one initial value and then go silent forever.
+    """
+
+    def __init__(self, params: dict):
+        self.period_seconds = max(1.0, float(params.get("period_seconds", 30.0)))
+        self.start_value = bool(params.get("start_value", False))
+
+    def compute(self, state: SimState) -> bool:
+        half_periods_elapsed = int(state.elapsed_seconds // self.period_seconds)
+        return self.start_value if half_periods_elapsed % 2 == 0 else (not self.start_value)
+
+
 def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> Behavior:
     try:
         params = json.loads(params_json) if params_json else {}
@@ -209,4 +229,6 @@ def make_behavior(behavior: str, params_json: str, manual_value: Any = None) -> 
         return RampBehavior(params)
     if behavior == "fault":
         return FaultBehavior(params)
+    if behavior == "flicker":
+        return FlickerBehavior(params)
     return ConstantBehavior({"value": 0})
