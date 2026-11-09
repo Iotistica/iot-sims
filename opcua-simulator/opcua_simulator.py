@@ -625,7 +625,7 @@ api.add_middleware(
 )
 
 _PUBLIC_PATH_PREFIXES = ("/auth/", "/assets/")
-_PUBLIC_PATHS = {"/", "/favicon.svg"}
+_PUBLIC_PATHS = {"/", "/favicon.svg", "/health"}
 
 
 def _is_public_path(path: str) -> bool:
